@@ -4,15 +4,21 @@
 //! stacked on top; their patches and their reviewers' comments, as one job,
 //! held for one review, as the agent's work is (`held`).
 //!
-//! What is read is stored first, as a fetch stores it (`phab::store_read`);
-//! then the pull waits its turn as an edit of the agent's does
-//! (`ask::claim`): at its turn, it is made (`make`), from the stack the
-//! edits before it make, chained on the last of them waiting for your
+//! Its run is written the moment it is asked (`ask`, `ask_new`), and it is
+//! queued then, as an edit of the agent's is (`ask::claim`): from then to
+//! when it is filed, it changes the stack as the agent's edit does, and the
+//! stack is not edited by hand meanwhile (`ask::changing`). It goes through
+//! three phases (`Phase`). First it reads Phabricator (`read`), away from
+//! the screen, in the process that asked it, its run naming that process
+//! (`Job::reading`): what it read is stored then, as a fetch stores it
+//! (`phab::store_read`); a read that fails lands the run as failed, saying
+//! why, nothing of Phabricator stored; and one cut short, that process gone
+//! as it read, holds nothing back and lands so once seen (`orphans`). Then
+//! it waits its turn, and at its turn it is made (`make`), from the stack
+//! the edits before it make, chained on the last of them waiting for your
 //! review as edits are (`Job::after`), on a copy of the database with no
 //! lock held, what each operation of its change needs worked out there
-//! too, then filed, and it waits for your review in turn. From when it is
-//! queued to when it is filed, it changes the stack as the agent's edit
-//! does: the stack is not edited by hand meanwhile (`ask::changing`). Its
+//! too; then it is filed, and it waits for your review in turn. Its
 //! change of the stack takes, as a new version of a patch, its
 //! revision's latest diff, or its title and summary, where they are no
 //! version of the patch stacked knows; adds the revisions the stack does
@@ -439,6 +445,17 @@ impl Pulling {
             Pulling::Alone(rev) => format!("pulling from Phabricator: {rev}"),
         }
     }
+
+    /// What the pull reads, said after `reading` on its line of the
+    /// banner: `D12, revision 2 of 3`; from one revision, `D12`. None while
+    /// it finds the revisions to read.
+    pub fn reads(&self) -> Option<String> {
+        match self {
+            Pulling::Starting => None,
+            Pulling::Reading { rev, at, of } => Some(format!("{rev}, revision {at} of {of}")),
+            Pulling::Alone(rev) => Some(rev.clone()),
+        }
+    }
 }
 
 /// What a pull is asked to pull.
@@ -458,13 +475,15 @@ pub enum Asked {
 }
 
 /// A pull, as its run keeps it from when it is asked to when it is made:
-/// what it was asked; what it read of Phabricator, each revision in the
-/// order it read them (`phab::Read`), their raw diffs stored; made chained,
-/// the landed work it went on from, guessing it is accepted, while that
-/// work waits for your review: its change is made from the stack that work
-/// makes, and reviewed after it; and, made with a change of the stack, what
-/// each patch of it takes from Phabricator and what the pull found that
-/// changes nothing (`held::Took`), which its review shows.
+/// what it was asked; while it reads Phabricator, its first phase, the
+/// process reading it (`reading`); what it read of Phabricator, each
+/// revision in the order it read them (`phab::Read`), their raw diffs
+/// stored; made chained, the landed work it went on from, guessing it is
+/// accepted, while that work waits for your review: its change is made from
+/// the stack that work makes, and reviewed after it; and, made with a
+/// change of the stack, what each patch of it takes from Phabricator and
+/// what the pull found that changes nothing (`held::Took`), which its
+/// review shows.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Job {
     pub asked: Asked,
@@ -474,6 +493,10 @@ pub struct Job {
     pub after: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub took: Option<Took>,
+    /// The process reading Phabricator for it, while it does: none once it
+    /// has read it, and for a pull of before, read before it was queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reading: Option<u32>,
 }
 
 /// Whether run `r` is a pull's.
@@ -492,39 +515,124 @@ fn asked_said(asked: &Asked, d: &str) -> String {
     }
 }
 
-/// The pull of stack `name` waiting its turn, if one does: one at a time.
-pub fn pending<'a>(db: &'a Db, name: &str) -> Option<&'a Run> {
-    db.live_runs().into_iter().find(|r| r.stack == name && is(r) && r.state == RunState::Started && r.pull.is_some())
+/// Where a pull is, from when it is asked to when it is filed: reading
+/// Phabricator, its first phase; then waiting its turn, while what goes
+/// before it in the queue holds it back (`ask::pull_waits_on`); then, its
+/// turn come, being made (`make`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Reading,
+    Waiting,
+    Making,
 }
 
-/// The pulls waiting their turn, the first asked first: each its run, and
-/// its stack.
-pub fn waiting(db: &Db) -> Vec<(String, String)> {
+impl Phase {
+    /// What the pull does, said after `a pull from Phabricator`, as what
+    /// changes the stack says it (`ask::changing`): `is reading
+    /// Phabricator`, `waits its turn`, `is being made`.
+    pub fn said(self) -> &'static str {
+        match self {
+            Phase::Reading => "is reading Phabricator",
+            Phase::Waiting => "waits its turn",
+            Phase::Making => "is being made",
+        }
+    }
+
+    /// Where the pull is, said after `The pull from Phabricator,` on its
+    /// line of the banner: `reading Phabricator`, `waiting its turn`,
+    /// `being made`.
+    pub fn at(self) -> &'static str {
+        match self {
+            Phase::Reading => "reading Phabricator",
+            Phase::Waiting => "waiting its turn",
+            Phase::Making => "being made",
+        }
+    }
+}
+
+/// Whether pull run `r` is under way, from when it is asked to when it is
+/// filed: started, its job kept, and, while it reads Phabricator, the
+/// process reading it there. One whose process is gone as it read was cut
+/// short: it holds nothing back, and lands as failed once seen (`orphans`).
+fn under_way(r: &Run) -> bool {
+    is(r) && r.state == RunState::Started && r.pull.as_ref().is_some_and(|j| j.reading.is_none_or(crate::ask::alive))
+}
+
+/// Where pull `r` is, if it is under way (`under_way`).
+pub fn phase(db: &Db, r: &Run) -> Option<Phase> {
+    let j = r.pull.as_deref().filter(|_| under_way(r))?;
+    Some(match j.reading {
+        Some(_) => Phase::Reading,
+        None if crate::ask::pull_waits_on(db, &r.stack).is_some() => Phase::Waiting,
+        None => Phase::Making,
+    })
+}
+
+/// The pull of stack `name` under way, if one is: reading Phabricator,
+/// waiting its turn or being made. One at a time.
+pub fn pending<'a>(db: &'a Db, name: &str) -> Option<&'a Run> {
+    db.live_runs().into_iter().find(|r| r.stack == name && under_way(r))
+}
+
+/// The pulls under way, the first asked first: each its run, its stack,
+/// and whether it still reads Phabricator, as it is made only once it has
+/// read it.
+pub fn waiting(db: &Db) -> Vec<(String, String, bool)> {
     db.live_runs()
         .into_iter()
-        .filter(|r| is(r) && r.state == RunState::Started && r.pull.is_some())
-        .map(|r| (r.id.clone(), r.stack.clone()))
+        .filter(|r| under_way(r))
+        .map(|r| (r.id.clone(), r.stack.clone(), r.pull.as_ref().is_some_and(|j| j.reading.is_some())))
         .collect()
 }
 
 /// What refusing another pull of a stack whose pull waits its turn says.
 pub const ONE_AT_A_TIME: &str = "a pull from Phabricator of this stack waits its turn already: one at a time";
 
-/// Why stack `name` is not pulled now, if it is not: a pull of it waits its
-/// turn already.
+/// Why stack `name` is not pulled now, if it is not: a pull of it is under
+/// way already, waiting its turn (`ONE_AT_A_TIME`), reading Phabricator or
+/// being made.
 pub fn not_now(db: &Db, name: &str) -> Option<String> {
-    pending(db, name).map(|_| ONE_AT_A_TIME.to_string())
+    let r = pending(db, name)?;
+    Some(match phase(db, r) {
+        Some(p @ (Phase::Reading | Phase::Making)) => format!("a pull from Phabricator of this stack {} already: one at a time", p.said()),
+        _ => ONE_AT_A_TIME.to_string(),
+    })
 }
 
-/// What came of pull `r`, said: once made, its summary; waiting its turn,
-/// that it does, and what for.
-pub fn said(db: &Db, r: &Run) -> String {
-    match r.state {
-        RunState::Started => format!(
-            "the pull from Phabricator waits its turn: it is made {}, and what it brings then waits for your review",
-            crate::ask::pull_waits_on(db, &r.stack).unwrap_or_else(|| "next".into())
+/// What a pull reading Phabricator does next, said after what it does.
+const THEN_READ: &str = "then it waits its turn, and what it brings waits for your review once it is made";
+
+/// What a pull being made brings, said after what it does.
+const THEN_MADE: &str = "what it brings then waits for your review";
+
+/// What pull `r` does, under way, said after `The pull from Phabricator`
+/// as its line's menu says it: `is reading Phabricator: then it waits its
+/// turn, …`; `waits its turn: stacked makes it once …, and …`; `is being
+/// made: what it brings then waits for your review`. None once it is not.
+pub fn under_way_said(db: &Db, r: &Run) -> Option<String> {
+    Some(match phase(db, r)? {
+        Phase::Reading => format!("is reading Phabricator: {THEN_READ}"),
+        Phase::Waiting => format!(
+            "waits its turn: stacked makes it {}, and what it brings then waits for your review",
+            crate::ask::pull_waits_on(db, &r.stack).unwrap_or_default()
         ),
-        _ => r.summary.clone(),
+        Phase::Making => format!("is being made: {THEN_MADE}"),
+    })
+}
+
+/// What came of pull `r`, said: once made, its summary; under way, where
+/// it is: reading Phabricator, waiting its turn and what for, or being
+/// made; its read cut short, its process gone, that it was.
+pub fn said(db: &Db, r: &Run) -> String {
+    match phase(db, r) {
+        Some(Phase::Reading) => format!("the pull from Phabricator is reading Phabricator: {THEN_READ}"),
+        Some(Phase::Waiting) => format!(
+            "the pull from Phabricator waits its turn: it is made {}, and what it brings then waits for your review",
+            crate::ask::pull_waits_on(db, &r.stack).unwrap_or_default()
+        ),
+        Some(Phase::Making) => format!("the pull from Phabricator is being made: {THEN_MADE}"),
+        None if r.state == RunState::Started => CUT_SHORT.into(),
+        None => r.summary.clone(),
     }
 }
 
@@ -533,17 +641,45 @@ fn nowhere(what: &str) -> Error {
     Error(format!("{what} come from nowhere: reviews.source is \"none\" in {}", crate::config::path().display()))
 }
 
+/// A pull asked, its run written, as it reads Phabricator (`ask`,
+/// `ask_new`): its run and its stack, then what it reads, and what it is
+/// said to do as it starts (`read`).
+pub struct Reading {
+    pub run: String,
+    pub stack: String,
+    wants: Wants,
+    starting: Pulling,
+    /// For a new stack: the revision it is pulled from, `D123`, and the
+    /// repository the stack is in.
+    new: Option<(String, String)>,
+}
+
+/// What a pull whose read was cut short says: the process reading
+/// Phabricator for it gone as it read, the editor quitting or the command
+/// killed, say.
+pub const CUT_SHORT: &str = "the read of Phabricator was cut short: ask the pull again";
+
 /// Pulls from Phabricator what `asked` asks of stack `name` in the database
-/// at `db_path`, `say` told where it is as it reads: the revisions read
-/// (`phab::read_pull`), with the revisions they stack on that the stack
-/// does not hold, and, of the stack's top or of the patch asked with
-/// them, those stacked on them; what is read stored, as a fetch stores it;
-/// then the pull queued, as an edit is, and made if its turn has come
-/// (`ask::launch`). The run, made or waiting its turn. Nothing is stored
-/// or queued when the read fails, Phabricator turning this machine away
-/// said plainly; nor while reviews come from nowhere, nor while a pull of
-/// the stack waits its turn.
+/// at `db_path`, `say` told where it is as it reads: asked (`ask`), then
+/// read (`read`). The run, made, waiting its turn or being made. Refused,
+/// nothing written, as `ask` refuses; a read that fails lands the run as
+/// failed, what went wrong said, Phabricator turning this machine away said
+/// plainly, nothing of Phabricator stored.
 pub fn pull(db_path: &Path, name: &str, asked: Asked, say: &mut dyn FnMut(Pulling)) -> Result<Run> {
+    let reading = ask(db_path, name, asked)?;
+    read(db_path, reading, say)
+}
+
+/// A pull from Phabricator asked of what `asked` asks of stack `name` in
+/// the database at `db_path`: its run written at once, reading Phabricator
+/// in this process, and queued then, as an edit is, so that from now on
+/// the stack is not edited by hand until the pull is filed
+/// (`ask::changing`). What it then reads (`read`): the revisions asked,
+/// with the revisions they stack on that the stack does not hold, and, of
+/// the stack's top or of the patch asked with them, those stacked on them.
+/// Refused, nothing written, while reviews come from nowhere, while a pull
+/// of the stack is under way, and when no patch asked names a revision.
+pub fn ask(db_path: &Path, name: &str, asked: Asked) -> Result<Reading> {
     if crate::config::get().reviews.source == crate::config::Source::None {
         return Err(nowhere("reviews"));
     }
@@ -587,49 +723,59 @@ pub fn pull(db_path: &Path, name: &str, asked: Asked, say: &mut dyn FnMut(Pullin
         held.extend(ws.patches.iter().filter_map(|id| phab::revision_of(&db.patch(id).message)).map(|(_, l)| l));
     }
     let d = wanted.first().map(|(d, _)| d.clone()).unwrap_or_default();
-    say(match &asked {
+    let starting = match &asked {
         Asked::Patch { .. } => Pulling::Alone(d.clone()),
         _ => Pulling::Starting,
-    });
-    let read = read_with(db_path, &db, Some(&s), &Wants { asked: wanted, held, up }, say)?;
+    };
     drop(db);
     let id = format!("pull-{}", crate::db::unique());
-    let job = Job { asked, read: read.revisions.clone(), after: None, took: None };
+    let request = asked_said(&asked, &d);
+    let job = Job { asked, read: vec![], after: None, took: None, reading: Some(std::process::id()) };
     Db::edit(db_path, |db| {
+        db.stack(name)?;
         if let Some(why) = not_now(db, name) {
             return err(why);
         }
-        phab::store_read(db, &read)?;
         db.add_run(Run {
             id: id.clone(),
             what: WHAT.into(),
             stack: name.into(),
             state: RunState::Started,
-            request: asked_said(&job.asked, &d),
-            pull: Some(Box::new(job.clone())),
+            request,
+            pull: Some(Box::new(job)),
             ..Default::default()
         })
         .map(|_| ())
     })?;
-    crate::ask::launch(db_path)?;
-    let db = Db::load(db_path)?;
-    db.run(&id).cloned().ok_or_else(|| Error(format!("run {id} is gone")))
+    Ok(Reading { run: id, stack: name.into(), wants: Wants { asked: wanted, held, up }, starting, new: None })
 }
 
 /// `stacked moz-phab import`, and the editor's `Pull from Phabricator…` with
 /// no stack, or under `New stack…`: the revision `text` names (`D123`,
-/// `123`, or its link) pulled from Phabricator into a new stack of the
-/// database at `db_path`, in the checkout at `at`, named `name`, else after
-/// the revision as no stack is; `say` told where it is as it reads. With the
-/// revisions it stacks on, down to the first that is not open, and those
-/// stacked on it while one is open; refused, nothing made, when a stack
-/// holds any of them already, or the work waiting for your review on a
-/// stack adds one (`held_where`), or when the bottom one is on a commit the
-/// repository does not have. The stack is made empty, on the commit the
-/// bottom one is on, and the pull lands into it for review, as a change
-/// that adds each patch: accepting it makes them. The run, made or waiting
-/// its turn.
+/// `123`, or its link) pulled from Phabricator into a new stack, as
+/// `ask_new` asks it, `say` told where it is as it reads (`read`). The run,
+/// made or waiting its turn. A read that fails lands it as failed, what
+/// went wrong said, nothing of Phabricator stored, and the stack stays,
+/// empty, as a pull into it whose review is rejected leaves it.
 pub fn import(db_path: &Path, at: &Path, text: &str, name: Option<&str>, say: &mut dyn FnMut(Pulling)) -> Result<Run> {
+    let reading = ask_new(db_path, at, text, name)?;
+    read(db_path, reading, say)
+}
+
+/// A pull from Phabricator asked of the revision `text` names (`D123`,
+/// `123`, or its link), into a new stack of the database at `db_path`, in
+/// the checkout at `at`, named `name`, else after the revision as no stack
+/// is. The stack is made at once, empty, on HEAD of the checkout, with the
+/// pull's run, reading Phabricator in this process, and queued then; what
+/// it then reads (`read`): the revision, with the revisions it stacks on,
+/// down to the first that is not open, and those stacked on it while one is
+/// open. Read, the stack is moved onto the commit the bottom one is on, and
+/// the pull lands into it for review, as a change that adds each patch:
+/// accepting it makes them. Refused, nothing made, while reviews come from
+/// nowhere, when `text` names no revision, when `name` cannot name a new
+/// stack, and when a stack holds the revision already, or the work waiting
+/// for your review on a stack adds it (`held_where`).
+pub fn ask_new(db_path: &Path, at: &Path, text: &str, name: Option<&str>) -> Result<Reading> {
     if crate::config::get().reviews.source == crate::config::Source::None {
         return Err(nowhere("revisions"));
     }
@@ -649,12 +795,124 @@ pub fn import(db_path: &Path, at: &Path, text: &str, name: Option<&str>, say: &m
     if let Some(why) = held_elsewhere(&db, &rev, &link) {
         return err(why);
     }
-    let Ok(repo) = crate::git::toplevel(at) else {
+    let (Ok(repo), Ok(head)) = (crate::git::toplevel(at), crate::git::rev_parse(at, "HEAD")) else {
         return err("not in a git repository: a stack is pulled into the checkout stacked runs in");
     };
-    say(Pulling::Alone(rev.clone()));
-    let read = read_with(db_path, &db, None, &Wants { asked: vec![(rev.clone(), link.clone())], held: vec![], up: Some(link) }, say)?;
-    if let Some(why) = read.revisions.iter().find_map(|r| held_elsewhere(&db, &r.d, &r.link)) {
+    drop(db);
+    let id = format!("pull-{}", crate::db::unique());
+    let asked = Asked::New(rev.clone());
+    let request = asked_said(&asked, &rev);
+    let job = Job { asked, read: vec![], after: None, took: None, reading: Some(std::process::id()) };
+    let made = Db::edit(db_path, |db| {
+        let name = match name {
+            Some(n) => n.trim().to_string(),
+            None => crate::import::free_name(db, &rev),
+        };
+        if let Some(why) = crate::import::name_wrong(db, &name) {
+            return err(why);
+        }
+        if let Some(why) = held_elsewhere(db, &rev, &link) {
+            return err(why);
+        }
+        db.new_stack(&name, &head, &repo)?;
+        db.add_run(Run {
+            id: id.clone(),
+            what: WHAT.into(),
+            stack: name.clone(),
+            state: RunState::Started,
+            request,
+            pull: Some(Box::new(job)),
+            ..Default::default()
+        })?;
+        Ok(name)
+    })?;
+    let wants = Wants { asked: vec![(rev.clone(), link.clone())], held: vec![], up: Some(link) };
+    Ok(Reading { run: id, stack: made, wants, starting: Pulling::Alone(rev.clone()), new: Some((rev, repo)) })
+}
+
+/// Whether pull run `r` reads Phabricator in this process: started, and its
+/// job naming this process as the one reading it.
+fn reads_here(r: &Run) -> bool {
+    r.state == RunState::Started && r.pull.as_ref().and_then(|j| j.reading) == Some(std::process::id())
+}
+
+/// What the pull asked as `asked` (`ask`, `ask_new`) reads of Phabricator,
+/// its first phase, `say` told where it is as it reads, with no lock held
+/// (`phab::read_pull`). Read, under the lock: what it read stored, as a
+/// fetch stores it, a new stack moved onto the commit its bottom revision
+/// is on, and the pull no longer reading; then it waits its turn, which may
+/// have come (`ask::launch`). The run, made, waiting its turn or being
+/// made. A read that fails, or what it read refused (more than one open
+/// parent; for a new stack, a revision Phabricator does not have, one a
+/// stack holds, a commit this repository lacks), lands the run as failed,
+/// why its summary, nothing of Phabricator stored: what went wrong, said,
+/// Phabricator turning this machine away said plainly. Cut short meanwhile
+/// (`orphans`), nothing is stored either, and that is said.
+pub fn read(db_path: &Path, asked: Reading, say: &mut dyn FnMut(Pulling)) -> Result<Run> {
+    // Ended otherwise than by what came of it, a panic say: cut short at
+    // once, not left reading while this process lives.
+    let mut ending = ReadEnding { db_path, id: &asked.run, armed: true };
+    held_midway(db_path, &asked.run, Midway::Reading);
+    let stored = read_and_store(db_path, &asked, say);
+    ending.armed = false;
+    match stored {
+        Ok(true) => {
+            crate::ask::launch(db_path)?;
+            Db::load(db_path)?.run(&asked.run).cloned().ok_or_else(|| Error(format!("run {} is gone", asked.run)))
+        }
+        Ok(false) => landed_otherwise(db_path, &asked.run),
+        Err(why) => match read_failed(db_path, &asked.run, &why.0)? {
+            true => Err(why),
+            false => landed_otherwise(db_path, &asked.run),
+        },
+    }
+}
+
+/// As `read`, up to what it read stored: whether it was, not when its run
+/// no longer reads in this process (cut short meanwhile). What went wrong,
+/// the read or what it read refused, nothing stored, its run left reading.
+fn read_and_store(db_path: &Path, asked: &Reading, say: &mut dyn FnMut(Pulling)) -> Result<bool> {
+    let db = Db::load(db_path)?;
+    if !db.run(&asked.run).is_some_and(reads_here) {
+        return Ok(false);
+    }
+    say(asked.starting.clone());
+    // A stack's: what of it each revision is, from the stack as it is now.
+    let s = match &asked.new {
+        Some(_) => None,
+        None => Some(db.stack(&asked.stack)?.clone()),
+    };
+    let read = read_with(db_path, &db, s.as_ref(), &asked.wants, say)?;
+    // A new stack's: the commit it goes on.
+    let on = match &asked.new {
+        Some((rev, repo)) => Some(new_base(&db, &read, rev, repo)?),
+        None => None,
+    };
+    drop(db);
+    Db::edit(db_path, |db| {
+        let Some(r) = db.run(&asked.run).cloned().filter(reads_here) else { return Ok(false) };
+        if let Some((base, d)) = &on {
+            if let Some(why) = read.revisions.iter().find_map(|x| held_elsewhere(db, &x.d, &x.link)) {
+                return err(why);
+            }
+            let s = db.stack(&asked.stack)?.clone();
+            let op = format!("pull from Phabricator: base {} ({d})", &base[..12.min(base.len())]);
+            db.set_stack_on(&asked.stack, s.patches, Some(base.clone()), s.repo, &op)?;
+        }
+        phab::store_read(db, &read)?;
+        let pull = r.pull.as_deref().cloned().map(|j| Box::new(Job { read: read.revisions.clone(), reading: None, ..j }));
+        db.add_run(Run { pull, ..r })?;
+        Ok(true)
+    })
+}
+
+/// The commit a new stack pulled from revision `rev` goes on, as `read`
+/// read it, in the repository `repo`, and its bottom revision's `D123`: the
+/// commit the latest diff of that revision is on, which the repository must
+/// have. Refused, said, when a stack holds a revision read, or the work
+/// waiting for your review on a stack adds it, or Phabricator has no `rev`.
+fn new_base(db: &Db, read: &PullRead, rev: &str, repo: &str) -> Result<(String, String)> {
+    if let Some(why) = read.revisions.iter().find_map(|r| held_elsewhere(db, &r.d, &r.link)) {
         return err(why);
     }
     let Some(asked) = read.revisions.first() else {
@@ -665,39 +923,78 @@ pub fn import(db_path: &Path, at: &Path, text: &str, name: Option<&str>, say: &m
     let Some(base) = bottom.base.clone() else {
         return err(format!("{} does not say what commit it is on", bottom.d));
     };
-    let Ok(base) = crate::git::rev_parse(at, &base) else {
+    let Ok(on) = crate::git::rev_parse(Path::new(repo), &base) else {
         return err(format!("{} is on {}, which this repository does not have: fetch it first", bottom.d, &base[..12.min(base.len())]));
     };
-    drop(db);
-    let id = format!("pull-{}", crate::db::unique());
-    let job = Job { asked: Asked::New(rev.clone()), read: read.revisions.clone(), after: None, took: None };
+    Ok((on, bottom.d.clone()))
+}
+
+/// Pull `id`, reading Phabricator in this process, failed, `why` its
+/// summary: filed, nothing of what it read stored. Whether it was: not one
+/// that no longer reads here, landed otherwise meanwhile (cut short).
+fn read_failed(db_path: &Path, id: &str, why: &str) -> Result<bool> {
     Db::edit(db_path, |db| {
-        let name = match name {
-            Some(n) => n.trim().to_string(),
-            None => crate::import::free_name(db, &rev),
-        };
-        if let Some(why) = crate::import::name_wrong(db, &name) {
-            return err(why);
+        let Some(r) = db.run(id).cloned().filter(reads_here) else { return Ok(false) };
+        let pull = r.pull.as_deref().cloned().map(|j| Box::new(Job { reading: None, ..j }));
+        db.add_run(Run { state: RunState::Failed, summary: why.into(), pull, ..r })?;
+        Ok(true)
+    })
+}
+
+/// Pull `id`, which no longer reads Phabricator in this process, as it was
+/// landed otherwise as it read: failed, its summary the error; else as it
+/// is.
+fn landed_otherwise(db_path: &Path, id: &str) -> Result<Run> {
+    let r = Db::load(db_path)?.run(id).cloned().ok_or_else(|| Error(format!("run {id} is gone")))?;
+    match r.state {
+        RunState::Failed => Err(Error(r.summary)),
+        _ => Ok(r),
+    }
+}
+
+/// A pull reading Phabricator in this process (`read`): its read ended
+/// otherwise than by what came of it filed, a panic say, its run lands as
+/// cut short at once, so that it is never left reading while this process
+/// lives.
+struct ReadEnding<'a> {
+    db_path: &'a Path,
+    id: &'a str,
+    armed: bool,
+}
+
+impl Drop for ReadEnding<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = read_failed(self.db_path, self.id, CUT_SHORT);
         }
-        if let Some(why) = job.read.iter().find_map(|r| held_elsewhere(db, &r.d, &r.link)) {
-            return err(why);
-        }
-        db.new_stack(&name, &base, &repo)?;
-        phab::store_read(db, &read)?;
-        db.add_run(Run {
-            id: id.clone(),
-            what: WHAT.into(),
-            stack: name.clone(),
-            state: RunState::Started,
-            request: asked_said(&job.asked, &rev),
-            pull: Some(Box::new(job.clone())),
-            ..Default::default()
+    }
+}
+
+/// The pulls whose read of Phabricator was cut short, the process reading
+/// it gone as it read, landed as failed, `CUT_SHORT` their summary, nothing
+/// of Phabricator stored: how many. From `ask::land_orphans`, under the
+/// launch lock, `db` read under it; each landed under the database's lock,
+/// seen there to be read still by the same process.
+pub fn orphans(db_path: &Path, db: &Db) -> usize {
+    let gone: Vec<(String, u32)> = db
+        .live_runs()
+        .into_iter()
+        .filter(|r| is(r) && r.state == RunState::Started)
+        .filter_map(|r| Some((r.id.clone(), r.pull.as_ref()?.reading?)))
+        .filter(|(_, pid)| !crate::ask::alive(*pid))
+        .collect();
+    gone.iter()
+        .filter(|(id, pid)| {
+            Db::edit(db_path, |db| {
+                let read_by = |r: &Run| r.state == RunState::Started && r.pull.as_ref().and_then(|j| j.reading) == Some(*pid);
+                let Some(r) = db.run(id).cloned().filter(read_by) else { return Ok(false) };
+                let pull = r.pull.as_deref().cloned().map(|j| Box::new(Job { reading: None, ..j }));
+                db.add_run(Run { state: RunState::Failed, summary: CUT_SHORT.into(), pull, ..r })?;
+                Ok(true)
+            })
+            .unwrap_or(false)
         })
-        .map(|_| ())
-    })?;
-    crate::ask::launch(db_path)?;
-    let db = Db::load(db_path)?;
-    db.run(&id).cloned().ok_or_else(|| Error(format!("run {id} is gone")))
+        .count()
 }
 
 /// The Phabricator a bare `D123` is on, `https://phabricator.example.com`,
@@ -763,7 +1060,9 @@ fn read_with(db_path: &Path, db: &Db, s: Option<&Stack>, wants: &Wants, say: &mu
 /// (`operations::Ops::needs`), are worked out on a copy of the database,
 /// with no lock held, as their checks read the repository and may take
 /// long on a big one. Meanwhile, as from when it was asked, the stack is
-/// not edited by hand (`ask::changing`). Then, under the lock, it is filed
+/// not edited by hand (`ask::changing`). One that still reads Phabricator
+/// is not made: its turn comes once it has read it. Then, under the lock,
+/// it is filed
 /// on the very stack it was planned on (`filed_on`): its patches, the
 /// comments of each revision held, anchored on the patches as the pull
 /// leaves them, and what each operation needs (`held::needs_filed`); it
@@ -778,7 +1077,7 @@ fn read_with(db_path: &Path, db: &Db, s: Option<&Stack>, wants: &Wants, say: &mu
 pub(crate) fn make(db_path: &Path, id: &str, after: Option<String>) -> Result<bool> {
     let mut dry = Db::load(db_path)?;
     let Some(r) = dry.run(id).cloned().filter(|r| r.state == RunState::Started) else { return Ok(true) };
-    let Some(job) = r.pull.as_deref().cloned() else { return Ok(true) };
+    let Some(job) = r.pull.as_deref().cloned().filter(|j| j.reading.is_none()) else { return Ok(true) };
     let Some((rev, now_s)) = dry.head(&r.stack).map(|(rev, s)| (rev, s.clone())) else {
         return failed(db_path, id, format!("the stack {} is gone: nothing was pulled", r.stack));
     };
@@ -795,7 +1094,7 @@ pub(crate) fn make(db_path: &Path, id: &str, after: Option<String>) -> Result<bo
     let needs = (planned.patches != from.patches).then(|| crate::operations::of(&dry, &from, &next).needs(&dry));
     let patches: Vec<Patch> = planned.patches.iter().map(|p| dry.patch(p).clone()).collect();
     drop(dry);
-    held_making(db_path, id);
+    held_midway(db_path, id, Midway::Making);
     Db::edit(db_path, |db| {
         let Some(r) = db.run(id).cloned().filter(|r| r.state == RunState::Started) else { return Ok(true) };
         // Made from what is no longer the stack it would go on from: made
@@ -833,9 +1132,18 @@ fn filed_on(db: &Db, name: &str, from: &Stack, rev: usize, after: Option<&str>) 
     }
 }
 
+/// For the tests: where the pulls of a database are held midway, as they
+/// read Phabricator (`hold_reading`) or in the middle of their making
+/// (`hold_making`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Midway {
+    Reading,
+    Making,
+}
+
 /// For the tests, which share their process: the folder each database's
-/// pulls are held in, in the middle of their making (`hold_making`).
-static HOLDS: std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf)>> = std::sync::Mutex::new(Vec::new());
+/// pulls are held in, and where.
+static HOLDS: std::sync::Mutex<Vec<(std::path::PathBuf, Midway, std::path::PathBuf)>> = std::sync::Mutex::new(Vec::new());
 
 /// For the tests: from now on, each pull of the database at `db` held in
 /// the middle of its making, in the folder `at`, as a start of an ask is
@@ -843,23 +1151,42 @@ static HOLDS: std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf)>> = 
 /// each operation needs worked out, not filed yet, the launch lock held, it
 /// says so there, a line added to `made-RUN` each time it is made, then
 /// waits until `go` is there too, a few minutes at most. With none, no pull
-/// of it is held any more.
+/// of it is held there any more.
 pub fn hold_making(db: &Path, at: Option<std::path::PathBuf>) {
+    hold_midway(db, Midway::Making, at);
+}
+
+/// For the tests: from now on, each pull of the database at `db` held as
+/// it reads Phabricator, in the folder `at`: its run written, reading,
+/// nothing of Phabricator read yet, no lock held, it says so there, a line
+/// added to `read-RUN`, then waits until `go` is there too, a few minutes
+/// at most. With none, no pull of it is held there any more.
+pub fn hold_reading(db: &Path, at: Option<std::path::PathBuf>) {
+    hold_midway(db, Midway::Reading, at);
+}
+
+/// The pulls of the database at `db` held midway as `how` says, in the
+/// folder `at`, from now on; with none, no more.
+fn hold_midway(db: &Path, how: Midway, at: Option<std::path::PathBuf>) {
     let mut all = HOLDS.lock().unwrap_or_else(|e| e.into_inner());
-    all.retain(|(d, _)| d != db);
+    all.retain(|(d, h, _)| !(d == db && *h == how));
     if let Some(at) = at {
-        all.push((db.to_path_buf(), at));
+        all.push((db.to_path_buf(), how, at));
     }
 }
 
-/// Pull `id` of the database at `db_path`, in the middle of its making,
-/// held while the tests say (`hold_making`).
-fn held_making(db_path: &Path, id: &str) {
-    let at = HOLDS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(d, _)| d == db_path).map(|(_, at)| at.clone());
+/// Pull `id` of the database at `db_path`, midway as `how` says, held
+/// while the tests say (`hold_reading`, `hold_making`).
+fn held_midway(db_path: &Path, id: &str, how: Midway) {
+    let at = HOLDS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(d, h, _)| d == db_path && *h == how).map(|(_, _, at)| at.clone());
     let Some(at) = at else { return };
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(at.join(format!("made-{id}"))) {
+    let said = match how {
+        Midway::Reading => "read",
+        Midway::Making => "made",
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(at.join(format!("{said}-{id}"))) {
         use std::io::Write;
-        let _ = writeln!(f, "made");
+        let _ = writeln!(f, "{said}");
     }
     crate::ask::until_go(&at);
 }
@@ -1363,11 +1690,15 @@ pub(crate) fn dropped(db: &mut Db, id: &str, why: &str) -> Result<usize> {
 /// What a pull you dropped before its turn came to: nothing held.
 pub const DROPPED: &str = "you dropped the pull from Phabricator before its turn: what it read is stored, and nothing of it waits for your review";
 
+/// Why a pull that reads Phabricator is not dropped.
+pub const READING_NOT_DROPPED: &str = "the pull from Phabricator is reading Phabricator: it can be dropped once it waits its turn";
+
 /// Pull `id`, waiting its turn, dropped from the queue as if it was never
 /// asked: it ends as failed, `DROPPED` its summary, nothing changed in the
-/// stack. One made meanwhile stays as it is. The run as it is then, and
-/// whether it was dropped. What waited behind it is started by the caller
-/// (`ask::launch`).
+/// stack. One made meanwhile stays as it is; one that still reads
+/// Phabricator is refused (`READING_NOT_DROPPED`). The run as it is then,
+/// and whether it was dropped. What waited behind it is started by the
+/// caller (`ask::launch`).
 pub fn drop_waiting(db_path: &Path, id: &str) -> Result<(Run, bool)> {
     Db::edit(db_path, |db| {
         let r = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
@@ -1376,6 +1707,9 @@ pub fn drop_waiting(db_path: &Path, id: &str) -> Result<(Run, bool)> {
         }
         if r.state != RunState::Started {
             return Ok((r, false));
+        }
+        if r.pull.as_ref().is_some_and(|j| j.reading.is_some()) {
+            return err(READING_NOT_DROPPED);
         }
         let r = Run {
             state: RunState::Failed,
@@ -1483,6 +1817,14 @@ mod tests {
         assert_eq!(reading.said(), "pulling from Phabricator: D12, revision 2 of 3");
         // From one patch's revision, or a new stack's: it, named.
         assert_eq!(Pulling::Alone("D12".into()).said(), "pulling from Phabricator: D12");
+        // What it reads, on its line of the banner: nothing yet, as it
+        // finds the revisions to read.
+        assert_eq!((Pulling::Starting.reads(), reading.reads().as_deref()), (None, Some("D12, revision 2 of 3")));
+        assert_eq!(Pulling::Alone("D12".into()).reads().as_deref(), Some("D12"));
+        // Each phase, as what changes the stack says it, and as its line.
+        let phases = [Phase::Reading, Phase::Waiting, Phase::Making];
+        assert_eq!(phases.map(Phase::said), ["is reading Phabricator", "waits its turn", "is being made"]);
+        assert_eq!(phases.map(Phase::at), ["reading Phabricator", "waiting its turn", "being made"]);
     }
 
     #[test]

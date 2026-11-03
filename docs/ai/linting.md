@@ -51,8 +51,9 @@ The item names the command in use; with none, it reads `Lint the stack`,
 grayed, and the menu says why: `No linter is set for this checkout:
 `stacked setup lint COMMAND` sets one.` It is grayed too, the menu saying
 why, where lint is turned off, while the stack may not be edited by hand
-(the agent changing it, a pull from Phabricator waiting its turn or being
-made, a change of it waiting for your review), on a read-only stack, and
+(the agent changing it, a pull from Phabricator reading Phabricator,
+waiting its turn or being made, a change of it waiting for your review),
+on a read-only stack, and
 while a lint job of the stack waits or runs. So it is
 in the browser and in StackED, as in the terminal.
 

@@ -607,31 +607,54 @@ pub fn reads(way: Way) -> bool {
 
 /// What a comment sent on stack `name` in `way` would wait on, if anything.
 pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
-    waits_for(db, name, way, true, true)
+    waits_for(db, name, way, None)
 }
 
 /// What the reconcile with HEAD of stack `name`, waiting its turn, waits
-/// for, if anything: what a change asked now would wait for, but for that
-/// reconcile.
+/// for, if anything: what goes before it in the queue, as `claim` takes
+/// it, not what was asked after it. None when none waits.
 pub fn reconcile_waits_on(db: &Db, name: &str) -> Option<String> {
-    waits_for(db, name, Way::Change, false, true)
+    let r = crate::reconcile::pending(db, name).filter(|r| r.state == RunState::Started)?;
+    waits_for(db, name, Way::Change, Some(&r.id))
 }
 
-/// What the pull from Phabricator of stack `name`, waiting its turn, waits
-/// for, if anything: what a change asked now would wait for, but for that
-/// pull.
+/// What the pull from Phabricator of stack `name`, under way, waits for, if
+/// anything: what goes before it in the queue, as `claim` takes it, not
+/// what was asked after it, which waits for it. Nothing: its turn has come,
+/// and it is being made, unless it still reads Phabricator. None when no
+/// pull of it is under way.
+#[cfg(feature = "moz-phab")]
 pub fn pull_waits_on(db: &Db, name: &str) -> Option<String> {
-    waits_for(db, name, Way::Change, true, false)
+    let r = crate::review::pending(db, name)?;
+    waits_for(db, name, Way::Change, Some(&r.id))
 }
 
-/// What `waits_on` says, a reconcile with HEAD under way counted if
-/// `reconciles`, a pull from Phabricator waiting its turn if `pulls`.
-fn waits_for(db: &Db, name: &str, way: Way, reconciles: bool, pulls: bool) -> Option<String> {
+/// The key of run `id`'s turn in the queue, a lint job's, a reconcile
+/// with HEAD's or a pull from Phabricator's: `b` and when it was asked, as
+/// a batch's key is, so that `claim` takes the turns in the order they
+/// were asked.
+fn turn_key(id: &str) -> String {
+    format!("b{}", id.trim_start_matches("pull-"))
+}
+
+/// What `waits_on` says: for what is asked now, with `mine` none; for
+/// `mine`, the run of a lint job, a reconcile with HEAD or a pull waiting
+/// in the queue already, what goes before it there, as `claim` takes it:
+/// what was asked after it waits for it, and does not hold it back, unless
+/// it is under way already (a lint job running, a reconcile made and
+/// waiting for your review).
+fn waits_for(db: &Db, name: &str, way: Way, mine: Option<&str>) -> Option<String> {
     let going = asks_going(db, name);
     let chain = chains(&agent_of(db, name));
+    // Asked before `mine`: in the queue ahead of it; anything but it, for
+    // what is asked now.
+    let ahead = |id: &str| mine.is_none_or(|m| id != m && turn_key(id) < turn_key(m));
     // A lint job takes its turn as a change does: a change waits for it, a
     // build and test for one that runs, and, unchained, an answer.
-    if let Some(j) = crate::lint::pending(db, name).and_then(|r| r.lint.as_deref())
+    if let Some(r) = crate::lint::pending(db, name)
+        && let Some(j) = r.lint.as_deref()
+        && mine != Some(r.id.as_str())
+        && (j.step == crate::lint::Step::Running || ahead(&r.id))
         && (way == Way::Change || (way == Way::Test && j.step == crate::lint::Step::Running) || (!chain && reads(way)))
     {
         return Some("once the linter's work on the stack lands".into());
@@ -639,22 +662,24 @@ fn waits_for(db: &Db, name: &str, way: Way, reconciles: bool, pulls: bool) -> Op
     // A reconcile with HEAD, as a change: a change waits until it is
     // reviewed; an answer goes at once.
     if way == Way::Change
-        && reconciles
         && let Some(r) = crate::reconcile::pending(db, name)
+        && mine != Some(r.id.as_str())
+        && (r.state != RunState::Started || ahead(&r.id))
     {
         return Some(match r.state {
             RunState::Started => "once the reconcile with HEAD before it is made and you have reviewed it".into(),
             _ => "once you have reviewed the reconcile with HEAD".into(),
         });
     }
-    // A pull from Phabricator waiting its turn, as a change: a change goes
-    // once it is made, from the stack it makes.
+    // A pull from Phabricator under way, as a change: a change goes once it
+    // is made, from the stack it makes.
     #[cfg(feature = "moz-phab")]
-    if way == Way::Change && pulls && crate::review::pending(db, name).is_some() {
+    if way == Way::Change
+        && let Some(r) = crate::review::pending(db, name)
+        && ahead(&r.id)
+    {
         return Some("once the pull from Phabricator before it is made".into());
     }
-    #[cfg(not(feature = "moz-phab"))]
-    let _ = pulls;
     // Chained, an answer runs alongside a change, on the stack as it is.
     let change = going.iter().find(|(_, i)| i.way == Way::Change).filter(|_| !(chain && reads(way)));
     if let Some((_, i)) = change {
@@ -1008,8 +1033,9 @@ struct Going {
     /// A reconcile with HEAD waits its turn ahead, or for your review: the
     /// changes after it go once it is accepted or rejected.
     reconciling: bool,
-    /// A pull from Phabricator waits its turn ahead, or is to be made once
-    /// the lock is given back: the changes after it go once it is made.
+    /// A pull from Phabricator is ahead, reading Phabricator, waiting its
+    /// turn, or to be made once the lock is given back: the changes after it
+    /// go once it is made.
     pulling: bool,
 }
 
@@ -1069,8 +1095,9 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
 /// the agent, at a place (`patch 2`, `the stack`); or, soon, a round sent
 /// back to it; or a lint job, where it is said (`lints patch 2 of 5`,
 /// `waits its turn to lint the stack`); or a pull from Phabricator, where it
-/// is said (`waits its turn`, `is being made`), with what it was asked
-/// (`the stack's revisions, with their parents and those stacked on top`).
+/// is said (`is reading Phabricator`, `waits its turn`, `is being made`),
+/// with what it was asked (`the stack's revisions, with their parents and
+/// those stacked on top`).
 enum Changer {
     Agent(String),
     Round,
@@ -1081,8 +1108,9 @@ enum Changer {
 
 /// What changes stack `name` now, if anything does: the agent changing it
 /// from the stack as it took it, a round sent back about to, a lint job
-/// waiting its turn or running, or a pull from Phabricator waiting its turn
-/// or being made, as an edit is (`review::make`).
+/// waiting its turn or running, or a pull from Phabricator from when it is
+/// asked to when it is filed, reading Phabricator, waiting its turn or
+/// being made, as an edit is (`review::make`).
 fn changer(db: &Db, name: &str) -> Option<Changer> {
     if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change) {
         return Some(Changer::Agent(match &i.scope {
@@ -1096,14 +1124,12 @@ fn changer(db: &Db, name: &str) -> Option<Changer> {
     if round_waiting(db, name) {
         return Some(Changer::Round);
     }
-    // A pull waits its turn while what goes before it holds it back, as its
-    // banner line's menu says; else its turn has come, and it is made.
+    // A pull reads Phabricator first; then it waits its turn while what goes
+    // before it holds it back, as its banner line's menu says; else its
+    // turn has come, and it is made.
     #[cfg(feature = "moz-phab")]
     if let Some(r) = crate::review::pending(db, name) {
-        let said = match pull_waits_on(db, name) {
-            Some(_) => "waits its turn",
-            None => "is being made",
-        };
+        let said = crate::review::phase(db, r).map_or("waits its turn", crate::review::Phase::said);
         return Some(Changer::Pull(said, r.request.clone()));
     }
     None
@@ -1112,9 +1138,9 @@ fn changer(db: &Db, name: &str) -> Option<Changer> {
 /// What changes stack `name` from the stack as it was, its work still to
 /// land, said, if anything does: `the agent is changing patch 2`, work you
 /// sent back waiting to go back to the agent, `the linter lints patch 2 of
-/// 5`, `a pull from Phabricator is being made`. Nothing else may change the
-/// stack until that work lands, or its change would be made from a stack
-/// that is no longer.
+/// 5`, `a pull from Phabricator is reading Phabricator`, `… waits its
+/// turn`, `… is being made`. Nothing else may change the stack until that
+/// work lands, or its change would be made from a stack that is no longer.
 pub fn changing(db: &Db, name: &str) -> Option<String> {
     Some(match changer(db, name)? {
         Changer::Agent(on) => format!("the agent is changing {on}"),
@@ -1763,13 +1789,14 @@ pub fn launch(db_path: &Path) -> Result<Vec<String>> {
 
 /// What `claim` goes through, in their turn: a batch of comments, by its
 /// key; a lint job, a reconcile with HEAD or a pull from Phabricator
-/// waiting, by its run, and its stack.
+/// waiting, by its run, and its stack; a pull with whether it still reads
+/// Phabricator.
 enum Turn {
     Batch(String),
     Lint(String, String),
     Reconcile(String, String),
     #[cfg_attr(not(feature = "moz-phab"), allow(dead_code))]
-    Pull(String, String),
+    Pull(String, String, bool),
 }
 
 /// What `claim` comes to: the asks begun, the lint jobs running, and the
@@ -1836,13 +1863,12 @@ fn claim(db: &mut Db) -> Result<Claimed> {
     turns.extend(crate::lint::waiting(db).into_iter().map(|(id, name)| Turn::Lint(id, name)));
     turns.extend(crate::reconcile::waiting(db).into_iter().map(|(id, name)| Turn::Reconcile(id, name)));
     #[cfg(feature = "moz-phab")]
-    turns.extend(crate::review::waiting(db).into_iter().map(|(id, name)| Turn::Pull(id, name)));
+    turns.extend(crate::review::waiting(db).into_iter().map(|(id, name, reading)| Turn::Pull(id, name, reading)));
     // A batch's key is `b` and when it was made; a lint job's id, a
     // reconcile's, and a pull's after `pull-`, when it was asked.
     let key = |t: &Turn| match t {
         Turn::Batch(b) => (batches[b].4.is_none(), b.clone()),
-        Turn::Lint(id, _) | Turn::Reconcile(id, _) => (true, format!("b{id}")),
-        Turn::Pull(id, _) => (true, format!("b{}", id.trim_start_matches("pull-"))),
+        Turn::Lint(id, _) | Turn::Reconcile(id, _) | Turn::Pull(id, ..) => (true, turn_key(id)),
     };
     turns.sort_by_key(key);
     let mut started = Vec::new();
@@ -1908,14 +1934,16 @@ fn claim(db: &mut Db) -> Result<Claimed> {
             }
             // A pull from Phabricator, as a change: its turn come, made once
             // the lock is given back (`review::make`), chained on the change
-            // under review, if any. What goes after it waits until it is
-            // made, as behind a pull waiting its turn; then its change, if
-            // it makes one, waits for your review, and the changes behind it
-            // go on from it, chained, as from any change.
+            // under review, if any; not while it still reads Phabricator,
+            // its first phase, though it holds its place in the queue from
+            // when it is asked. What goes after it waits until it is made,
+            // as behind a pull waiting its turn; then its change, if it
+            // makes one, waits for your review, and the changes behind it go
+            // on from it, chained, as from any change.
             #[cfg(feature = "moz-phab")]
-            Turn::Pull(id, name) => {
+            Turn::Pull(id, name, reading) => {
                 let st = state.entry(name.clone()).or_insert_with(|| going_of(db, name));
-                if !st.change && !st.lint && !st.reconciling && !st.pulling && (st.chain || (!st.reviewing && st.answers == 0)) {
+                if !reading && !st.change && !st.lint && !st.reconciling && !st.pulling && (st.chain || (!st.reviewing && st.answers == 0)) {
                     let after = if st.chain { st.tail.clone() } else { None };
                     pulls.push((id.clone(), after));
                 }
@@ -4407,12 +4435,14 @@ pub fn fits(db_path: &Path, id: &str) -> Result<String> {
 }
 
 /// Lands every ask whose claude is gone without its wrapper landing it (it
-/// was killed), or that never started; how many. The wrappers this process
-/// started that have exited are waited for first (`reap`). Under the launch
-/// lock, the database read again under it: no ask is being started
-/// meanwhile, so one whose agent's pid is not written yet was left so by a
-/// starter that is gone, not by one about to write it. `db`, read before,
-/// only says whether anything is going, to look at.
+/// was killed), or that never started; how many. So too a try push, a lint
+/// job and a pull from Phabricator whose process is gone, the pull's read
+/// cut short (`review::orphans`). The wrappers this process started that
+/// have exited are waited for first (`reap`). Under the launch lock, the
+/// database read again under it: no ask is being started meanwhile, so one
+/// whose agent's pid is not written yet was left so by a starter that is
+/// gone, not by one about to write it. `db`, read before, only says whether
+/// anything is going, to look at.
 pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
     reap();
     if !db.live_runs().iter().any(|r| r.state == RunState::Started) {
@@ -4432,7 +4462,7 @@ pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
         })
         .map(|r| r.id.clone())
         .collect();
-    stale.iter().filter(|id| land(db_path, id, Some("killed")).is_ok()).count() + pushes_orphaned(db_path, db) + crate::lint::orphans(db_path, db)
+    stale.iter().filter(|id| land(db_path, id, Some("killed")).is_ok()).count() + pushes_orphaned(db_path, db) + crate::lint::orphans(db_path, db) + pulls_orphaned(db_path, db)
 }
 
 /// The try pushes whose process is gone before mach said it pushed, ended
@@ -4441,6 +4471,19 @@ fn pushes_orphaned(db_path: &Path, db: &Db) -> usize {
     #[cfg(feature = "try-push")]
     return crate::try_push::orphans(db_path, db);
     #[cfg(not(feature = "try-push"))]
+    {
+        let _ = (db_path, db);
+        0
+    }
+}
+
+/// The pulls from Phabricator whose read was cut short, the process
+/// reading it gone, landed as failed: how many. None, built without the
+/// `moz-phab` feature.
+fn pulls_orphaned(db_path: &Path, db: &Db) -> usize {
+    #[cfg(feature = "moz-phab")]
+    return crate::review::orphans(db_path, db);
+    #[cfg(not(feature = "moz-phab"))]
     {
         let _ = (db_path, db);
         0

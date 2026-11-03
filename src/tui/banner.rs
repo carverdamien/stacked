@@ -1,16 +1,17 @@
 //! The banner, under the top bar of the main screen: what waits on you on
 //! the stack. What landed and waits for your review (an ask's work, a
-//! pull's comments from Phabricator), a pull from Phabricator under way and
-//! where it is, the batch (the comments asked about later, to send
-//! together), and every comment open, with what the agent works on and what
-//! waits its turn: said in one line; while the cursor is on it, open, a
-//! line for each, in sections under their titles: what landed and changes
-//! nothing (read only), the pull under way last; then what changes the
-//! stack (edits), each the one you review now first, then those going on
-//! from an edit under review; then the batch and the comments, the most
-//! recently updated first. Enter reviews what landed, sends the batch, goes
-//! to a comment, or, on the pull under way, says what it brings. Esc goes
-//! to it from the panes, and from it back where the cursor was.
+//! pull's comments from Phabricator), the stack's pull from Phabricator
+//! under way and where it is, the batch (the comments asked about later, to
+//! send together), and every comment open, with what the agent works on
+//! and what waits its turn: said in one line; while the cursor is on it,
+//! open, a line for each, in sections under their titles: what landed and
+//! changes nothing (read only); then what changes the stack (edits), each
+//! the one you review now first, then those going on from an edit under
+//! review, then the reconcile with HEAD and the pull from Phabricator under
+//! way; then the batch and the comments, the most recently updated first.
+//! Enter reviews what landed, sends the batch, goes to a comment, or, on
+//! the pull under way, says where it is. Esc goes to it from the panes, and
+//! from it back where the cursor was.
 //!
 //! What waits its turn in the agent's queue is taken out of it from here,
 //! as from its own menus, each asked first: a comment's ask, the comment
@@ -49,10 +50,6 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
     }
     out
 }
-
-/// What a pull under way brings, said on its banner line.
-#[cfg(feature = "moz-phab")]
-pub(super) const PULL_BRINGS: &str = "what is new from Phabricator will wait here for your review once the pull is done";
 
 /// The kind of ask a comment waiting its turn is queued as, as taking it
 /// out of the queue names it: `edit ask`, `answer-only ask`.
@@ -106,10 +103,6 @@ fn and(parts: &[String]) -> String {
 pub enum BannerLine {
     /// Landed, and waiting for your review: its run.
     Landed(String),
-    /// A pull from Phabricator under way: what it brings is read only, to
-    /// review.
-    #[cfg(feature = "moz-phab")]
-    Pulling,
     /// A try push under way, followed: its run.
     #[cfg(feature = "try-push")]
     Push(String),
@@ -117,9 +110,11 @@ pub enum BannerLine {
     Lint(String),
     /// The stack's reconcile with HEAD, waiting its turn: its run.
     Reconcile(String),
-    /// The stack's pull from Phabricator, waiting its turn: its run.
+    /// The stack's pull from Phabricator, from when it is asked to when it
+    /// is filed, reading Phabricator, waiting its turn or being made: its
+    /// run.
     #[cfg(feature = "moz-phab")]
-    PullWaits(String),
+    Pull(String),
     /// The batch: the comments asked about later, to send.
     Batch,
     /// A comment open on the stack: (change, id).
@@ -127,18 +122,19 @@ pub enum BannerLine {
 }
 
 impl App {
-    /// The pull from Phabricator under way on the stack shown, if one is:
-    /// where it is.
+    /// Where the read of Phabricator of pull `run` is, if this editor reads
+    /// it.
     #[cfg(feature = "moz-phab")]
-    pub(super) fn pulling(&self) -> Option<&crate::review::Pulling> {
-        self.bg.pull.as_ref().filter(|(name, _)| *name == self.stack).map(|(_, p)| p)
+    pub(super) fn pulling(&self, run: &str) -> Option<&crate::review::Pulling> {
+        self.bg.pull.as_ref().filter(|(id, _)| *id == run).map(|(_, p)| p)
     }
 
     /// What the banner lists, section by section: what landed and changes
-    /// nothing, then the pull under way; what changes the stack, each the
-    /// first landed first, the one you review now before those going on
-    /// from an edit under review; the batch, if there is one; then every
-    /// comment open on the stack, the most recently updated first.
+    /// nothing; what changes the stack, each the first landed first, the
+    /// one you review now before those going on from an edit under review,
+    /// then the reconcile with HEAD and the pull from Phabricator under way;
+    /// the batch, if there is one; then every comment open on the stack, the
+    /// most recently updated first.
     pub fn banner_lines(&self) -> Vec<BannerLine> {
         let landed = self.queue();
         let mut out: Vec<BannerLine> = Vec::new();
@@ -152,16 +148,12 @@ impl App {
                         .map(|id| BannerLine::Landed(id.clone())),
                 );
             }
-            #[cfg(feature = "moz-phab")]
-            if !edits && self.pulling().is_some() {
-                out.push(BannerLine::Pulling);
-            }
         }
         // The stack's reconcile with HEAD waiting its turn, among the edits;
-        // and its pull from Phabricator.
+        // and its pull from Phabricator, from when it is asked.
         out.extend(crate::reconcile::pending(&self.db, &self.stack).filter(|r| r.state == crate::db::RunState::Started).map(|r| BannerLine::Reconcile(r.id.clone())));
         #[cfg(feature = "moz-phab")]
-        out.extend(crate::review::pending(&self.db, &self.stack).map(|r| BannerLine::PullWaits(r.id.clone())));
+        out.extend(crate::review::pending(&self.db, &self.stack).map(|r| BannerLine::Pull(r.id.clone())));
         // The stack's lint job, waiting or running.
         out.extend(crate::lint::pending(&self.db, &self.stack).map(|r| BannerLine::Lint(r.id.clone())));
         // The try pushes of the stack under way, the first started first.
@@ -190,14 +182,12 @@ impl App {
     fn banner_section(&self, l: &BannerLine) -> usize {
         match l {
             BannerLine::Landed(id) => 1 + usize::from(self.work(id).is_some_and(|(_, h)| h.stack.is_some())),
-            #[cfg(feature = "moz-phab")]
-            BannerLine::Pulling => 1,
             #[cfg(feature = "try-push")]
             BannerLine::Push(_) => 4,
             BannerLine::Lint(_) => 5,
             BannerLine::Reconcile(_) => 2,
             #[cfg(feature = "moz-phab")]
-            BannerLine::PullWaits(_) => 2,
+            BannerLine::Pull(_) => 2,
             _ => 3,
         }
     }
@@ -379,10 +369,10 @@ impl App {
     }
 
     /// What the banner says in its line: how much landed work waits for
-    /// review, and which the next is; where a pull from Phabricator under way is; how
-    /// many asks are batched; how much the agent works on; how many
-    /// comments wait their turn; how many are open. None when there is none
-    /// of it.
+    /// review, and which the next is; where the stack's pull from
+    /// Phabricator under way is; how many asks are batched; how much the
+    /// agent works on; how many comments wait their turn; how many are open.
+    /// None when there is none of it.
     pub(super) fn banner(&self) -> Option<String> {
         let lines = self.banner_lines();
         let landed = lines.iter().filter(|l| matches!(l, BannerLine::Landed(_))).count();
@@ -431,16 +421,25 @@ impl App {
             }
             said.push(head);
         }
+        // The stack's pull: as it reads Phabricator, where its read is, if
+        // this editor reads it; waiting its turn or being made, further on.
         #[cfg(feature = "moz-phab")]
-        let pulling = match self.pulling() {
-            Some(p) => {
-                said.push(format!("{}…", p.said()));
+        let pull = self.pull_under_way();
+        #[cfg(feature = "moz-phab")]
+        let pulling = match &pull {
+            Some((run, crate::review::Phase::Reading)) => {
+                said.push(match self.pulling(run) {
+                    Some(p) => format!("{}…", p.said()),
+                    None => format!("the pull from Phabricator {}", crate::review::Phase::Reading.said()),
+                });
                 true
             }
-            None => false,
+            _ => false,
         };
+        #[cfg(feature = "moz-phab")]
+        let making = usize::from(matches!(pull, Some((_, crate::review::Phase::Making))));
         #[cfg(not(feature = "moz-phab"))]
-        let pulling = false;
+        let (pulling, making) = (false, 0);
         // The try pushes under way: where the one is, or how many.
         #[cfg(feature = "try-push")]
         let pushes = {
@@ -465,8 +464,8 @@ impl App {
             said.push("Reconcile with HEAD waits its turn".into());
         }
         #[cfg(feature = "moz-phab")]
-        if lines.iter().any(|l| matches!(l, BannerLine::PullWaits(_))) {
-            said.push("the pull from Phabricator waits its turn".into());
+        if let Some((_, p @ (crate::review::Phase::Waiting | crate::review::Phase::Making))) = &pull {
+            said.push(format!("the pull from Phabricator {}", p.said()));
         }
         if batched > 0 {
             said.push(of(batched, "batched ask", "batched asks"));
@@ -483,8 +482,9 @@ impl App {
         if said.is_empty() {
             return None;
         }
-        // As its lines mark them, and the top bar the agents going (●).
-        let going = going + pushes + linting;
+        // As its lines mark them, and the top bar the agents going (●): a
+        // pull being made among them.
+        let going = going + pushes + linting + making;
         // A lint job waiting its turn, as a comment waiting its turn is.
         let ready = ready + usize::from(lint.is_some()) - linting;
         let mark = match (landed, going, pulling, ready, batched) {
@@ -655,13 +655,6 @@ impl App {
                 Some((r, _)) => format!("   ⟳ Review {}{}", crate::held::left(&self.db, r), landed_how(r, 40)),
                 None => format!("   ⟳ Review {run}"),
             },
-            #[cfg(feature = "moz-phab")]
-            BannerLine::Pulling => {
-                let said = self.pulling().map(crate::review::Pulling::said).unwrap_or_default();
-                let mut c = said.chars();
-                let said = c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect());
-                format!("   ⇣ {said}…")
-            }
             #[cfg(feature = "try-push")]
             BannerLine::Push(run) => {
                 let of = self
@@ -689,10 +682,24 @@ impl App {
                 let of = self.db.run(run).map_or(String::new(), |r| r.request.clone());
                 format!("   ◌ Reconcile with HEAD, waiting its turn: {of}")
             }
+            // The stack's pull: where it is, and what it was asked; as it
+            // reads Phabricator, what it reads, if this editor reads it.
             #[cfg(feature = "moz-phab")]
-            BannerLine::PullWaits(run) => {
-                let of = self.db.run(run).map_or(String::new(), |r| r.request.clone());
-                format!("   ◌ The pull from Phabricator, waiting its turn: {of}")
+            BannerLine::Pull(run) => {
+                use crate::review::Phase;
+                let Some(r) = self.db.run(run) else { return String::new() };
+                let phase = self.phase_of(run);
+                let mark = match phase {
+                    Some(Phase::Reading) => "⇣",
+                    Some(Phase::Making) => "●",
+                    _ => "◌",
+                };
+                let at = match (phase, self.pulling(run).and_then(crate::review::Pulling::reads)) {
+                    (Some(Phase::Reading), Some(reads)) => format!("reading {reads}"),
+                    (Some(p), _) => p.at().to_string(),
+                    (None, _) => Phase::Waiting.at().to_string(),
+                };
+                format!("   {mark} The pull from Phabricator, {at}: {}", r.request)
             }
             BannerLine::Batch => format!("   ◇ Send the batch… {}", self.batch_said()),
             BannerLine::Comment(change, id) => {
@@ -724,8 +731,9 @@ impl App {
 
     /// A key on the banner, open: ↑↓ another line, past the last the
     /// stack's header; Enter reviews what landed, opens the menu on the
-    /// batch, goes to the comment, or, on a reconcile with HEAD waiting its
-    /// turn, opens its menu; Esc goes back where the cursor was.
+    /// batch, goes to the comment, or, on a reconcile with HEAD or a pull
+    /// waiting its turn, opens its menu, and on a pull reading Phabricator
+    /// or being made, says so; Esc goes back where the cursor was.
     pub(super) fn banner_key(&mut self, k: KeyEvent) -> Effect {
         let lines = self.banner_lines();
         let last = lines.len().saturating_sub(1);
@@ -733,8 +741,6 @@ impl App {
         match k.code {
             KeyCode::Enter => match lines.get(self.banner_sel).cloned() {
                 Some(BannerLine::Landed(run)) => self.open_review(&run, None),
-                #[cfg(feature = "moz-phab")]
-                Some(BannerLine::Pulling) => self.status = PULL_BRINGS.into(),
                 // The whole menu, on what sends the batch.
                 Some(BannerLine::Batch) => {
                     let mut m = self.main_menu();
@@ -768,13 +774,16 @@ impl App {
                     }
                 }
                 // A pull waiting its turn: its menu, what it waits for, and
-                // its drop.
+                // its drop. Reading Phabricator or being made: where it is.
                 #[cfg(feature = "moz-phab")]
-                Some(BannerLine::PullWaits(run)) => {
-                    if let Some(m) = self.pull_menu(&run) {
-                        self.mode = Mode::Menu(m);
+                Some(BannerLine::Pull(run)) => match self.pull_menu(&run) {
+                    Some(m) => self.mode = Mode::Menu(m),
+                    None => {
+                        if let Some(said) = self.pull_said(&run) {
+                            self.status = said;
+                        }
                     }
-                }
+                },
                 None => {}
             },
             KeyCode::Esc => self.on_banner = false,

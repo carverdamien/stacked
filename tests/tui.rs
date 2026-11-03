@@ -16929,39 +16929,45 @@ fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
     choose(&mut app, "Pull from Phabricator");
-    // Under way at once, before a revision is read.
+    // Under way at once, before a revision is read: its run written, its
+    // line among the edits.
     let banner = |app: &mut App| draw(app).lines().nth(1).unwrap_or("").to_string();
     assert!(banner(&mut app).starts_with(" ⇣ pulling from Phabricator…"), "{}", banner(&mut app));
-    assert_eq!(app.banner_lines(), [stacked::tui::BannerLine::Pulling]);
+    let pulls = |app: &App| app.banner_lines().into_iter().filter(|l| matches!(l, stacked::tui::BannerLine::Pull(_))).count();
+    assert!(matches!(app.banner_lines().as_slice(), [stacked::tui::BannerLine::Pull(_)]), "{:?}", app.banner_lines());
     // D11 read, D12 being read: the banner says which.
     let reading = " ⇣ pulling from Phabricator: D12, revision 2 of 2…";
     until(&mut app, |app| banner(app).starts_with(reading).then_some(()), |app| banner(app));
     assert!(banner(&mut app).starts_with(reading), "{}", banner(&mut app));
-    // Open, its line is the read only section's.
+    // Open, its line is the edits' section's, saying what it reads.
     keys(&mut app, &[KeyCode::Esc]);
     let screen = draw(&mut app);
     let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
-    assert_eq!(rows[2..4], [" read only, to review", "   ⇣ Pulling from Phabricator: D12, revision 2 of 2…"], "{screen}");
-    assert_eq!(app.hint(), "↑↓ choose · enter: say what the pull brings · space: pick one · esc: back where you were · ?: what can I do here");
+    assert_eq!(rows[2], " edits, to review", "{screen}");
+    assert!(rows[3].starts_with("   ⇣ The pull from Phabricator, reading D12, revision 2 of 2: the stack's revisions"), "{screen}");
+    assert_eq!(app.hint(), "↑↓ choose · enter: say where the pull is · space: pick one · esc: back where you were · ?: what can I do here");
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(app.status, "what is new from Phabricator will wait here for your review once the pull is done");
+    assert_eq!(app.status, "The pull from Phabricator is reading Phabricator: then it waits its turn, and what it brings waits for your review once it is made");
     // Done: its line gone, what came of it said, and what it brought waits
     // for review.
     *go.0.lock().unwrap() = true;
     go.1.notify_all();
     app.settle();
     assert_eq!(app.status, "1 new comment from 2 revisions: it waits for your review");
-    assert!(!app.banner_lines().contains(&stacked::tui::BannerLine::Pulling));
+    assert_eq!(pulls(&app), 0);
     let screen = draw(&mut app);
     assert!(!screen.contains("pulling from Phabricator") && screen.contains("⟳ 1 pull from Phabricator waits for your review"), "{screen}");
-    // A pull that fails: its line goes, and why is said.
+    // A pull that fails: its line goes, its run failed, and why is said.
     fail.store(true, std::sync::atomic::Ordering::SeqCst);
     keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
     choose(&mut app, "Pull from Phabricator");
-    assert!(app.banner_lines().contains(&stacked::tui::BannerLine::Pulling));
+    assert_eq!(pulls(&app), 1);
     app.settle();
-    assert_eq!(app.status, "differential.querydiffs: D12 is not there");
-    assert!(!app.banner_lines().contains(&stacked::tui::BannerLine::Pulling));
+    let why = "differential.querydiffs: D12 is not there";
+    assert_eq!(app.status, why);
+    assert_eq!(pulls(&app), 0);
+    let last = Db::load(&db).unwrap().runs().into_iter().rev().find(|r| stacked::held::pulled(r)).cloned().unwrap();
+    assert_eq!((last.state, last.summary.as_str()), (stacked::db::RunState::Failed, why));
     assert!(!draw(&mut app).contains("pulling from Phabricator"));
     stacked::phab::statuses_stand_in(&db, None);
 }
@@ -20897,7 +20903,7 @@ fn a_patch_s_revision_is_pulled_alone_from_its_line_s_menu_what_it_brings_held_f
     assert_eq!(app.status, "pulling D12 from Phabricator…");
     let banner = |app: &mut App| draw(app).lines().nth(1).unwrap_or("").to_string();
     assert!(banner(&mut app).starts_with(" ⇣ pulling from Phabricator: D12…"), "{}", banner(&mut app));
-    assert_eq!(app.banner_lines(), [stacked::tui::BannerLine::Pulling]);
+    assert!(matches!(app.banner_lines().as_slice(), [stacked::tui::BannerLine::Pull(_)]), "{:?}", app.banner_lines());
     // One pull at a time.
     keys(&mut app, &[KeyCode::Enter]);
     choose(&mut app, "Pull D12 from Phabricator");
@@ -20917,7 +20923,7 @@ fn a_patch_s_revision_is_pulled_alone_from_its_line_s_menu_what_it_brings_held_f
     assert_eq!(pulls.len(), 1);
     assert_eq!(pulls[0].held.as_ref().map(|h| h.opened.iter().map(|n| n.remote.clone()).collect::<Vec<_>>()), Some(vec![vec!["c1".to_string(), "c2".to_string()]]));
     drop(d);
-    assert!(!app.banner_lines().contains(&stacked::tui::BannerLine::Pulling));
+    assert!(!app.banner_lines().iter().any(|l| matches!(l, stacked::tui::BannerLine::Pull(_))), "{:?}", app.banner_lines());
     assert!(draw(&mut app).contains("⟳ 1 pull from Phabricator waits for your review"), "{}", draw(&mut app));
     assert_eq!(comments(&mut app), "no new comments");
     // From the patch's `Phabricator` menu too, going on from the pull's
@@ -21026,11 +21032,17 @@ fn a_fetch_turned_away_says_so_plainly_and_leaves_what_is_stored_as_it_was() {
     }
     assert_eq!(counts(&phab), (searched, read, 1));
     // A pull you ask for is tried all the same, and turned away too: said
-    // plainly, nothing written, nothing asked after the call turned away.
+    // plainly, its run failed, nothing of Phabricator written, nothing asked
+    // after the call turned away.
+    let records = phab_records(&db);
     phab_choose(&mut app, "Pull D11 from Phabricator");
     app.settle();
     assert_eq!(app.status, stacked::phab::TURNED_AWAY);
-    assert_eq!(std::fs::read(&db).unwrap(), stored, "nothing written");
+    assert_eq!(phab_records(&db), records, "nothing of Phabricator written");
+    let d = Db::load(&db).unwrap();
+    let pulls: Vec<(stacked::db::RunState, &str)> = d.runs().into_iter().filter(|r| stacked::held::pulled(r)).map(|r| (r.state, r.summary.as_str())).collect();
+    assert_eq!(pulls, [(stacked::db::RunState::Failed, stacked::phab::TURNED_AWAY)]);
+    drop(d);
     assert_eq!(counts(&phab), (searched, read, 2));
     stacked::phab::statuses_stand_in(&db, None);
 }
@@ -22658,7 +22670,12 @@ fn more_than_one_open_parent_or_one_stacked_on_fails_the_pull_saying_which_and_h
     let said = "D11 is stacked on more than one open revision on Phabricator, D10 and D9: a stack is one line of patches, so nothing was pulled";
     assert_eq!(pulled(&db, stacked::review::Asked::Stack).unwrap_err().0, said);
     assert_eq!(phab_records(&db), (0, 0, 0), "nothing stored");
-    assert!(Db::load(&db).unwrap().runs().into_iter().all(|r| !stacked::held::pulled(r)), "nothing held");
+    // Its run failed, saying which, holding nothing; the stack free.
+    let d = Db::load(&db).unwrap();
+    let pulls: Vec<&stacked::db::Run> = d.runs().into_iter().filter(|r| stacked::held::pulled(r)).collect();
+    assert!(matches!(pulls.as_slice(), [r] if r.state == stacked::db::RunState::Failed && r.summary == said && r.held.is_none()), "{pulls:?}");
+    assert_eq!(stacked::ask::blocked(&d, "s"), None);
+    drop(d);
     // One parent again; two stacked on D11: refused where the pull goes up
     // through them, the stack's, not where it does not, a patch's alone.
     {
@@ -22681,16 +22698,23 @@ fn more_than_one_open_parent_or_one_stacked_on_fails_the_pull_saying_which_and_h
 fn a_pull_turned_away_says_so_plainly_and_stores_nothing() {
     let (_tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")])]);
     phab.lock().unwrap().away = true;
-    let stored = std::fs::read(&db).unwrap();
+    // The pulls' runs, as they are: each failed, saying why.
+    let pulls = |db: &Path| -> Vec<(stacked::db::RunState, String)> {
+        Db::load(db).unwrap().runs().into_iter().filter(|r| stacked::held::pulled(r)).map(|r| (r.state, r.summary.clone())).collect()
+    };
+    let failed = (stacked::db::RunState::Failed, stacked::phab::TURNED_AWAY.to_string());
     assert_eq!(pulled(&db, stacked::review::Asked::Stack).unwrap_err().0, stacked::phab::TURNED_AWAY);
-    assert_eq!(std::fs::read(&db).unwrap(), stored, "nothing written");
+    assert_eq!(pulls(&db), std::slice::from_ref(&failed));
+    assert_eq!(phab_records(&db), (0, 0, 0), "no record of Phabricator written");
+    assert_eq!(stacked::ask::blocked(&Db::load(&db).unwrap(), "s"), None, "the stack free");
     // From the editor too, said on the bottom line.
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Home]);
     choose(&mut app, "Pull from Phabricator");
     app.settle();
     assert_eq!(app.status, stacked::phab::TURNED_AWAY);
-    assert_eq!(std::fs::read(&db).unwrap(), stored, "nothing written");
+    assert_eq!(pulls(&db), [failed.clone(), failed]);
+    assert_eq!(phab_records(&db), (0, 0, 0), "no record of Phabricator written");
     stacked::phab::statuses_stand_in(&db, None);
 }
 
@@ -22755,7 +22779,7 @@ fn a_pull_waits_its_turn_as_an_edit_does_dropped_from_its_line_or_the_runs_else_
     // waits for; Delete, its drop, asked first.
     app.refresh();
     keys(&mut app, &[KeyCode::Esc]);
-    let line = app.banner_lines().iter().position(|l| matches!(l, stacked::tui::BannerLine::PullWaits(_))).expect("its line");
+    let line = app.banner_lines().iter().position(|l| matches!(l, stacked::tui::BannerLine::Pull(_))).expect("its line");
     app.banner_sel = line;
     let screen = draw(&mut app);
     assert!(screen.contains("the pull from Phabricator waits its turn"), "{screen}");
@@ -22942,6 +22966,267 @@ fn while_a_pull_waits_its_turn_or_is_made_the_stack_is_not_edited_by_hand_the_me
     drop(d);
     Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true)).map(|_| ())).unwrap();
     assert_eq!(stacked::ask::blocked(&Db::load(&db).unwrap(), "s"), None);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// Where the pulls of a test's database are held as they read Phabricator
+/// (`review::hold_reading`), from `reads_held` on: let go, and held no more,
+/// once this is dropped, whatever came of the test.
+#[cfg(feature = "moz-phab")]
+struct ReadsHeld {
+    db: PathBuf,
+    at: PathBuf,
+}
+
+#[cfg(feature = "moz-phab")]
+impl ReadsHeld {
+    /// How many times the pulls were held as they read, in all.
+    fn reads(&self) -> usize {
+        std::fs::read_dir(&self.at)
+            .unwrap()
+            .filter_map(|f| f.ok())
+            .filter(|f| f.file_name().to_string_lossy().starts_with("read-"))
+            .map(|f| std::fs::read_to_string(f.path()).unwrap_or_default().lines().count())
+            .sum()
+    }
+
+    /// Waits until `n` reads were held in all: the last one is held, its
+    /// run written and reading, nothing of Phabricator read yet, unless they
+    /// were let go.
+    fn read(&self, n: usize) {
+        eventually(|| (self.reads() >= n).then_some(()), || format!("{} reads held, not {n}", self.reads()));
+    }
+
+    /// Lets the read held go, and those from now on.
+    fn go(&self) {
+        std::fs::write(self.at.join("go"), "").unwrap();
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+impl Drop for ReadsHeld {
+    fn drop(&mut self) {
+        let _ = std::fs::write(self.at.join("go"), "");
+        stacked::review::hold_reading(&self.db, None);
+    }
+}
+
+/// The pulls of `db` held as they read Phabricator from now on, in a
+/// folder beside it.
+#[cfg(feature = "moz-phab")]
+fn reads_held(db: &Path) -> ReadsHeld {
+    let at = db.with_file_name("reads-held");
+    std::fs::create_dir_all(&at).unwrap();
+    stacked::review::hold_reading(db, Some(at.clone()));
+    ReadsHeld { db: db.to_path_buf(), at }
+}
+
+/// The run of the pull of stack `s` asked last.
+#[cfg(feature = "moz-phab")]
+fn last_pull(db: &Path) -> stacked::db::Run {
+    Db::load(db).unwrap().runs().into_iter().rev().find(|r| stacked::held::pulled(r) && r.stack == "s").cloned().expect("a pull")
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn while_a_pull_reads_phabricator_the_stack_is_not_edited_by_hand_the_menus_and_the_commands_saying_why() {
+    use stacked::db::RunState;
+    let (tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")]), ("Bug 12 - ten", &[(2, "LINE 2"), (10, "LINE 10")])]);
+    let src = tmp.path().join("src");
+    phab.lock().unwrap().revisions.get_mut(&12).unwrap().title = "Bug 12 - ten, retitled".into();
+    let hold = reads_held(&db);
+    // Asked in the editor: its run written at once, reading Phabricator in
+    // this process, held before anything of Phabricator is read.
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Pull from Phabricator");
+    hold.read(1);
+    let run = last_pull(&db);
+    assert_eq!((run.state, run.pull.as_ref().and_then(|j| j.reading)), (RunState::Started, Some(std::process::id())));
+    assert_eq!(phab_records(&db), (0, 0, 0), "nothing read yet");
+    // Reading, it changes the stack as an edit does: the stack is not edited
+    // by hand, in the editor or on the command line, which say why.
+    let asked = "the stack's revisions, with their parents and those stacked on top";
+    let then = "the stack can be edited by hand again once the pull is made and you have reviewed its change of the stack, if it makes one";
+    not_by_hand(&mut app, &src, &db, &format!("a pull from Phabricator is reading Phabricator ({asked}): {then}"));
+    assert_eq!(stacked::ask::changing(&Db::load(&db).unwrap(), "s").as_deref(), Some("a pull from Phabricator is reading Phabricator"));
+    // Nor is the stack pulled again meanwhile.
+    assert_eq!(pulled(&db, stacked::review::Asked::Stack).unwrap_err().0, "a pull from Phabricator of this stack is reading Phabricator already: one at a time");
+    // Let go: read, its turn come at once, made and filed, its change
+    // waiting for your review; the stack free once that review closes.
+    hold.go();
+    app.settle();
+    assert_eq!(app.status, "1 new version from 2 revisions: it waits for your review");
+    let d = Db::load(&db).unwrap();
+    let r = d.run(&run.id).unwrap();
+    assert_eq!((r.state, r.pull.as_ref().and_then(|j| j.reading)), (RunState::Done, None));
+    assert_eq!(stacked::ask::changing(&d, "s"), None);
+    assert_ne!(phab_records(&db), (0, 0, 0), "what it read stored");
+    drop(d);
+    Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true)).map(|_| ())).unwrap();
+    assert_eq!(stacked::ask::blocked(&Db::load(&db).unwrap(), "s"), None);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_pull_whose_read_is_cut_short_lands_as_failed_once_seen_and_lets_the_stack_go() {
+    use stacked::db::RunState;
+    let (_tmp, db, _phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")]), ("Bug 12 - ten", &[(2, "LINE 2"), (10, "LINE 10")])]);
+    let hold = reads_held(&db);
+    let pull = pulling(&db);
+    hold.read(1);
+    let run = last_pull(&db);
+    // Read by a process that is there, this one: neither cut short nor let
+    // go.
+    assert_eq!(stacked::ask::land_orphans(&db, &Db::load(&db).unwrap()), 0);
+    assert!(stacked::ask::blocked(&Db::load(&db).unwrap(), "s").is_some());
+    // The process reading it gone, as when the editor quits as it reads, or
+    // the command is killed: the stack is let go at once, and the run lands
+    // as failed once seen, saying so, nothing of Phabricator stored.
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let dead = gone.id();
+    gone.wait().unwrap();
+    Db::edit(&db, |d| {
+        let mut r = d.run(&run.id).unwrap().clone();
+        r.pull.as_mut().unwrap().reading = Some(dead);
+        d.add_run(r).map(|_| ())
+    })
+    .unwrap();
+    let d = Db::load(&db).unwrap();
+    assert_eq!((stacked::ask::changing(&d, "s"), stacked::ask::blocked(&d, "s")), (None, None));
+    assert!(stacked::review::pending(&d, "s").is_none());
+    drop(d);
+    assert_eq!(stacked::ask::land_orphans(&db, &Db::load(&db).unwrap()), 1);
+    let r = Db::load(&db).unwrap().run(&run.id).cloned().unwrap();
+    assert_eq!((r.state, r.summary.as_str()), (RunState::Failed, stacked::review::CUT_SHORT));
+    assert_eq!(r.summary, "the read of Phabricator was cut short: ask the pull again");
+    assert_eq!(phab_records(&db), (0, 0, 0), "nothing of Phabricator stored");
+    assert_eq!(stacked::ask::land_orphans(&db, &Db::load(&db).unwrap()), 0, "landed once");
+    // Its read let go after all, as no process gone would be: it reads for
+    // nothing, stores nothing, and says why.
+    hold.go();
+    assert_eq!(pull.join().unwrap().unwrap_err().0, stacked::review::CUT_SHORT);
+    assert_eq!(phab_records(&db), (0, 0, 0));
+    // Asked again: read, made and filed.
+    drop(hold);
+    let again = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(again.state, RunState::Done, "{}", again.summary);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_pull_says_where_it_is_reading_waiting_its_turn_or_being_made_a_reconcile_asked_after_it_waiting_for_it() {
+    use stacked::db::RunState;
+    use stacked::tui::BannerLine;
+    let (tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")]), ("Bug 12 - ten", &[(2, "LINE 2"), (10, "LINE 10")])]);
+    let src = tmp.path().join("src");
+    phab.lock().unwrap().revisions.get_mut(&12).unwrap().title = "Bug 12 - ten, retitled".into();
+    // Unchained, a pull waits for the change waiting for your review: the
+    // agent's, asked by a comment on the stack.
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nchain = false\n").unwrap();
+    let (change, id) = stack_note(&db, "s-c1", "Make it better.");
+    held(&db, "run-w", &change, &id, "Better now.", true);
+    let (reads, makes) = (reads_held(&db), pulls_held(&db));
+    let pull = pulling(&db);
+    reads.read(1);
+    let mut app = open(&db).unwrap();
+    let request = "the stack's revisions, with their parents and those stacked on top";
+    // The pull's line of the banner, open, the cursor on it; and the banner's
+    // own line.
+    let on_line = |app: &mut App| -> (String, String) {
+        app.refresh();
+        (app.screen, app.on_banner, app.focus) = (Screen::Main, false, Focus::List);
+        keys(app, &[KeyCode::Esc]);
+        let k = app.banner_lines().iter().position(|l| matches!(l, BannerLine::Pull(_))).expect("its line");
+        app.banner_sel = k;
+        let screen = draw_sized(app, 240, 40);
+        let row = screen.lines().find(|l| l.contains("The pull from Phabricator,")).unwrap_or_default().trim_end().to_string();
+        (row, screen.lines().nth(1).unwrap_or_default().to_string())
+    };
+    let changing = |db: &Path| stacked::ask::changing(&Db::load(db).unwrap(), "s");
+    // Reading Phabricator, in another process than the editor's say.
+    assert_eq!(changing(&db).as_deref(), Some("a pull from Phabricator is reading Phabricator"));
+    let (row, head) = on_line(&mut app);
+    assert_eq!(row, format!("   ⇣ The pull from Phabricator, reading Phabricator: {request}"));
+    assert!(head.contains("the pull from Phabricator is reading Phabricator"), "{head}");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.mode, Mode::Normal, "no menu");
+    assert_eq!(app.status, "The pull from Phabricator is reading Phabricator: then it waits its turn, and what it brings waits for your review once it is made");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "the pull from Phabricator is reading Phabricator: it can be dropped once it waits its turn");
+    // Read: it waits its turn, behind that change.
+    reads.go();
+    let r = pull.join().unwrap().unwrap();
+    assert_eq!(r.state, RunState::Started);
+    let waits = "once you have reviewed the agent's change of patch 1";
+    assert_eq!(stacked::review::said(&Db::load(&db).unwrap(), &r), format!("the pull from Phabricator waits its turn: it is made {waits}, and what it brings then waits for your review"));
+    assert_eq!(changing(&db).as_deref(), Some("a pull from Phabricator waits its turn"));
+    let (row, head) = on_line(&mut app);
+    assert_eq!(row, format!("   ◌ The pull from Phabricator, waiting its turn: {request}"));
+    assert!(head.contains("the pull from Phabricator waits its turn"), "{head}");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(asked(&app).0, "pull from Phabricator, waiting its turn");
+    assert_eq!(menu_note(&app), format!("The pull from Phabricator waits its turn: stacked makes it {waits}, and what it brings then waits for your review."));
+    keys(&mut app, &[KeyCode::Esc]);
+    // A reconcile with HEAD asked after it: it waits for the pull, and the
+    // pull does not wait for it.
+    Db::edit(&db, |d| {
+        let job = stacked::reconcile::Job { takes: vec![], checkout: src.display().to_string(), after: None };
+        d.add_run(stacked::db::Run {
+            id: stacked::db::unique(),
+            what: stacked::reconcile::WHAT.into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            request: "the commit messages of patch 1 taken from HEAD".into(),
+            reconcile: Some(Box::new(job)),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    let d = Db::load(&db).unwrap();
+    assert_eq!(stacked::ask::pull_waits_on(&d, "s").as_deref(), Some(waits));
+    assert_eq!(stacked::ask::reconcile_waits_on(&d, "s").as_deref(), Some("once the pull from Phabricator before it is made"));
+    drop(d);
+    // That change reviewed, its turn comes: it is being made, held midway,
+    // the reconcile asked after it still waiting.
+    Db::edit(&db, |d| stacked::held::close(d, "run-w", &answers_kept(d, "run-w"), Some(true)).map(|_| ())).unwrap();
+    let making = {
+        let db = db.clone();
+        std::thread::spawn(move || stacked::ask::launch(&db))
+    };
+    makes.made(1);
+    let d = Db::load(&db).unwrap();
+    assert_eq!(stacked::ask::pull_waits_on(&d, "s"), None);
+    assert_eq!(stacked::review::said(&d, d.run(&r.id).unwrap()), "the pull from Phabricator is being made: what it brings then waits for your review");
+    assert_eq!(stacked::ask::reconcile_waits_on(&d, "s").as_deref(), Some("once the pull from Phabricator before it is made"));
+    drop(d);
+    assert_eq!(changing(&db).as_deref(), Some("a pull from Phabricator is being made"));
+    let (row, head) = on_line(&mut app);
+    assert_eq!(row, format!("   ● The pull from Phabricator, being made: {request}"));
+    assert!(head.contains("the pull from Phabricator is being made") && !head.contains("the pull from Phabricator waits its turn"), "{head}");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.mode, Mode::Normal, "no menu");
+    assert_eq!(app.status, "The pull from Phabricator is being made: what it brings then waits for your review");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "the pull from Phabricator is being made, so it can no longer be dropped: what it brings waits for your review once it is made");
+    // Nor is it dropped from the stack's menu, which has no such item.
+    keys(&mut app, &[KeyCode::Esc]);
+    (app.on_banner, app.focus, app.on_stack) = (false, Focus::List, true);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Drop the waiting pull")), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Let go, it is filed: its change waits for your review, and the
+    // reconcile after it.
+    makes.go();
+    making.join().unwrap().unwrap();
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.run(&r.id).unwrap().state, RunState::Done);
+    assert_eq!(stacked::ask::reconcile_waits_on(&d, "s").as_deref(), Some("once you have reviewed the pull's change of patch 2"));
+    drop(d);
     stacked::phab::statuses_stand_in(&db, None);
 }
 
@@ -23256,24 +23541,36 @@ fn a_new_stack_is_pulled_from_a_revision_its_parent_and_the_one_stacked_on_it_it
     typed(&mut app, "https://phabricator.example.com/D13");
     assert!(matches!(&app.mode, Mode::Prompt(p) if !p.ok && p.said == "D13 is patch 3 of D12: pull it there"), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Esc]);
-    // One on a commit the repository does not have: said, no stack made,
-    // nothing stored. (What the review's close does away from the screen,
-    // done first.)
+    // One on a commit the repository does not have: its stack made at
+    // once, empty, on HEAD, and shown; its read refused, said, its run
+    // failed, nothing of Phabricator stored, the stack staying, empty, and
+    // free. (What the review's close does away from the screen, done
+    // first.)
     {
         let mut p = phab.lock().unwrap();
         *p = std::mem::take(&mut *p).not_held(21, "Bug 21 - one", None, &a_diff(&[], &[(1, "LINE 1")]), "0123456789abcdef0123456789abcdef01234567");
     }
     app.settle();
-    let stored = std::fs::read(&db).unwrap();
+    let records = phab_records(&db);
+    let head = git_said(&src, &["rev-parse", "HEAD"]);
     keys(&mut app, &[KeyCode::Home]);
     choose(&mut app, "New stack…");
     choose(&mut app, "Pull from Phabricator…");
     typed(&mut app, "https://phabricator.example.com/D21");
     keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.stack, "D21", "shown at once");
     app.settle();
-    assert_eq!(app.status, "D21 is on 0123456789ab, which this repository does not have: fetch it first");
+    let why = "D21 is on 0123456789ab, which this repository does not have: fetch it first";
+    assert_eq!(app.status, why);
     assert_eq!(app.mode, Mode::Normal);
-    assert_eq!(app.stack, "D12");
-    assert_eq!(std::fs::read(&db).unwrap(), stored, "nothing written");
+    assert_eq!(app.stack, "D21");
+    assert_eq!(phab_records(&db), records, "nothing of Phabricator stored");
+    let d = Db::load(&db).unwrap();
+    let s = d.stack("D21").unwrap();
+    assert!(s.patches.is_empty() && s.base.as_deref() == Some(head.as_str()), "{s:?}");
+    let r = d.runs().into_iter().rev().find(|r| r.stack == "D21").cloned().unwrap();
+    assert_eq!((r.state, r.summary.as_str(), r.held.is_none()), (stacked::db::RunState::Failed, why, true));
+    assert_eq!(stacked::ask::blocked(&d, "D21"), None);
+    drop(d);
     stacked::phab::statuses_stand_in(&db, None);
 }

@@ -21,7 +21,13 @@ Phabricator answered it (The editor, above): a status other than 200, a
 page that is not JSON, or its turning away the requests of this machine
 (HTTP 429).
 
-It reads first, away from the screen: the revisions asked, in one search
+Its run is written the moment it is asked, and it is queued then, as an
+edit of the agent's is (Asking the agent, above): it holds its place in
+the queue from then on, the edits asked after it waiting for it. It goes
+through three phases, reading Phabricator, waiting its turn and being
+made, then it is filed. It reads first, away from the screen, in the
+process that asked it (the editor's, or `stacked moz-phab`'s), its run
+naming that process: the revisions asked, in one search
 (differential.revision.search); their parents (edge.search), named, the
 parents the stack does not hold in a search of their own, then down, the
 open parent of each that the stack does not hold; up, the open revision
@@ -34,23 +40,30 @@ diff is on, and the author and message of that diff's commit as uploaded
 unless it is stored; while that diff is no version of its patch stacked
 knows, the older ones, the newest first, to the first that is one; and
 its comments (transaction.search, user.search for their authors' names,
-and the lines a comment on a line is on). A revision with more than one
-open parent, or more than one open revision stacked on one where the
-walk up goes, and nothing is pulled nor stored, the bottom line saying
-which: `D11 is stacked on more than one open revision on Phabricator, D10
-and D9: a stack is one line of patches, so nothing was pulled`, `More
-than one open revision is stacked on D11 on Phabricator, D10 and D9: a
-stack is one line of patches, so nothing was pulled`. What it read is
-stored as a fetch stores it (The editor, above): of each revision, its
-state and its comments, with when it was last modified as its search
-said, where they are not what is stored; each raw diff it read; the
-revisions asked that Phabricator does not have, as such; and that it
-read every one of them, now. A call that fails stores nothing; turned
-away, it is tried once, and the bottom line says so plainly (`Phabricator
-is turning away requests from this machine for now (HTTP 429, too many
-requests)`). Phabricator is read only when you ask.
+and the lines a comment on a line is on). What it read is stored as a
+fetch stores it (The editor, above): of each revision, its state and its
+comments, with when it was last modified as its search said, where they
+are not what is stored; each raw diff it read; the revisions asked that
+Phabricator does not have, as such; and that it read every one of them,
+now. A read that fails stores nothing of Phabricator (no state of a
+revision, no comment, no raw diff, no fetch), and the pull's run fails,
+its summary saying why, as the bottom line does: a call that fails, said
+as Phabricator answered it, one turned away tried once and said plainly
+(`Phabricator is turning away requests from this machine for now (HTTP
+429, too many requests)`); a revision with more than one open parent, or
+more than one open revision stacked on one where the walk up goes,
+nothing pulled (`D11 is stacked on more than one open revision on
+Phabricator, D10 and D9: a stack is one line of patches, so nothing was
+pulled`, `More than one open revision is stacked on D11 on Phabricator,
+D10 and D9: a stack is one line of patches, so nothing was pulled`). A
+read cut short, the process reading it gone as it reads (the editor
+quitting, the command killed), holds nothing back from then on, and its
+run fails once a stacked sees it, as an ask whose agent is gone does
+(Asking the agent, above): `the read of Phabricator was cut short: ask
+the pull again`, nothing of it stored. Phabricator is read only when you
+ask.
 
-Then the pull waits its turn as an edit of the agent's does (Asking the
+Read, the pull waits its turn as an edit of the agent's does (Asking the
 agent, above), the first asked first: unchained, until the change of the
 stack waiting for your review is reviewed (`the pull from Phabricator
 waits its turn: it is made once you have reviewed the agent's change of
@@ -60,20 +73,37 @@ after it. Waiting, it has a line of the banner (`◌ The pull from
 Phabricator, waiting its turn: the stack's revisions, with their parents
 and those stacked on top`), whose menu, and the stack's menu, have `Drop
 the waiting pull from Phabricator…`, which asks first; dropped, what it
-read stays stored, and nothing of it waits for your review. One pull of a
-stack waits at a time (`a pull from Phabricator of this stack waits its
-turn already: one at a time`), and the editor reads one pull at a time
-(`already pulling from Phabricator: one pull at a time`). From when it is
-queued to when it is filed, waiting its turn and being made, it changes
+read stays stored, and nothing of it waits for your review; it is
+dropped only then (`the pull from Phabricator is reading Phabricator: it
+can be dropped once it waits its turn`, `the pull from Phabricator is
+being made, so it can no longer be dropped: what it brings waits for your
+review once it is made`). Its line says each phase as it is, from when it
+is asked: `⇣ The pull from Phabricator, reading Phabricator: …`, or, read
+by this editor, what it reads (`⇣ The pull from Phabricator, reading D12,
+revision 2 of 3: …`), the banner's own line saying `pulling from
+Phabricator: D12, revision 2 of 3…`; `◌ …, waiting its turn: …`; and, its
+turn come, `● …, being made: …`; Enter there says where it is (`The pull
+from Phabricator is reading Phabricator: then it waits its turn, and what
+it brings waits for your review once it is made`, `The pull from
+Phabricator is being made: what it brings then waits for your review`),
+and opens its menu while it waits its turn. What the pull waits for is
+what is ahead of it in the queue: a reconcile with HEAD or a lint job
+asked after it waits for it, and holds it back only once under way. One
+pull of a stack at a time, from when it is asked to when it is filed (`a
+pull from Phabricator of this stack waits its turn already: one at a
+time`, `… is reading Phabricator already: …`, `… is being made already:
+…`), and the editor reads one pull at a time (`already pulling from
+Phabricator: one pull at a time`). From when it is asked to when it is
+filed, reading Phabricator, waiting its turn and being made, it changes
 the stack as the agent's edit does: the stack is not edited by hand
 meanwhile (Asking the agent, above), the menus saying why (`a pull from
-Phabricator waits its turn (the stack's revisions, with their parents and
-those stacked on top): the stack can be edited by hand again once the
-pull is made and you have reviewed its change of the stack, if it makes
-one`; its turn come, `a pull from Phabricator is being made (…): …`), and
-the same commands refuse on the command line. Before, while it reads
-Phabricator, it is not queued yet, and nothing keeps the stack from being
-edited by hand: it is made from the stack as it is at its turn. At its
+Phabricator is reading Phabricator (the stack's revisions, with their
+parents and those stacked on top): the stack can be edited by hand again
+once the pull is made and you have reviewed its change of the stack, if
+it makes one`; read, `a pull from Phabricator waits its turn (…): …`;
+its turn come, `a pull from Phabricator is being made (…): …`), and the
+same commands refuse on the command line. It is made from the stack as it
+is at its turn, which no edit by hand changed since it was asked. At its
 turn, it is made away from the database's lock, on a copy of the
 database, then filed:
 
@@ -194,18 +224,20 @@ typed (`D12, with the revisions it stacks on and those stacked on it`;
 (`D13 is patch 3 of D12: pull it there`) or one that the work waiting for
 your review on a stack adds (`D31 would be patch 1 of fix once the work
 waiting for your review there is accepted: review that work first`). It
-reads the revision with its parents and those stacked on it (`pulling D12
-from Phabricator, with the revisions it stacks on and those stacked on
-it…`), none of which a stack may hold; then it makes the stack, empty,
-on the commit the bottom revision's diff is on, which the repository must
-have (`D21 is on 0123456789ab, which this repository does not have:
-fetch it first`), named after the revision (`D12`, else the first of
-`D12-2`, `D12-3`, … that no stack has), and the pull lands into it, its
-review open: a patch to add for each revision (`3 new patches and 1 new
-comment from D11..D13: they wait for your review`). Rejected, the stack
-stays, empty. `stacked moz-phab import REVISION [--name NAME]`, of
-`D123`, `123` or its link, does the same from the command line and
-prints the run, which `stacked review NAME RUN --accept-all` takes.
+makes the stack at once, empty, on HEAD of the checkout, named after the
+revision (`D12`, else the first of `D12-2`, `D12-3`, … that no stack has),
+with the pull's run, and shows it; the pull reads the revision with its
+parents and those stacked on it (`pulling D12 from Phabricator, with the
+revisions it stacks on and those stacked on it…`), none of which a stack
+may hold; read, it moves the stack onto the commit the bottom revision's
+diff is on, which the repository must have (`D21 is on 0123456789ab,
+which this repository does not have: fetch it first`), and lands into it,
+its review open: a patch to add for each revision (`3 new patches and 1
+new comment from D11..D13: they wait for your review`). Its read failing,
+or its review rejected, the stack stays, empty.
+`stacked moz-phab import REVISION [--name NAME]`, of `D123`, `123` or its
+link, does the same from the command line and prints the run, which
+`stacked review NAME RUN --accept-all` takes.
 
 A comment the reviewer edited on Phabricator since it was filed (each edit
 makes a version of it, with an id of its own) is held as an edit of their

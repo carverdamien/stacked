@@ -57,10 +57,12 @@ stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
 your review · the next: a change of patch 2, 1 reply, asked at max: "…"`,
 the effort the agent was asked at before what it was asked; edits by
 hand, lints and reconciles with HEAD counted apart), a reconcile with HEAD
-waiting its turn (`Reconcile with HEAD waits its turn`), a pull
-from Phabricator under way and the revision it reads (`pulling from
-Phabricator: D12, revision 2 of 3…`), a pull waiting its turn (`the pull
-from Phabricator waits its turn`), what the asks batched (`3
+waiting its turn (`Reconcile with HEAD waits its turn`), the stack's
+pull from Phabricator, as it reads Phabricator, read by this editor, the
+revision it reads (`pulling from Phabricator: D12, revision 2 of 3…`),
+else `the pull from Phabricator is reading Phabricator`, then waiting its
+turn (`the pull from Phabricator waits its turn`), or being made (`the
+pull from Phabricator is being made`), what the asks batched (`3
 batched asks`), what the agent works on (`the agent works on 1 ask`), the
 comments that wait their turn (`1 comment waits its turn`), and how many
 comments are open (`5 open comments`); it is there while any of it is. Landing writes nothing
@@ -72,15 +74,17 @@ none of the panes: what each has picked shows as in a pane the cursor is
 not in (`picked`), not reversed. First, `read only, to review`: `⟳ Review …` for what landed and changes nothing (an answer, an
 ask that brought nothing back, a pull that brought comments alone), each
 said by what is left of it to review, the first landed first, then `◌ … after
-the edit under review` for those going on from it, then, while a pull from
-Phabricator is under way, `⇣ Pulling from Phabricator: D12, revision 2 of
-3…`: what it brings waits there once it is done, or under `edits, to
-review` when it changes the stack. `edits, to review`: the
-change of the stack you review now, then those going on from it, which you
-review after it, a pull's among them; then a reconcile with HEAD waiting
-its turn, and a pull from Phabricator waiting its turn (`◌ The pull from
-Phabricator, waiting its turn: the stack's revisions, with their parents
-and those stacked on top`). `open comments`: while there is a batch, `◇ Send the
+the edit under review` for those going on from it: what a pull brings
+waits there once it is filed, or under `edits, to review` when it changes
+the stack. `edits, to review`: the change of the stack you review now,
+then those going on from it, which you review after it, a pull's among
+them; then a reconcile with HEAD waiting its turn, and the stack's pull
+from Phabricator, from when it is asked to when it is filed, each phase
+said as it is (`⇣ The pull from Phabricator, reading Phabricator: the
+stack's revisions, with their parents and those stacked on top`, `⇣ The
+pull from Phabricator, reading D12, revision 2 of 3: …` as this editor
+reads it, `◌ The pull from Phabricator, waiting its turn: …`, `● The
+pull from Phabricator, being made: …`). `open comments`: while there is a batch, `◇ Send the
 batch… 2 edits, 1 answer only`; then every comment open on the stack, the
 most recently updated first, marked as the comments pane marks it (`●` with the agent,
 `◇` batched, `◌` waiting its turn, `◆` its reply waiting for review, `✓`

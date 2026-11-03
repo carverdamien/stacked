@@ -995,20 +995,18 @@ impl App {
         }
     }
 
-    /// A pull from Phabricator, as `asked` asks, away from the screen: of
-    /// every revision the stack's patches name, or of the patch's whose
-    /// change it names, with their parents and, as asked, those stacked on
-    /// them (`review::pull`); the banner saying where the pull is as it reads,
-    /// what it read stored, and the pull queued as an edit is, what it brings
-    /// waiting for your review once it is made. One pull at a time, and not
-    /// while one of the stack waits its turn.
+    /// A pull from Phabricator, as `asked` asks: of every revision the
+    /// stack's patches name, or of the patch's whose change it names, with
+    /// their parents and, as asked, those stacked on them. Its run written at
+    /// once, queued as an edit is, so that the stack is not edited by hand
+    /// from now on (`review::ask`); then its read of Phabricator, away from
+    /// the screen (`review::read`), the banner saying where it is as it
+    /// reads, what it read stored, and what it brings waiting for your
+    /// review once it is made. One pull at a time, and not while one of the
+    /// stack is under way.
     pub(super) fn pull_from_phabricator(&mut self, asked: review::Asked) {
         if self.bg.doing.contains(&"pulling") {
             self.status = PULLING_ALREADY.into();
-            return;
-        }
-        if let Some(why) = review::not_now(&self.db, &self.stack) {
-            self.status = why;
             return;
         }
         let name = self.stack.clone();
@@ -1020,19 +1018,27 @@ impl App {
             }),
             _ => None,
         };
+        let reading = match review::ask(&self.path, &name, asked) {
+            Ok(r) => r,
+            Err(e) => {
+                self.status = e.0;
+                return;
+            }
+        };
+        self.reload();
         self.bg.doing.push("pulling");
         self.status = match &alone {
             Some(d) => format!("pulling {d} from Phabricator…"),
             None => "pulling from Phabricator…".into(),
         };
-        self.bg.pull = Some((name.clone(), alone.map_or(review::Pulling::Starting, review::Pulling::Alone)));
+        self.bg.pull = Some((reading.run.clone(), alone.map_or(review::Pulling::Starting, review::Pulling::Alone)));
         let (path, tx) = (self.path.clone(), self.bg.tx.clone());
         self.spawn(move || {
             // Where it is, as it goes: the banner says.
             let mut say = |p| {
                 let _ = tx.send(Done::Pulling(p));
             };
-            let said = match review::pull(&path, &name, asked, &mut say) {
+            let said = match review::read(&path, reading, &mut say) {
                 Ok(r) => Db::load(&path).map_or_else(|_| r.summary.clone(), |db| review::said(&db, &r)),
                 Err(e) => e.0,
             };
@@ -1040,42 +1046,53 @@ impl App {
         });
     }
 
-    /// A new stack pulled from Phabricator, from the revision `text` names,
-    /// away from the screen (`review::import`): made empty, on the commit
-    /// the bottom revision is on, and what the pull brings landing into it
-    /// for review; then shown, its review open. One pull at a time.
+    /// A new stack pulled from Phabricator, from the revision `text` names:
+    /// made at once, empty, on HEAD, with its pull's run, and shown
+    /// (`review::ask_new`); then the pull's read of Phabricator, away from the
+    /// screen (`review::read`), its banner saying where it is, the stack moved
+    /// onto the commit the bottom revision is on, and what the pull brings
+    /// landing into it for review; then its review open. One pull at a time.
     pub(super) fn pull_new_stack(&mut self, text: &str) {
         let Some((rev, _)) = crate::phab::revision_named(text) else { return };
         if self.bg.doing.contains(&"pulling") {
             self.status = PULLING_ALREADY.into();
             return;
         }
+        let reading = match review::ask_new(&self.path, &self.checkout, text, None) {
+            Ok(r) => r,
+            Err(e) => {
+                self.status = e.0;
+                return;
+            }
+        };
+        self.reload();
+        let name = reading.stack.clone();
+        self.switch_stack(&name);
         self.bg.doing.push("pulling");
         self.status = format!("pulling {rev} from Phabricator, with the revisions it stacks on and those stacked on it…");
-        // Shown in the banner of the stack shown, as it has none yet.
-        self.bg.pull = Some((self.stack.clone(), review::Pulling::Alone(rev)));
-        let (path, at, tx, text) = (self.path.clone(), self.checkout.clone(), self.bg.tx.clone(), text.to_string());
+        self.bg.pull = Some((reading.run.clone(), review::Pulling::Alone(rev)));
+        let (path, tx) = (self.path.clone(), self.bg.tx.clone());
         self.spawn(move || {
             let mut say = |p| {
                 let _ = tx.send(Done::Pulling(p));
             };
-            let pulled = review::import(&path, &at, &text, None, &mut say).and_then(|r| {
+            let pulled = review::read(&path, reading, &mut say).and_then(|r| {
                 let said = review::said(&Db::load(&path)?, &r);
-                Ok((r.stack.clone(), r.id.clone(), said))
+                Ok((r.id.clone(), said))
             });
-            Done::PulledStack(pulled.map_err(|e| e.0))
+            Done::PulledStack(name, pulled.map_err(|e| e.0))
         });
     }
 
-    /// What pulling a new stack came to (`pull_new_stack`): its stack
-    /// shown, the pull's review open once it waits for your review; else
-    /// why nothing was made.
-    pub(super) fn pulled_stack(&mut self, pulled: std::result::Result<(String, String, String), String>) {
+    /// What pulling new stack `name` came to (`pull_new_stack`): the stack
+    /// shown, the pull's review open once it waits for your review; else why
+    /// nothing was pulled, the stack staying, empty.
+    pub(super) fn pulled_stack(&mut self, name: String, pulled: std::result::Result<(String, String), String>) {
         self.bg.doing.retain(|d| *d != "pulling");
         self.bg.pull = None;
+        self.reload();
         match pulled {
-            Ok((name, run, said)) => {
-                self.reload();
+            Ok((run, said)) => {
                 self.switch_stack(&name);
                 if self.db.run(&run).is_some_and(|r| crate::held::waiting(&self.db, r)) {
                     self.open_review(&run, None);
@@ -1090,29 +1107,67 @@ impl App {
     /// turn, asking first, if one waits.
     pub(super) fn pull_drop_item(&self) -> Option<Item> {
         let r = review::pending(&self.db, &self.stack)?;
+        let r = self.pull_waiting(&r.id)?;
         Some(Item::new("Drop the waiting pull from Phabricator…", Action::AskDropPull(r.id.clone())))
     }
 
-    /// What the stack's pull from Phabricator, waiting its turn, waits for,
-    /// said.
-    pub(super) fn pull_waits(&self, name: &str) -> String {
-        let on = crate::ask::pull_waits_on(&self.db, name).unwrap_or_else(|| "next".into());
-        format!("The pull from Phabricator waits its turn: stacked makes it {on}, and what it brings then waits for your review")
+    /// What pull `run`, under way, does, said: reading Phabricator, waiting
+    /// its turn and what for, or being made. None once it is not under way.
+    pub(super) fn pull_said(&self, run: &str) -> Option<String> {
+        let r = self.db.run(run)?;
+        review::under_way_said(&self.db, r).map(|said| format!("The pull from Phabricator {said}"))
     }
 
-    /// Pull `run`, if it waits its turn.
+    /// The stack's pull under way, if one is, and where it is: read again
+    /// only once the database changes, or another stack is shown, as the
+    /// banner and the bar ask on every redraw. A pull whose read is cut short
+    /// meanwhile is told so as its run lands, a few seconds later.
+    pub(super) fn pull_under_way(&self) -> Option<(String, review::Phase)> {
+        let key = (self.db.changes(), self.stack.clone());
+        if let Some((k, p)) = &*self.pull_memo.borrow()
+            && *k == key
+        {
+            return p.clone();
+        }
+        let p = review::pending(&self.db, &self.stack).and_then(|r| Some((r.id.clone(), review::phase(&self.db, r)?)));
+        *self.pull_memo.borrow_mut() = Some((key, p.clone()));
+        p
+    }
+
+    /// Where pull `run` is, if it is under way: the stack's, as last read
+    /// (`pull_under_way`); another's, read now.
+    pub(super) fn phase_of(&self, run: &str) -> Option<review::Phase> {
+        match self.pull_under_way() {
+            Some((id, p)) if id == run => Some(p),
+            _ => self.db.run(run).and_then(|r| review::phase(&self.db, r)),
+        }
+    }
+
+    /// Pull `run`, if it waits its turn: read, and not being made.
     fn pull_waiting(&self, run: &str) -> Option<&crate::db::Run> {
-        self.db.run(run).filter(|r| review::is(r) && r.state == RunState::Started && r.pull.is_some())
+        self.db.run(run).filter(|_| self.phase_of(run) == Some(review::Phase::Waiting))
+    }
+
+    /// What Delete does on pull `run`, under way, as on its line of the
+    /// banner and in the runs: waiting its turn, its drop, asked first;
+    /// reading Phabricator or being made, nothing, and why. None once it is
+    /// not under way.
+    pub(super) fn pull_deleting(&self, run: &str) -> Option<std::result::Result<Action, String>> {
+        Some(match self.phase_of(run)? {
+            review::Phase::Waiting => Ok(Action::AskDropPull(run.into())),
+            review::Phase::Reading => Err(review::READING_NOT_DROPPED.into()),
+            review::Phase::Making => Err("the pull from Phabricator is being made, so it can no longer be dropped: what it brings waits for your review once it is made".into()),
+        })
     }
 
     /// The menu of pull `run` waiting its turn, which Enter on its line of
     /// the banner opens: what it waits for, and its drop. None once it no
-    /// longer waits.
+    /// longer waits: reading Phabricator still, or being made.
     pub(super) fn pull_menu(&self, run: &str) -> Option<Menu> {
         let r = self.pull_waiting(run)?;
         let items = vec![Item::new("Drop the waiting pull from Phabricator…", Action::AskDropPull(run.into()))];
         let mut m = Menu::new("pull from Phabricator, waiting its turn", items, None);
-        m.note = Some(format!("{}.", self.pull_waits(&r.stack)));
+        m.note = self.pull_said(&r.id).map(|said| format!("{said}."));
         Some(m)
     }
 

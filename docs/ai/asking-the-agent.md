@@ -453,9 +453,10 @@ does not apply. A lint job of the stack takes its turn as a change does,
 the changes asked after it waiting for it (Linting, below); so does a
 reconcile with HEAD (The editor, above), the changes asked after it
 waiting until it is reviewed; and so does a pull from Phabricator
-(Phabricator, below), read as it is asked, then made at its turn, under
-the launch lock but away from the database's lock, on a copy of the
-database, and filed, the changes asked after it waiting until it is made.
+(Phabricator, below), queued as it is asked, reading Phabricator first,
+then made at its turn, under the launch lock but away from the database's
+lock, on a copy of the database, and filed, the changes asked after it
+waiting until it is made.
 
 Chained (`agent.chain`, on unless set to false), a change
 does not wait for the review of the change before it: it goes at once, from
@@ -494,18 +495,20 @@ While the agent changes a stack, the stack is not edited by hand: the
 agent's change is made from the stack as it took it. Nor is it while
 other work is about to change it: work you sent back, waiting to go back
 to the agent; a lint job of the stack, waiting its turn or running
-(Linting, below); a pull from Phabricator of the stack, waiting its turn
-or being made, from when it is queued to when it is filed (Phabricator,
-below), as a pull is an edit too. Nor is it while a change of the stack
-waits for your review, as that change was made from the stack as it is.
+(Linting, below); a pull from Phabricator of the stack, from when it is
+asked to when it is filed, reading Phabricator, waiting its turn or being
+made (Phabricator, below), as a pull is an edit too. Nor is it while a
+change of the stack waits for your review, as that change was made from
+the stack as it is.
 The menus' edits of the stack and its patches are off meanwhile, and the
 menu says why (`the agent is changing patch 2: the stack can be edited by
 hand again once you have reviewed the agent's work`; `a pull from
-Phabricator waits its turn (the stack's revisions, with their parents and
-those stacked on top): the stack can be edited by hand again once the
-pull is made and you have reviewed its change of the stack, if it makes
-one`, then, its turn come, `a pull from Phabricator is being made (…):
-…`): editing a patch or one of its files, editing the stack as a list,
+Phabricator is reading Phabricator (the stack's revisions, with their
+parents and those stacked on top): the stack can be edited by hand again
+once the pull is made and you have reviewed its change of the stack, if
+it makes one`, then, read, `a pull from Phabricator waits its turn (…):
+…`, and, its turn come, `a pull from Phabricator is being made (…): …`):
+editing a patch or one of its files, editing the stack as a list,
 moving, dropping, undo and redo, picking a state from the tree or a
 version, deleting the stack. The same commands refuse on the command
 line. The work waiting for your review is still edited by hand from its
@@ -513,7 +516,7 @@ review, in its place: what went on from it is dropped then, as above, and
 a pull made on it meanwhile is made again. Comments are written as ever,
 except those the agent works on: their `Reply` and edits wait for the
 agent's reply to land, as the reply is to what was asked. An edit by hand
-open in $EDITOR when the agent takes the stack, or a pull is queued, is
+open in $EDITOR when the agent takes the stack, or a pull is asked, is
 not lost: a file's edit is kept, to `Edit it again` later; a patch's
 mail, or the stack's list, opens again with why at its top (`save again
 then, or empty the list to give up`). A comment waiting its turn is off
@@ -733,9 +736,11 @@ of its id. A build and test stopped as a review closes lands the same way.
 An ask whose agent is gone without landing it (killed by something other
 than stacked) lands as failed on its own: the editor looks for such asks
 every few seconds, `stacked send --wait` as it waits, and `stacked runs`
-before it lists the runs. The editor also waits for each process it
-started for an ask once that process has exited, so that none is left a
-zombie, which would look as if its agent still ran.
+before it lists the runs. So does a pull from Phabricator whose read is
+cut short, the process reading it gone (Phabricator, below). The editor
+also waits for each process it started for an ask once that process has
+exited, so that none is left a zombie, which would look as if its agent
+still ran.
 
 `STACKED_CLAUDE` names a program to run as the agent, over the settings'
 `agent.command`. The tests use it. Whatever it is, it is given claude's

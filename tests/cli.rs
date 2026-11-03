@@ -5485,10 +5485,24 @@ fn a_stack_is_imported_from_phabricator_by_its_revision() {
     assert_eq!(calls.load(Ordering::SeqCst), before);
     // What names no revision, said.
     assert_eq!(import("D2x", None).unwrap_err().0, "\"D2x\" names no revision: give D123, 123, or its link");
-    // On a commit the repository does not have: said, no stack made.
+    // On a commit the repository does not have: said, its run failed, and
+    // nothing of Phabricator stored, the stack made as it was asked staying,
+    // empty, on HEAD.
     *on.lock().unwrap() = "0123456789abcdef0123456789abcdef01234567".into();
-    assert_eq!(import("D31", None).unwrap_err().0, "D31 is on 0123456789ab, which this repository does not have: fetch it first");
-    assert_eq!(Db::load(&e.db).unwrap().names(), ["D22"]);
+    let revisions = |db: &Db| db.records().iter().filter(|r| matches!(r, Record::Revision(_) | Record::RawDiff { .. } | Record::Fetched { .. })).count();
+    let stored = revisions(&Db::load(&e.db).unwrap());
+    let why = "D31 is on 0123456789ab, which this repository does not have: fetch it first";
+    assert_eq!(import("D31", None).unwrap_err().0, why);
+    let d = Db::load(&e.db).unwrap();
+    assert_eq!(d.names(), ["D22", "D31"]);
+    let head = git(&e.src, &["rev-parse", "HEAD"]).trim().to_string();
+    let s = d.stack("D31").unwrap();
+    assert!(s.patches.is_empty() && s.base.as_deref() == Some(head.as_str()), "{s:?}");
+    let r = d.runs().into_iter().find(|r| r.stack == "D31").unwrap();
+    assert_eq!((r.state, r.summary.as_str()), (RunState::Failed, why));
+    assert_eq!(revisions(&d), stored, "nothing of Phabricator stored");
+    assert_eq!(stacked::ask::blocked(&d, "D31"), None);
+    drop(d);
     // Named: so; a name taken, or none can have, refused before Phabricator
     // is read; and, while the pull into it waits for your review, the
     // revision refused all the same.

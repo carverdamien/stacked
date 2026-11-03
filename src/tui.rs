@@ -2344,6 +2344,12 @@ pub struct App {
     /// The comments the agent works on, as last read, and how many changes
     /// the database had then.
     busy_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Busy>)>>,
+    /// The stack's pull from Phabricator under way and where it is, as last
+    /// read, for how many changes the database had then and which stack:
+    /// asked on every redraw, and telling whether it waits its turn reads
+    /// the checkout's settings.
+    #[cfg(feature = "moz-phab")]
+    pull_memo: std::cell::RefCell<Option<PullMemo>>,
     /// The files each patch modifies, by its id, as the patches pane lists
     /// them, with the keys of the lines each changes, to count those read.
     files_memo: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<FileStat>>>>,
@@ -2474,13 +2480,13 @@ enum Done {
     Launched(Option<String>),
     /// A pull or an apply (`what` it was): what came of it, said.
     Said(&'static str, String),
-    /// Where the pull under way is.
+    /// Where the read of Phabricator of the pull under way is.
     #[cfg(feature = "moz-phab")]
     Pulling(review::Pulling),
-    /// A new stack pulled from Phabricator: its name, the pull's run, and
-    /// what came of it, said; or what was wrong.
+    /// A new stack pulled from Phabricator: its name; and the pull's run,
+    /// and what came of it, said, or why its read failed.
     #[cfg(feature = "moz-phab")]
-    PulledStack(std::result::Result<(String, String, String), String>),
+    PulledStack(String, std::result::Result<(String, String), String>),
     /// What submitting a patch to Phabricator sends, read: or why nothing
     /// can be.
     #[cfg(feature = "moz-phab")]
@@ -2537,6 +2543,12 @@ enum Done {
 /// What the bar says while an agent is being stopped, its ask landed then.
 const STOPPING: &str = "stopping the agent";
 
+/// The stack's pull from Phabricator under way, its run and where it is,
+/// as last read (`App::pull_under_way`): for how many changes the database
+/// had then, and which stack.
+#[cfg(feature = "moz-phab")]
+type PullMemo = ((usize, String), Option<(String, review::Phase)>);
+
 /// Where HEAD of the checkout stacked runs in was, against stack `name` at
 /// `rev`, when it was last looked at; whether to look again at once.
 struct HeadSeen {
@@ -2566,8 +2578,8 @@ struct Background {
     again: bool,
     /// What is being done that the bar says: pulling, importing.
     doing: Vec<&'static str>,
-    /// The pull under way: its stack, and where it is, which the banner
-    /// says.
+    /// The pull whose read of Phabricator this editor does: its run, and
+    /// where its read is, which the banner says.
     #[cfg(feature = "moz-phab")]
     pull: Option<(String, review::Pulling)>,
     /// The stack being checked, and its rev.
@@ -2831,6 +2843,8 @@ impl App {
             comparisons: Default::default(),
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
+            #[cfg(feature = "moz-phab")]
+            pull_memo: std::cell::RefCell::new(None),
             files_memo: std::cell::RefCell::new(HashMap::new()),
             held_memo: std::cell::RefCell::new(None),
             hist_memo: std::cell::RefCell::new(None),
@@ -3256,7 +3270,7 @@ impl App {
                 }
             }
             #[cfg(feature = "moz-phab")]
-            Done::PulledStack(pulled) => self.pulled_stack(pulled),
+            Done::PulledStack(name, pulled) => self.pulled_stack(name, pulled),
             #[cfg(feature = "moz-phab")]
             Done::Submitting(read) => self.submit_read(read),
             #[cfg(feature = "moz-phab")]
@@ -4645,10 +4659,12 @@ impl App {
                 && !self.bg.stopping.contains(id)
             {
                 // A lint job that landed nothing: quietly said; stopped, or
-                // dropped, as it was.
+                // dropped, as it was. A reconcile with HEAD, or a pull from
+                // Phabricator that brought nothing, failed or was cut short:
+                // as it says, the agent having no part in it.
                 let stopped = r.summary == crate::lint::STOPPED || r.summary == crate::lint::DROPPED;
                 self.status = match (crate::held::linted(r), r.state) {
-                    _ if crate::reconcile::is(r) => r.summary.clone(),
+                    _ if crate::reconcile::is(r) || crate::held::pulled(r) => r.summary.clone(),
                     (true, RunState::Failed) if !stopped => format!("the linter could not lint the stack {}: {}", r.stack, r.summary),
                     (true, _) => format!("{}: {}", r.request, r.summary),
                     (false, state) => {
@@ -6004,10 +6020,11 @@ impl App {
                 // dropped.
                 BannerLine::Lint(run) => self.lint_stop_said(run).map(|_| Ok(Action::AskStop(run.clone()))),
                 // The stack's reconcile with HEAD waiting its turn: dropped;
-                // and its pull from Phabricator.
+                // and its pull from Phabricator, but as it reads
+                // Phabricator or is made.
                 BannerLine::Reconcile(run) => Some(Ok(Action::AskDropReconcile(run.clone()))),
                 #[cfg(feature = "moz-phab")]
-                BannerLine::PullWaits(run) => Some(Ok(Action::AskDropPull(run.clone()))),
+                BannerLine::Pull(run) => self.pull_deleting(run),
                 _ => None,
             },
             Screen::Main => match self.focus {
@@ -6036,13 +6053,13 @@ impl App {
             Screen::Runs => {
                 let r = *self.runs_newest().get(self.pick)?;
                 // A reconcile with HEAD waiting its turn: dropped; and a pull
-                // from Phabricator.
+                // from Phabricator, but as it reads Phabricator or is made.
                 if crate::reconcile::is(r) && r.state == RunState::Started {
                     return Some(Ok(Action::AskDropReconcile(r.id.clone())));
                 }
                 #[cfg(feature = "moz-phab")]
                 if review::is(r) && r.state == RunState::Started && r.pull.is_some() {
-                    return Some(Ok(Action::AskDropPull(r.id.clone())));
+                    return self.pull_deleting(&r.id);
                 }
                 // A lint job under way, running or waiting its turn.
                 let lint = crate::lint::step_of(r).is_some();
@@ -6214,19 +6231,21 @@ impl App {
         }
         match self.screen {
             Screen::Main if self.on_banner => {
-                let pulling = if cfg!(feature = "moz-phab") { ", then a pull from Phabricator under way, with the revision it reads" } else { "" };
+                let pulling = if cfg!(feature = "moz-phab") {
+                    ", then the stack's pull from Phabricator, from when it is asked to when it is made: reading Phabricator, with the revision it reads, waiting its turn, or being made"
+                } else {
+                    ""
+                };
                 let pushes = if cfg!(feature = "try-push") {
                     " Try pushes, followed: each try push under way, with where it is, on Lando, then on Treeherder."
                 } else {
                     ""
                 };
                 out.push(format!(
-                    "The banner says what waits on you on this stack, a line for each, in sections. Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator{pulling}. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. The linter: the stack's lint, waiting its turn or running, with where it is.{pushes} Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
+                    "The banner says what waits on you on this stack, a line for each, in sections. Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it{pulling}. Nothing of it is applied before you review it. The linter: the stack's lint, waiting its turn or running, with where it is.{pushes} Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
                 ));
                 out.push(match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "Press Enter to review this one.".to_string(),
-                    #[cfg(feature = "moz-phab")]
-                    Some(BannerLine::Pulling) => format!("The pull is under way: {}.", banner::PULL_BRINGS),
                     Some(BannerLine::Batch) => {
                         "Press Enter to pick what to send: the batch's edits to a single agent, its answers to a single agent or fanned out, an agent each; and which comments are in it.".into()
                     }
@@ -6238,8 +6257,14 @@ impl App {
                         "The linter lints the stack, patch by patch, away from the screen, one lint at a time of every stack: what it fixes lands here for your review. Press Enter to read what it writes.".into()
                     }
                     Some(BannerLine::Reconcile(_)) => format!("{}. Press Enter for its menu, to drop it.", self.reconcile_waits()),
+                    // The stack's pull: where it is; waiting its turn, its
+                    // menu.
                     #[cfg(feature = "moz-phab")]
-                    Some(BannerLine::PullWaits(_)) => format!("{}. Press Enter for its menu, to drop it.", self.pull_waits(&self.stack)),
+                    Some(BannerLine::Pull(run)) => match (self.pull_said(run), self.pull_menu(run)) {
+                        (Some(said), Some(_)) => format!("{said}. Press Enter for its menu, to drop it."),
+                        (Some(said), None) => format!("{said}."),
+                        (None, _) => "This pull from Phabricator is no longer under way.".into(),
+                    },
                     _ => "Press Enter to go to this comment.".into(),
                 });
                 out.extend(self.delete_help());
@@ -6466,8 +6491,12 @@ impl App {
                         out.push(format!("{}. Press Enter for its menu, to drop it.", self.reconcile_waits_of(&r.stack)));
                     }
                     #[cfg(feature = "moz-phab")]
-                    Some(r) if review::is(r) && r.state == RunState::Started && r.pull.is_some() => {
-                        out.push(format!("{}. Press Enter for its menu, to drop it.", self.pull_waits(&r.stack)));
+                    Some(r) if review::is(r) && r.state == RunState::Started && r.pull.is_some() && self.pull_said(&r.id).is_some() => {
+                        let said = self.pull_said(&r.id).unwrap_or_default();
+                        out.push(match self.pull_menu(&r.id) {
+                            Some(_) => format!("{said}. Press Enter for its menu, to drop it."),
+                            None => format!("{said}."),
+                        });
                     }
                     Some(r) if crate::lint::step_of(r) == Some(crate::lint::Step::Waiting) => {
                         out.push("This lint job waits its turn. Press Enter to see what the linter writes, or to drop it.".into());
@@ -10023,7 +10052,8 @@ impl App {
                     return;
                 };
                 // A reconcile with HEAD waiting its turn: what it waits for,
-                // and its drop; and a pull from Phabricator.
+                // and its drop; and a pull from Phabricator, which, as it
+                // reads Phabricator or is made, says so.
                 if let Some(m) = self.reconcile_menu(&r.id) {
                     self.mode = Mode::Menu(m);
                     return;
@@ -10031,6 +10061,11 @@ impl App {
                 #[cfg(feature = "moz-phab")]
                 if let Some(m) = self.pull_menu(&r.id) {
                     self.mode = Mode::Menu(m);
+                    return;
+                }
+                #[cfg(feature = "moz-phab")]
+                if let Some(said) = self.pull_said(&r.id) {
+                    self.status = said;
                     return;
                 }
                 // A lint job under way: what the linter wrote, or the linter
@@ -10756,13 +10791,13 @@ impl App {
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "review it",
-                    #[cfg(feature = "moz-phab")]
-                    Some(BannerLine::Pulling) => "say what the pull brings",
                     Some(BannerLine::Batch) => "pick what to send",
                     Some(BannerLine::Lint(_)) => "read what the linter writes",
                     Some(BannerLine::Reconcile(_)) => "say what it waits for, or drop it",
                     #[cfg(feature = "moz-phab")]
-                    Some(BannerLine::PullWaits(_)) => "say what it waits for, or drop it",
+                    Some(BannerLine::Pull(run)) if self.phase_of(run) != Some(review::Phase::Waiting) => "say where the pull is",
+                    #[cfg(feature = "moz-phab")]
+                    Some(BannerLine::Pull(_)) => "say what it waits for, or drop it",
                     _ => "go to it",
                 };
                 let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));

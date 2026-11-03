@@ -121,7 +121,8 @@ away requests from this machine for now (HTTP 429, too many requests)`);
 nothing waits to read it again, as nothing reads it by itself: you fetch
 again when you choose. What else you ask for is tried once too, a
 submit, a pull of the stack, of one revision, or into a new stack, and,
-turned away, says so plainly, a pull storing nothing then. Nothing is
+turned away, says so plainly, a pull storing nothing of Phabricator then,
+its run failed. Nothing is
 read while reviews come from nowhere
 (`reviews.source = "none"`, Settings below), when no fetch is offered,
 nor in the tour. In the browser (`stacked web`) and in StackED, the
@@ -565,7 +566,9 @@ then names those:
   the waiting lint job…`, or `Stop the linter…` once it runs; on a
   reconcile with HEAD waiting its turn, it is `Drop the waiting reconcile
   with HEAD…`; on a pull from Phabricator waiting its turn, `Drop the
-  waiting pull from Phabricator…`. On the runs, it stops an ask that
+  waiting pull from Phabricator…`, and, reading Phabricator or being
+  made, nothing, the status line saying why. On the runs, it stops an ask
+  that
   runs, and drops a lint job, a reconcile with HEAD or a pull from
   Phabricator that waits its turn. An item ending with `…` asks first, and so does Delete; Delete also
   asks before it takes back what you wrote in a review, and before it

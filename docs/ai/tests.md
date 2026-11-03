@@ -257,10 +257,13 @@ in a thread you closed held with the thread as it was, `stacked landed`
 saying so, and reopening it once accepted, on the stack's comments for one
 moved there, as its history has it last when written since), a new stack
 pulled from Phabricator's revisions (by number or link, named or not,
-made empty on the bottom one's base, the pull's review accepted from the
-command line making its patches, a revision a stack holds, or that the
-work waiting for your review adds, refused before Phabricator is read,
-one on a commit the repository lacks refused, no stack made),
+made empty, on the bottom one's base once read, the pull's review
+accepted from the command line making its patches, a revision a stack
+holds, or that the work waiting for your review adds, refused before
+Phabricator is read, one on a commit the repository lacks refused, its
+run failed saying so,
+nothing of Phabricator stored, the stack made as it was asked staying,
+empty, on HEAD),
 Phabricator's commands there only when built with it, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1, 2, 3 and / does anything, keys mapped by the settings
@@ -848,8 +851,8 @@ never fetched not fetched yet; a fetch turned away (HTTP 429) said
 plainly, tried once, its first call turned away and nothing asked after
 it, nothing written, the statuses and the lines as they were, nothing
 waited out nor read by itself after it, a pull asked tried all the same,
-turned away too, said plainly, nothing written, and a fetch after it
-reading all of it at once;
+turned away too, said plainly, its run failed, nothing of Phabricator
+written, and a fetch after it reading all of it at once;
 what a fetch reads stored as records of their own, a revision's state, its
 comments, its raw latest diff, the fetch, and an editor opened again on
 that database showing the lines, the letters and the marks as they are
@@ -893,18 +896,39 @@ accepted; a leaf's add rejected alone, from what was stored of what each
 operation needs, its comment not filed, closing in part checked away from
 the screen, and pulled again, both back; more than one open parent, or
 more than one open revision stacked on one where the pull goes up,
-refused, nothing stored nor held, the pull of a patch's revision with its
-parents alone going all the same; a pull turned away saying so plainly
-and storing nothing; a patch's revision pulled with its parents, then
+refused, its run failed saying which, nothing stored nor held, the stack
+free, the pull of a patch's revision with its parents alone going all the
+same; a pull turned away saying so plainly, its run failed saying so, no
+record of Phabricator written, the stack free, from the editor too; a
+patch's revision pulled with its parents, then
 with those stacked on it too, as its item's choice picks, kept for the
 stack; a pull waiting its turn as an edit does behind the agent's change,
 one at a time, its line of the banner and its menu saying what it waits
 for, dropped from its line and from the runs, asked first, else made on
 the stack that change makes, reviewed after it, what each operation
 needs worked out from that stack, its review marking each on its own once
-that change is accepted; the stack not edited by hand while a pull waits
-its turn, unchained, behind the change under review, then while it is
-made, held midway (`review::hold_making`, a hook of the tests' for one
+that change is accepted; the stack not edited by hand while a pull reads
+Phabricator, asked in the editor, its run written at once and reading,
+nothing read yet, the read held as it starts (`review::hold_reading`, as
+`review::hold_making` below holds a making, each read saying so in a
+folder), the stack's menu and a patch's graying their edits and saying
+why, Delete on the patch saying why, `stacked drop`, `move`, `undo` and
+`delete` refusing, saying why, another pull of the stack refused, then,
+let go, the pull read, made and filed, the stack free once its review
+closes; a pull whose read is cut short, the process reading it gone: the
+stack free at once, its run landed as failed once seen (`land_orphans`),
+saying so, once, nothing of Phabricator stored, and, its read let go
+after all, reading for nothing and saying why, then pulled again; a pull
+saying each phase as it is, behind the agent's change under review,
+unchained, in another process than the editor's: reading Phabricator,
+then waiting its turn, then, that change reviewed, being made, held
+midway, a reconcile with HEAD asked after it waiting for it, its line of
+the banner, the banner's own line, Enter there, Delete there and what
+changes the stack saying each, the drop offered only while it waits its
+turn, what the pull waits for counting nothing asked after it; the stack
+not edited by hand while a pull waits its turn, unchained, behind the
+change under review, then while it is made, held midway
+(`review::hold_making`, a hook of the tests' for one
 database's pulls, as the editor's tests share their process: planned on
 its copy and not filed yet, the launch lock held, each making says so in
 a folder, then waits there until the test lets it go), the stack's menu
@@ -921,13 +945,15 @@ moves while it is made, past what refuses edits by hand, made again, and
 filed after on the stack as it then is; the stack's list open in $EDITOR
 as a pull is made, saved, coming back with why at its top, emptied,
 nothing changed; a new stack pulled from a revision typed,
-refused until it names one, made empty on the bottom one's base, named
-after it, its parent and the one stacked on it added, the review open,
+refused until it names one, made empty, shown, then moved onto the
+bottom one's base, named after it, its parent and the one stacked on it added, the review open,
 the commit's message as uploaded, or Phabricator's title and summary for
 one whose summary was written otherwise since, a revision a stack holds
-refused as it is typed, one on a commit the repository lacks refused,
-nothing written; the banner saying where a pull is as it reads, and why
-one that failed did; the
+refused as it is typed, one on a commit the repository lacks refused, its
+stack made at once, empty, on HEAD, and shown, staying so, its run
+failed, nothing of Phabricator stored; the banner saying where a pull is
+as it reads, its line among the edits, and why one that failed did, its
+run failed; the
 parent: a reordered stack's revisions differing by their parents alone,
 nothing read for it, Space and the menu's item showing the parent first,
 Phabricator's then the one a submit sets, and nothing under it, `?`
@@ -1636,8 +1662,9 @@ it was filed counted as edited, a thread closed not counted, nor a new
 reply or edit there, but for one moved to the stack's comments, another
 stack's pull not this one's, and one a review of before rejected counted,
 as a pull brings it again; where a pull is said, one patch's revision
-pulled alone too; and what a pull brings said counted, its conflicts
-marked last. Those in
+pulled alone too, what it reads on its line of the banner, and each of
+its phases, as what changes the stack says it and as its line; and what
+a pull brings said counted, its conflicts marked last. Those in
 `tui/revisions.rs` show how long ago what the Phabricator line says was
 fetched, said as the line says it, just now, then in minutes, in hours,
 yesterday, then in days, a time to come just now; a title in work

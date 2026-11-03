@@ -54,8 +54,9 @@
   names.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): a pull, of a stack, of one patch's
-  revision or into a new stack, read (`phab.rs`), queued as an edit,
-  then made on a copy of the database and filed for one review, its new
+  revision or into a new stack, queued as an edit as it is asked, read
+  (`phab.rs`), its read cut short landed as failed, then made on a copy
+  of the database and filed for one review, its new
   versions, the patches it adds, those it makes again on what it changed
   under them, and the reviewers' comments (`review.rs`); a patch submitted
   as work in progress, or its title, summary and parent alone to a
@@ -154,7 +155,8 @@
   of the patch the middle shows, from what is stored, with how long ago it
   was fetched, what differs on a screen of its own, the pulls, of the
   stack, of the patch's revision, with its choice, or into a new stack,
-  and a pull waiting its turn, its menu and its drop, the submit item as
+  and the stack's pull under way, reading Phabricator, waiting its turn
+  or being made, its line's menu and its drop, the submit item as
   its revision's status has it, the patch's `Phabricator` menu, and the
   fetch, asked from a menu, or after a submit; `tui/compared.rs`, two
   versions of a text compared word by word where their lines wrap aside,
