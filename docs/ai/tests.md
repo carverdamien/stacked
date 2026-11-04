@@ -1332,9 +1332,9 @@ the first one's place, said so, a new tab opened on it, and the first
 one's refused, its tab's events too; each tried again on another port should
 another process take it first, or the tab come back later than 2
 seconds), a tab come back from another launch told that stacked web runs
-again, before the screen, whether it says that launch as the browser does
-or in the address of a page loaded again (`l`), none told for the same
-launch, nor with `web.notifications = false`; the last tab closed, saying
+again, before the screen, with no bell, whether it says that launch as
+the browser does or in the address of a page loaded again (`l`), none told
+for the same launch, nor with `web.notifications = false`; the last tab closed, saying
 it goes (`g`) and its events closed, `stacked web` quitting as Quit does,
 no sooner than 2 seconds after, saying why, the worktree made ahead
 removed; a tab loaded again, saying it goes and back at once, quitting
@@ -1400,9 +1400,15 @@ agent failed (1): rate limited.`, each alone, and the answer's clicked
 what was there as `stacked web` started (work waiting for review, a
 failure), the next landing alone, and a second page, come after it, told
 none of it, but the landing after, which the first page is told too; and,
-`web.notifications = false` in the settings of a `stacked web` run for
-real, none sent, the landing and the failure said on the screen all the
-same; and, with the `try-push` feature, a try push followed by the editor
+in `stacked web` runs for real, the bell (`b`) as the settings say:
+`web.bell = true`, an answer and a failure landed at once, in one edit,
+told by their two notices, then by one bell after both, before the screen
+that says them, then the next landing alone by its notice and one bell;
+`web.bell = false`, the notice alone; `web.notifications = false`, the
+bell on unless set, no notice but one bell for each landing, the landing
+and the failure said on the screen all the same; both false, neither, the
+landing and the failure said on the screen all the same; and, with the
+`try-push` feature, a try push followed by the editor
 once it knows of it, its look answered by a stand-in for Lando and
 Treeherder (`try_push::web_stand_in`, and `try_push::look_every` with no
 wait between looks), done on Treeherder, one of its two tasks failed, its
@@ -1425,7 +1431,10 @@ comment, nothing written in the database, then a key sent after done;
 and
 `web.rs` tests the rows and the lines both ways, the line a page's events
 start with as the client reads it, its build the same each time, the page
-going (`g`) alone, and a token kept for its port alone, in a file of mode
+going (`g`) alone, the notices learned at once told as the settings say
+(each notice's line, then one bell; the notices' lines alone without the
+bell; the bell alone without the banners; nothing with neither, nor for
+no notice), as the client reads them, and a token kept for its port alone, in a file of mode
 0600 whatever the umask or a mode opened meanwhile, written whole beside
 it, nothing left there, none read of what is not a token, and nothing kept
 nowhere, nor where a folder is in its place, with the client's own tests
@@ -1446,7 +1455,8 @@ browser sends the click before the focus or after; and a notice made what
 the page shows of it, its tag, its title, its body and the line its click
 sends the server, each on a line of its own, a new line in its title or
 its body a space, and nothing for one short of a field, or whose run is
-empty or holds a space; `$EDITOR` running made the words said over
+empty or holds a space; the bell's line, `b` alone, the bell, `bye` still
+the editor gone, `b` with more nothing; `$EDITOR` running made the words said over
 the screen, by the program it runs, `the editor` when none is named; and
 which stacked serves the page made what the page keeps of it, nothing for
 one short of a field or with one more, an empty field, one the page could
@@ -2041,9 +2051,14 @@ unless set, `true` and `false` read, any other value, of any kind, said
 and the notices sent, the rest of the file read, `false` written beside
 the port, the rest of the file as it was, another value refused with the
 file as it was, and printed with its comment, built with `web`, and read
-back the same; and `[web]` the
+back the same; its bell, rung unless set, `true` and `false` read with
+the notifications false, any other value, of any kind, said and the bell
+rung, the rest of the file read, `false` written beside the
+notifications, the rest of the file as it was, another value refused with
+the file as it was, and printed with its comment after the notifications',
+built with `web`, and read back the same; and `[web]` the
 settings' file's alone: a checkout's own that sets it, wrong too, its
-notifications too, as the settings' file has it, each key said to be
+notifications and its bell too, as the settings' file has it, each key said to be
 passed over, the rest of it read, neither marked as the checkout's nor
 the one in use there, refused to `--local` for writing and for reading,
 and taken out there; those in `tui/notices.rs`, a notice's body made a

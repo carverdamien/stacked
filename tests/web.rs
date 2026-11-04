@@ -1607,11 +1607,14 @@ fn a_tab_come_back_from_another_launch_is_told_stacked_web_runs_again_unless_not
     let seen = until(&mut same, "the screen", screen);
     assert!(notices(&seen).is_empty(), "{seen:#?}");
     // Saying another, as a tab come back after a launch does: told, before
-    // the screen; and so too a page loaded again, saying it in its address.
+    // the screen, with no bell, which rings for what the editor learned
+    // alone; and so too a page loaded again, saying it in its address.
     let mut again = events_again(port, &token, "0123456789abcdef");
-    assert_eq!(notices(&until(&mut again, "the screen", screen)), [running_again()]);
+    let seen = until(&mut again, "the screen", screen);
+    assert_eq!((notices(&seen), bells(&seen)), (vec![running_again()], 0), "{seen:#?}");
     let mut loaded = events_with(port, &format!("t={token}&cols=100&rows=30&l=0123456789abcdef"), "");
-    assert_eq!(notices(&until(&mut loaded, "the screen", screen)), [running_again()]);
+    let seen = until(&mut loaded, "the screen", screen);
+    assert_eq!((notices(&seen), bells(&seen)), (vec![running_again()], 0), "{seen:#?}");
     // `web.notifications = false` in the settings: none.
     let home = tmp.path().join("home");
     settings_of(&home, "[web]\nnotifications = false\n");
@@ -2612,28 +2615,43 @@ fn going_on(db: &Path, id: &str, stack: &str, way: &str) {
 /// review, to the comment of its stack that asked "Why add b?", which it
 /// writes.
 fn answer_landed(db: &Path, id: &str) {
-    stacked::db::Db::edit(db, |d| {
-        let r = d.run(id).cloned().unwrap();
-        let asking = stacked::db::Note { change: stacked::db::stack_change(&r.stack), id: format!("{id}-c1"), text: "Why add b?".into(), ..Default::default() };
-        d.set_note(asking.clone())?;
-        let reply = stacked::held::Reply { change: asking.change, id: asking.id, text: "For the bees.".into(), tag: r.what.clone(), ..Default::default() };
-        d.add_run(stacked::db::Run {
-            state: stacked::db::RunState::Done,
-            pid: None,
-            summary: "its work waits for your review: 1 reply".into(),
-            held: Some(stacked::held::Held { at: stacked::db::now(), replies: vec![reply], ..Default::default() }),
-            ..r
-        })
-        .map(|_| ())
+    stacked::db::Db::edit(db, |d| lands_answer(d, id)).unwrap();
+}
+
+/// Run `id` of `d`, going on, landed as `answer_landed` lands it.
+fn lands_answer(d: &mut stacked::db::Db, id: &str) -> stacked::db::Result<()> {
+    let r = d.run(id).cloned().unwrap();
+    let asking = stacked::db::Note { change: stacked::db::stack_change(&r.stack), id: format!("{id}-c1"), text: "Why add b?".into(), ..Default::default() };
+    d.set_note(asking.clone())?;
+    let reply = stacked::held::Reply { change: asking.change, id: asking.id, text: "For the bees.".into(), tag: r.what.clone(), ..Default::default() };
+    d.add_run(stacked::db::Run {
+        state: stacked::db::RunState::Done,
+        pid: None,
+        summary: "its work waits for your review: 1 reply".into(),
+        held: Some(stacked::held::Held { at: stacked::db::now(), replies: vec![reply], ..Default::default() }),
+        ..r
     })
-    .unwrap();
+    .map(|_| ())
 }
 
 /// On `db`, run `id`, going on, landed: failed, as `summary` says.
 fn failed(db: &Path, id: &str, summary: &str) {
+    stacked::db::Db::edit(db, |d| fails(d, id, summary)).unwrap();
+}
+
+/// Run `id` of `d`, going on, landed as `failed` lands it.
+fn fails(d: &mut stacked::db::Db, id: &str, summary: &str) -> stacked::db::Result<()> {
+    let r = d.run(id).cloned().unwrap();
+    d.add_run(stacked::db::Run { state: stacked::db::RunState::Failed, pid: None, summary: summary.into(), ..r }).map(|_| ())
+}
+
+/// On `db`, runs `answer` and `change`, going on, landed at once, in one
+/// edit, which the editor reads whole: the answer as `answer_landed` lands
+/// it, the change failed as `summary` says.
+fn landed_at_once(db: &Path, answer: &str, change: &str, summary: &str) {
     stacked::db::Db::edit(db, |d| {
-        let r = d.run(id).cloned().unwrap();
-        d.add_run(stacked::db::Run { state: stacked::db::RunState::Failed, pid: None, summary: summary.into(), ..r }).map(|_| ())
+        lands_answer(d, answer)?;
+        fails(d, change, summary)
     })
     .unwrap();
 }
@@ -2657,6 +2675,21 @@ fn notice(run: &str, title: &str, body: &str) -> (String, String, String) {
 /// Whether event `l` is a notice.
 fn is_notice(l: &str) -> bool {
     l.starts_with("data: n ")
+}
+
+/// Whether event `l` is the bell.
+fn is_bell(l: &str) -> bool {
+    l == "data: b"
+}
+
+/// How many times the bell is rung among the events `seen`.
+fn bells(seen: &[String]) -> usize {
+    seen.iter().filter(|l| is_bell(l)).count()
+}
+
+/// The notice of run `run` on stack s, landed as `answer_landed` lands it.
+fn answer_notice(run: &str) -> (String, String, String) {
+    notice(run, "stacked: s", "A landed ask waits for your review: 1 reply, asked \"Why add b?\".")
 }
 
 #[test]
@@ -2723,7 +2756,56 @@ fn what_was_there_when_a_page_came_is_told_it_by_no_notice_in_the_browser() {
 }
 
 #[test]
-fn no_notice_is_sent_with_notifications_false_in_the_settings_in_the_browser() {
+fn what_lands_at_once_is_told_by_its_notices_then_one_bell_with_bell_true_in_the_settings_in_the_browser() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    settings_of(&home, "[web]\nbell = true\n");
+    going_on(&db, "run-answer", "s", "answer");
+    going_on(&db, "run-change", "s", "change");
+    going_on(&db, "run-next", "s", "answer");
+    let s = served(&home, tmp.path(), &db, &[]);
+    let mut events = events(s.port, &s.token, 120);
+    let seen = until(&mut events, "the banner", |l| text(l).contains("the agent works on 3 asks"));
+    assert_eq!(bells(&seen), 0, "{seen:#?}");
+    // An answer and a failure landed at once: their notices, then the bell,
+    // once for both, before the screen that says what landed.
+    landed_at_once(&db, "run-answer", "run-change", "the agent failed (1): rate limited");
+    let seen = until(&mut events, "the landing", |l| text(l).contains("1 landed ask waits for your review"));
+    let mut told = notices(&seen);
+    told.sort();
+    let failure = notice("run-change", "stacked: s", "The agent's change failed: the agent failed (1): rate limited.");
+    assert_eq!(told, [answer_notice("run-answer"), failure]);
+    assert_eq!(bells(&seen), 1, "{seen:#?}");
+    let bell = seen.iter().position(|l| is_bell(l)).unwrap();
+    assert!(seen.iter().enumerate().all(|(i, l)| !is_notice(l) || i < bell), "{seen:#?}");
+    // The next landing, alone: its notice, then the bell again.
+    answer_landed(&db, "run-next");
+    let seen = until(&mut events, "the next landing", |l| text(l).contains("2 landed asks wait for your review"));
+    assert_eq!(notices(&seen), [answer_notice("run-next")]);
+    assert_eq!(bells(&seen), 1, "{seen:#?}");
+    s.quit();
+}
+
+#[test]
+fn a_notice_comes_with_no_bell_with_bell_false_in_the_settings_in_the_browser() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    settings_of(&home, "[web]\nbell = false\n");
+    going_on(&db, "run-answer", "s", "answer");
+    let s = served(&home, tmp.path(), &db, &[]);
+    let mut events = events(s.port, &s.token, 120);
+    until(&mut events, "the banner", |l| text(l).contains("the agent works on 1 ask"));
+    // Its notice, as ever, and no bell, which would come before the screen
+    // that says what landed.
+    answer_landed(&db, "run-answer");
+    let seen = until(&mut events, "the landing", |l| text(l).contains("1 landed ask waits for your review"));
+    assert_eq!(notices(&seen), [answer_notice("run-answer")]);
+    assert_eq!(bells(&seen), 0, "{seen:#?}");
+    s.quit();
+}
+
+#[test]
+fn with_notifications_false_in_the_settings_no_notice_is_sent_but_the_bell_rings_for_each_landing_in_the_browser() {
     let (tmp, db) = setup();
     let home = tmp.path().join("home");
     settings_of(&home, "[web]\nnotifications = false\n");
@@ -2731,14 +2813,40 @@ fn no_notice_is_sent_with_notifications_false_in_the_settings_in_the_browser() {
     going_on(&db, "run-change", "s", "change");
     let s = served(&home, tmp.path(), &db, &[]);
     let mut events = events(s.port, &s.token, 120);
+    let seen = until(&mut events, "the banner", |l| text(l).contains("the agent works on 2 asks"));
+    assert_eq!(bells(&seen), 0, "{seen:#?}");
+    // Each said on the screen as ever, with no notice, a banner's, but the
+    // bell, the bell being on unless set: both would come before the screen
+    // that says what landed.
+    answer_landed(&db, "run-answer");
+    let seen = until(&mut events, "the landing", |l| text(l).contains("1 landed ask waits for your review"));
+    assert!(notices(&seen).is_empty(), "{seen:#?}");
+    assert_eq!(bells(&seen), 1, "{seen:#?}");
+    failed(&db, "run-change", "the agent failed (1): rate limited");
+    let seen = until(&mut events, "the failure", |l| text(l).contains("the agent's change failed: the agent failed (1): rate limited"));
+    assert!(notices(&seen).is_empty(), "{seen:#?}");
+    assert_eq!(bells(&seen), 1, "{seen:#?}");
+    s.quit();
+}
+
+#[test]
+fn neither_notice_nor_bell_is_sent_with_notifications_and_bell_false_in_the_settings_in_the_browser() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    settings_of(&home, "[web]\nnotifications = false\nbell = false\n");
+    going_on(&db, "run-answer", "s", "answer");
+    going_on(&db, "run-change", "s", "change");
+    let s = served(&home, tmp.path(), &db, &[]);
+    let mut events = events(s.port, &s.token, 120);
     let mut seen = until(&mut events, "the banner", |l| text(l).contains("the agent works on 2 asks"));
-    // Each said on the screen as ever, and no notice: a notice is sent
-    // before the screen that says what it tells.
+    // Each said on the screen as ever, and nothing else, though a notice
+    // and the bell would come before the screen that says what landed.
     answer_landed(&db, "run-answer");
     seen.extend(until(&mut events, "the landing", |l| text(l).contains("1 landed ask waits for your review")));
     failed(&db, "run-change", "the agent failed (1): rate limited");
     seen.extend(until(&mut events, "the failure", |l| text(l).contains("the agent's change failed: the agent failed (1): rate limited")));
     assert!(notices(&seen).is_empty(), "{seen:#?}");
+    assert_eq!(bells(&seen), 0, "{seen:#?}");
     s.quit();
 }
 

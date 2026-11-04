@@ -250,10 +250,43 @@ Refused, or in a browser without notifications, nothing is shown, and the
 page works as ever. `web.notifications = false` (Settings, below) sends
 none.
 
+With what the notices tell, while the page is not what you look at, as for
+the banners, the page rings a bell: one soft strike of a small bell, about
+a second long, which the page makes itself with the browser's Web Audio
+API, from no sound file. Its partials are a thin hemispherical shell's, as
+a desk bell's are: A5, 880 Hz, and 2.828 and 5.423 times it (2489 and 4772
+Hz), at 0.15, 0.045 and 0.015 of full scale, each struck in 4 ms, then
+dying away by 60 dB in 1.2, 0.6 and 0.3 seconds, the higher the sooner; at
+its loudest, −14 dBFS. What the editor learned at once rings it once,
+however many notices it makes; and a bell still sounding, for 1.2 seconds,
+is not struck again. It rings whether the page shows the banners or not:
+refused by the browser, in a browser without notifications, or with
+`web.notifications = false`. `web.bell = false` (Settings, below) silences
+it; with both false, the editor keeps no notice. The notice of a tab come
+back, `stacked web is running again: click to switch to this tab.`
+(above), rings nothing, as it tells nothing the editor learned. A browser
+lets a page make sound only once a click or a key reached it: the page
+makes its audio on its first click or key (but Esc), where it asks the
+browser's permission for the banners, and starts it there, and again on
+each click or key after until it has started once, as a browser may take a
+key for no such key (⌘ alone, as ⌘-Tab sends it). Until then the bell is
+silent, and nothing says so, as nothing says that the banners wait for
+that click or key either. A page loaded again, as when a stacked of
+another build answers (above), needs its first click or key again for the
+bell, though the browser keeps its permission for the banners. Between two
+strikes, the page's audio is suspended; a strike the browser holds back,
+as one may until the page is shown again, is not struck once it comes more
+than a second late, nor once the page is looked at. Nothing in StackED or
+in the terminal rings.
+
 The server runs the editor as the terminal does, drawn into a buffer of the
 page's size, and sends the page the rows that changed (server-sent events),
-after the notices of what it learned meanwhile (`tui/notices.rs`), so that
-a page sent the screen that says what landed was sent its notice; a page
+after the notices of what it learned meanwhile (`tui/notices.rs`), then,
+once for them all, the bell (`b`, a line of its own), so that a page sent
+the screen that says what landed was sent its notice and told to ring: the
+notices' lines unless `web.notifications` is false, the bell unless
+`web.bell` is false, and the notices kept by the editor while either is
+true. The server decides, and the page does as told. A page
 that comes is sent none of what the editor learns as it comes, the
 database read first, its notices sent to the pages there before. While
 `$EDITOR` runs, the editor's thread reads nothing: the threads that answer
@@ -276,8 +309,10 @@ KEPT`): the build of the page and its wasm, the launch, and whether that
 launch keeps its address; and with how long the browser waits before it
 asks for them again, once lost (a second), and the launch as their id,
 which the browser says as it asks again.
-A page of an older stacked does nothing with a notice, nor with what says
-that the editor runs, as with any line it does not know. The page sends
+A page of an older stacked does nothing with a notice, nor with the bell,
+nor with what says that the editor runs, as with any line it does not
+know; the notices' lines are as they were, so that it shows the banners
+as ever. The page sends
 its keys, its clicks and its wheel back, the wheel
 with the cell under the mouse and the lines it turned, and with the left
 button down, each cell the mouse goes over, then the cell where the button
@@ -288,15 +323,16 @@ then Space at once, opens the stack's menu with the stack's comments to
 ask about, as a right click on the stack's header does. What the page does
 is wasm
 (`web/client.rs`: the rows made HTML, the notices what the page shows of
-them, `$EDITOR` running the words said over the screen, which stacked sends
-the lines what the page keeps of it, the keys, the
-clicks and the wheel made lines for the server, the
+them, the bell's line the bell, `$EDITOR` running the words said over the
+screen, which stacked sends the lines what the page keeps of it, the keys,
+the clicks and the wheel made lines for the server, the
 wheel's small turns in pixels kept until they make a notch, 40 pixels, and
 each turn in lines or in pages a notch, whatever its size), carried by a
-hundred and fifty lines of JS (`web/index.html`), which reads the wheel's
-mode before its turn: Firefox says a mouse's notches in lines only to a
+hundred and ninety lines of JS (`web/index.html`), which reads the
+wheel's mode before its turn: Firefox says a mouse's notches in lines only to a
 page that reads the mode first; which shows the notices, and asks the
-browser's permission for them; and which says over the screen that
+browser's permission for them; which rings the bell, its audio made on
+the first click or key; and which says over the screen that
 stacked is gone, while the browser asks for the lines again, and says the
 page goes as it is hidden for good. The
 editor knows whether the mouse is in use, and what the wheel scrolls

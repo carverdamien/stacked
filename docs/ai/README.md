@@ -28,8 +28,8 @@ its tests. A new section is a new file, listed here in its place.
 - [A tour](a-tour.md): `stacked demo`, its fourteen sections on a game of
   tic-tac-toe, and the one setting it writes.
 - [In a browser](in-a-browser.md): `stacked web`, its mouse, its token,
-  its notices as the system's banners, and how the page and the server
-  share the editor.
+  its notices as the system's banners, its bell, and how the page and the
+  server share the editor.
 - [In a window of its own: StackED](in-a-window-of-its-own-stacked.md):
   `stacked app`, its fonts, mouse, windows and File menu, `--bundle`,
   StackED opened as an app, and its icon.

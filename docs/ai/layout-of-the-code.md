@@ -202,8 +202,8 @@
   move HEAD, and what you can do in your checkout so that it can;
   `tui/banner.rs`, the banner of the agent's work; `tui/notices.rs`, the
   notices of `stacked web`, what the editor learns of every stack as it
-  reads the database again, said for the system's banners, and a click on
-  one in the page; `tui/places.rs`, where
+  reads the database again, said for the system's banners and kept for
+  them or for the bell, and a click on one in the page; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/wheel.rs`, the wheel of the browser and of StackED: whether the
   mouse is in use, what the wheel scrolls under it then, and ↑↓ after a
@@ -221,6 +221,7 @@
   its server and the port it listens on, the token it keeps with a port
   fixed and the tab it waits for, its wasm and its page, the
   notices it sends the page, which shows them as the system's banners,
+  and the bell it rings for them, made by the page with the Web Audio API,
   what the page says over its screen while `$EDITOR` runs, or once stacked
   is gone, the page asking again until it answers, and `stacked web` quit
   once its last page is closed,

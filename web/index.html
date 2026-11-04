@@ -26,10 +26,10 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 <div id="gone"></div>
 <div id="editing"></div>
 <script>
-// Only carries things: the server's lines to the wasm, what the wasm makes
-// of them to the page, and to the system's banners, and what it makes of
-// the page's keys and clicks to the server (web/client.rs says what each
-// is).
+// Only carries things, and rings the bell: the server's lines to the wasm,
+// what the wasm makes of them to the page, to the system's banners and to
+// the bell, and what it makes of the page's keys and clicks to the server
+// (web/client.rs says what each is).
 const token = new URLSearchParams(location.search).get('t');
 const screen = document.getElementById('screen'), gone = document.getElementById('gone'), editing = document.getElementById('editing');
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -82,15 +82,80 @@ const over = text => {
   gone.style.display = 'grid';
   pending = '';
 };
+// Whether the page is what you look at: shown, in the window that has the
+// focus. Only while it is not are the notices shown and the bell rung: on
+// it, the editor's own banner says what they tell.
+const looked = () => !document.hidden && document.hasFocus();
 // A notice of the editor's, a banner of the system's, only while the page
-// is not what you look at: on it, the editor's own banner says it. Clicked,
-// it brings the page forward, closes, and sends its line. Without the
-// browser's permission, or without its notifications, nothing is shown.
+// is not what you look at. Clicked, it brings the page forward, closes, and
+// sends its line. Without the browser's permission, or without its
+// notifications, nothing is shown.
 const notice = (tag, title, body, line) => {
-  if ((!document.hidden && document.hasFocus()) || !window.Notification || Notification.permission !== 'granted') return;
+  if (looked() || !window.Notification || Notification.permission !== 'granted') return;
   try {
     const n = new Notification(title, {body, tag});
     n.onclick = () => { window.focus(); n.close(); send(line); };
+  } catch (_) {}
+};
+// The bell, which the server rings once for the notices it learned at
+// once, whether the page shows them or not, only while the page is not what
+// you look at: one soft strike of a small bell, made here with the Web
+// Audio API, from no sound file. Its partials are a thin hemispherical
+// shell's, as a desk bell's are: its pitch, A5, and 2.828 and 5.423 times
+// it, each its peak, struck in STRUCK seconds, then dying away by 60 dB in
+// its own time, the higher the sooner. A bell still sounding is not struck
+// again.
+const PITCH = 880, STRUCK = 0.004, PARTIALS = [[1, 0.15, 1.2], [2.828, 0.045, 0.6], [5.423, 0.015, 0.3]];
+// The page's audio, made on the first click or key that reaches it, where
+// the browser's permission for the banners is asked (`allow`), as a browser
+// lets a page make sound only after one (Esc is no such key): until then,
+// the bell is silent. Started there, as only a click or a key may start
+// it, and on each one after until it has started once, as a browser may
+// take a key for no such key (⌘ alone, as ⌘-Tab sends it); then suspended
+// while the bell does not sound. No Web Audio: never made.
+let audio = null, started = false, strikes = 0, rung = -Infinity;
+const ready = e => {
+  if (e.key === 'Escape') return;
+  const done = () => { removeEventListener('mousedown', ready); removeEventListener('keydown', ready); };
+  try {
+    audio ||= new (window.AudioContext || window.webkitAudioContext)();
+    audio.resume().then(() => {
+      if (started) return;
+      started = true;
+      done();
+      if (!strikes) audio.suspend();
+    }, () => {});
+  } catch (_) { audio = null; done(); }
+};
+addEventListener('mousedown', ready);
+addEventListener('keydown', ready);
+const bell = () => {
+  const asked = performance.now();
+  if (looked() || !audio || asked - rung < 1000 * (STRUCK + PARTIALS[0][2])) return;
+  rung = asked;
+  const mine = ++strikes;
+  const quiet = () => { if (strikes === mine) audio.suspend(); };
+  try {
+    audio.resume().then(() => {
+      // Started late, as a browser may hold the audio back until the page
+      // is shown again, or the page looked at since: not struck.
+      if (looked() || performance.now() - asked > 1000) return quiet();
+      const t = audio.currentTime + 0.01;
+      for (const [ratio, peak, decay] of PARTIALS) {
+        const o = audio.createOscillator(), g = audio.createGain();
+        o.frequency.value = PITCH * ratio;
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(peak, t + STRUCK);
+        g.gain.exponentialRampToValueAtTime(peak / 1000, t + STRUCK + decay);
+        o.connect(g);
+        g.connect(audio.destination);
+        o.start(t);
+        o.stop(t + STRUCK + decay);
+        // The pitch, the last to die away: then the audio suspended, unless
+        // the bell was struck again since.
+        if (ratio === 1) o.onended = quiet;
+      }
+    }, () => {});
   } catch (_) {}
 };
 // The browser's permission is asked once, on the first click or key that
@@ -138,6 +203,7 @@ const heard = e => {
     else { e.target.close(); events = null; over(said.over); }
   }
   else if (op === 'notice') notice(...out.slice(nl + 1).split('\n'));
+  else if (op === 'bell') bell();
   else if (op === 'editing') { gone.style.display = 'none'; editing.textContent = out.slice(nl + 1); editing.style.display = 'grid'; }
   // Which stacked sends the lines: one whose build is not the page's, newer
   // or older, has its own page loaded, which comes back as this one would;

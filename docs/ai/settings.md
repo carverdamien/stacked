@@ -347,12 +347,23 @@ settings:
   and `stacked web` exits with 1, trying no other. `notifications`, `true`
   unless set: the page is sent the editor's notices, of every stack, which
   it shows as the system's banners while it is not what you look at (In a
-  browser, above); `false` sends none. Any other value, of any kind, is
+  browser, above); `false` sends none, the bell ringing all the same
+  unless `bell` is `false` too. Any other value, of any kind, is
   said (`web.notifications: "off" is not true or false`), and `true` kept;
   `stacked config` refuses to write it (`web.notifications is true or
   false, not "off"`). The browser keeps its permission to show them for
   the page's address, its port included: with `port = "random"` it asks
-  at each launch, and with `"fixed-random"` or a port, once. Nothing of
+  at each launch, and with `"fixed-random"` or a port, once. `bell`,
+  `true` unless set: the page rings its bell for what the notices tell,
+  once for what the editor learned at once, while it is not what you look
+  at, whether `notifications` is `true` or `false`, and whether the
+  browser shows the banners or refused them (In a browser, above);
+  `false` rings none, and with both `false` the editor keeps no notice.
+  Any other value, of any kind, is said (`web.bell: "quiet" is not true or
+  false`), and `true` kept; `stacked config` refuses to write it
+  (`web.bell is true or false, not "quiet"`). `true`, the bell rings only
+  once a click or a key reached the page, as a browser lets a page make
+  sound only then. Nothing of
   it is kept in a database, nor in `state.json`. A checkout's own `.stacked/local.toml`
   that sets them has them passed over, each said (`web.port is read only
   from the settings' file, never from a checkout's own .stacked/local.toml:

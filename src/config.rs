@@ -606,6 +606,12 @@ pub struct Web {
     /// (`tui::notices`), to show as the system's banners while the page is
     /// not what you look at: unless set, they are; false, none is sent.
     pub notifications: bool,
+    /// Its pages are told to ring their bell with the notices, once for
+    /// those learned at once, while the page is not what you look at,
+    /// whether they show the notices as banners or not: unless set, they
+    /// are; false, none rings. With neither this nor `notifications`, the
+    /// editor keeps no notice.
+    pub bell: bool,
 }
 
 impl Default for Web {
@@ -614,6 +620,7 @@ impl Default for Web {
             port: Port::default(),
             kept_port: None,
             notifications: true,
+            bell: true,
         }
     }
 }
@@ -685,6 +692,7 @@ struct WrittenWeb {
     port: Option<toml::Value>,
     kept_port: Option<toml::Value>,
     notifications: Option<toml::Value>,
+    bell: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1001,6 +1009,12 @@ impl Config {
                 v => wrong.push(format!("web.notifications: {v} is not true or false")),
             }
         }
+        if let Some(v) = w.web.bell {
+            match v {
+                toml::Value::Boolean(on) => c.web.bell = on,
+                v => wrong.push(format!("web.bell: {v} is not true or false")),
+            }
+        }
         if let Some(command) = w.lint.command {
             c.lint.command = Some(command.trim().to_string());
         }
@@ -1308,6 +1322,13 @@ impl Config {
                  # the page's address, its port too: with port = \"random\", it asks at each launch.\n",
             );
             out.push_str(&format!("notifications = {}\n", self.web.notifications));
+            out.push_str(
+                "# A bell the page rings for what those notices tell while it is not what you look at,\n\
+                 # once for all that comes at once, whether notifications is true or false: one soft\n\
+                 # strike of a small bell, which the page makes itself. false rings none. The bell rings\n\
+                 # only after the page's first click or key: a browser lets a page make sound only then.\n",
+            );
+            out.push_str(&format!("bell = {}\n", self.web.bell));
         }
         // A checkout's own setting alone: said, never written as one, so
         // that this, kept as the settings' file, sets no linter there.
@@ -1428,6 +1449,7 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("web.port", Kind::Port),
     ("web.kept_port", Kind::PortNumber),
     ("web.notifications", Kind::Flag),
+    ("web.bell", Kind::Flag),
     ("lint.command", Kind::Text),
     ("demo.seen", Kind::Flag),
 ];
@@ -1565,6 +1587,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "web.port" => vec![c.web.port.name()],
         "web.kept_port" => c.web.kept_port.iter().map(|p| p.to_string()).collect(),
         "web.notifications" => vec![c.web.notifications.to_string()],
+        "web.bell" => vec![c.web.bell.to_string()],
         "lint.command" => opt(&c.lint.command),
         "demo.seen" => vec![c.demo.seen.to_string()],
         k if k.starts_with("colors.") => match Paint::named(&k["colors.".len()..]) {
@@ -2825,6 +2848,50 @@ mod tests {
     }
 
     #[test]
+    fn stacked_web_s_bell_rings_unless_set_false_whatever_the_notifications_and_any_other_value_is_said() {
+        // Rung unless set, the notifications as they are.
+        let d = Config::default();
+        assert!(d.web.bell);
+        assert_eq!(value_of(&d, "web.bell"), Ok(vec!["true".to_string()]));
+        for (written, on) in [("true", true), ("false", false)] {
+            let (c, wrong) = Config::parse(&format!("[web]\nnotifications = false\nbell = {written}\n")).unwrap();
+            assert!(wrong.is_empty(), "{written}: {wrong:?}");
+            assert_eq!((c.web.bell, c.web.notifications), (on, false), "{written}");
+        }
+        // Any other value, of any kind: said, and rung all the same, the
+        // rest of the file read.
+        for written in ["\"false\"", "\"quiet\"", "0", "[false]"] {
+            let (c, wrong) = Config::parse(&format!("editor = \"hx\"\n[web]\nbell = {written}\n")).unwrap();
+            assert_eq!((c.web.bell, c.editor.as_deref()), (true, Some("hx")), "{written}");
+            assert_eq!(wrong, [format!("web.bell: {written} is not true or false")]);
+        }
+        // Written as any setting is, beside the notifications, the rest of
+        // the file as it was; any other value refused, the file as it was.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let read = || std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, "# mine\n[web]\nnotifications = false\n").unwrap();
+        set(&path, "web.bell", &["false".to_string()]).unwrap();
+        assert_eq!(read(), "# mine\n[web]\nnotifications = false\nbell = false\n");
+        assert_eq!(set(&path, "web.bell", &["quiet".to_string()]), Err("web.bell is true or false, not \"quiet\"".to_string()));
+        assert_eq!(read(), "# mine\n[web]\nnotifications = false\nbell = false\n");
+        let (c, wrong) = Config::load(&path);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert!(!c.web.bell && !c.web.notifications);
+        assert_eq!(value_of(&c, "web.bell"), Ok(vec!["false".to_string()]));
+        // Printed with its comment, after the notifications', built with
+        // stacked web, and read back the same.
+        let text = c.render();
+        if cfg!(feature = "web") {
+            let said = "# once for all that comes at once, whether notifications is true or false: one soft\n";
+            assert!(text.contains(said) && text.contains("make sound only then.\nbell = false\n"), "{text}");
+            assert!(text.find("\nnotifications = false\n").unwrap() < text.find(said).unwrap(), "{text}");
+            assert_eq!(Config::parse(&text), Ok((c, vec![])));
+            assert!(Config::default().render().contains("\nbell = true\n"));
+        }
+    }
+
+    #[test]
     fn stacked_web_s_settings_are_the_settings_file_s_alone() {
         let tmp = tempfile::tempdir().unwrap();
         let top = tmp.path().canonicalize().unwrap().join("repo");
@@ -2834,18 +2901,27 @@ mod tests {
         // A checkout's own that sets them, even wrong: as the settings' file
         // has them, each said to be passed over, the rest of it read.
         let local = top.join(".stacked/local.toml");
-        std::fs::write(&local, "editor = \"hx\"\n[web]\nport = \"sometimes\"\nkept_port = 8080\nnotifications = false\n").unwrap();
+        std::fs::write(&local, "editor = \"hx\"\n[web]\nport = \"sometimes\"\nkept_port = 8080\nnotifications = false\nbell = false\n").unwrap();
         let (c, mut wrong) = with_local(&base, &top);
         assert_eq!((&c.web, c.editor.as_deref()), (&base.web, Some("hx")));
-        assert!(c.web.notifications);
+        assert!(c.web.notifications && c.web.bell);
         wrong.sort();
         let at = local.display();
         let passed = "is read only from the settings' file, never from a checkout's own .stacked/local.toml: here it is passed over";
-        assert_eq!(wrong, [format!("{at}: web.kept_port {passed}"), format!("{at}: web.notifications {passed}"), format!("{at}: web.port {passed}")]);
+        assert_eq!(
+            wrong,
+            [
+                format!("{at}: web.bell {passed}"),
+                format!("{at}: web.kept_port {passed}"),
+                format!("{at}: web.notifications {passed}"),
+                format!("{at}: web.port {passed}")
+            ]
+        );
         // Not said to be the checkout's, nor the one in use there.
         assert_eq!(local_keys(&top), ["editor"]);
         assert_eq!(set_in(&top, "web.port"), None);
         assert_eq!(set_in(&top, "web.notifications"), None);
+        assert_eq!(set_in(&top, "web.bell"), None);
         // Neither written there, nor read from there; taken out all the same.
         let only = "web.port is read only from the settings' file, never from a checkout's own .stacked/local.toml";
         assert_eq!(set_local(&top, "web.port", &["8080".to_string()]), Err(format!("{only}: `stacked config web.port …` writes it there; nothing written")));
@@ -2855,9 +2931,13 @@ mod tests {
             set_local(&top, "web.notifications", &["true".to_string()]),
             Err(format!("{only}: `stacked config web.notifications …` writes it there; nothing written"))
         );
+        let only = "web.bell is read only from the settings' file, never from a checkout's own .stacked/local.toml";
+        assert_eq!(set_local(&top, "web.bell", &["true".to_string()]), Err(format!("{only}: `stacked config web.bell …` writes it there; nothing written")));
+        assert_eq!(local_value(&top, "web.bell"), Err(format!("{only}: `stacked config web.bell` reads it")));
         unset_local(&top, "web.port").unwrap();
         unset_local(&top, "web.kept_port").unwrap();
         unset_local(&top, "web.notifications").unwrap();
+        unset_local(&top, "web.bell").unwrap();
         assert_eq!(std::fs::read_to_string(&local).unwrap(), "editor = \"hx\"\n[web]\n");
         assert_eq!(with_local(&base, &top).1, Vec::<String>::new());
     }

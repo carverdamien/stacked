@@ -9,7 +9,10 @@
 //! 0 to 15, or #rrggbb; MODS ratatui's modifiers, and CURSOR where the
 //! cursor is); `bye`, the editor gone; `n RUN US TITLE US BODY`, a notice of
 //! what the editor learned of run RUN, for the page to show as the system's
-//! banner while it is not what you look at; `e PROGRAM`, `$EDITOR` running
+//! banner while it is not what you look at; `b`, the bell, once for what the
+//! editor learned at once, after its notices, or alone when they are not
+//! sent, for the page to ring while it is not what you look at, whether it
+//! shows the banners or not; `e PROGRAM`, `$EDITOR` running
 //! PROGRAM, for the page to say over its screen until the next screen
 //! comes; `v BUILD LAUNCH KEPT`, first each time the page asks for the
 //! lines, which stacked sends them: the build of the page and its wasm
@@ -64,7 +67,8 @@ const PIXELS: u32 = 0;
 /// `row Y`, and on the next line the row's HTML; `bye`; `notice`, and on
 /// the next lines what `notice` makes of it; `editing`, and on the next
 /// lines what to say over the screen (`editing`); `version` and what it
-/// keeps of the stacked serving it (`version`); else nothing.
+/// keeps of the stacked serving it (`version`); `bell`, for `b` alone;
+/// else nothing.
 pub fn screen(msg: &str) -> String {
     if let Some(n) = msg.strip_prefix("n ") {
         return notice(n);
@@ -80,6 +84,7 @@ pub fn screen(msg: &str) -> String {
         (Some("s"), Some(cols), Some(rows)) => format!("size {cols} {rows}"),
         (Some("r"), Some(y), runs) => format!("row {y}\n{}", row_html(runs.unwrap_or(""))),
         (Some("bye"), ..) => "bye".into(),
+        (Some("b"), None, _) => "bell".into(),
         _ => String::new(),
     }
 }
@@ -517,6 +522,18 @@ mod tests {
         assert_eq!(screen("n run-1\u{1f}stacked: s"), "");
         assert_eq!(screen("n \u{1f}stacked: s\u{1f}Done."), "");
         assert_eq!(screen("n a run\u{1f}stacked: s\u{1f}Done."), "");
+    }
+
+    #[test]
+    fn the_bell_is_a_line_of_its_own_for_the_page_to_ring() {
+        // `b` alone, after notices or with none: the page rings its bell.
+        assert_eq!(screen("b"), "bell");
+        // The editor gone is still that; `b` with more, or another word,
+        // nothing.
+        assert_eq!(screen("bye"), "bye");
+        assert_eq!(screen("b 1"), "");
+        assert_eq!(screen("b "), "");
+        assert_eq!(screen("bell"), "");
     }
 
     #[test]
