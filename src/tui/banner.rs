@@ -171,7 +171,7 @@ impl App {
                 (updated, BannerLine::Comment(n.change.clone(), n.id.clone()))
             })
             .collect();
-        open.sort_by(|a, b| b.0.cmp(&a.0));
+        open.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
         out.extend(open.into_iter().map(|(_, l)| l));
         out
     }

@@ -18945,7 +18945,7 @@ fn accepting_a_change_waits_until_each_answer_made_on_the_stack_before_it_is_mar
     // mark kept, which goes for what it brought back.
     drop(held);
     let landed = "   ✓ keep    landed · a.txt: LINE 39 · why so l";
-    until(&mut app, |app| Some(()).filter(|_| draw(app).contains(landed)), |app| format!("never {landed:?}:\n{}", draw(app)));
+    until(&mut app, |app| draw(app).contains(landed).then_some(()), |app| format!("never {landed:?}:\n{}", draw(app)));
 }
 
 #[test]

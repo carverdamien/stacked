@@ -649,7 +649,7 @@ impl Ops {
                 _ => self.first_slot(&o.key).filter(|s| *s < q.slot).map(|s| (s + 1, o.key.clone())),
             })
             .collect();
-        below.sort_by(|a, b| b.0.cmp(&a.0));
+        below.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
         below.into_iter().map(|(_, k)| k).collect()
     }
 

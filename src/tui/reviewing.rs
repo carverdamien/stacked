@@ -411,10 +411,10 @@ impl Line {
             (_, _, _, _, _, Some(k), _) => format!("following {k}"),
             (_, _, _, _, _, _, Some(f)) => format!("found {f:?}"),
             _ if self.stacked => "stacked".to_string(),
-            _ => match self.noted {
-                Some(k) => format!("noted {k}"),
-                None => return None,
-            },
+            _ => {
+                let k = self.noted?;
+                format!("noted {k}")
+            }
         };
         Some(key)
     }

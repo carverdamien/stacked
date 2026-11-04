@@ -932,7 +932,7 @@ fn pull_over(
         let num: u64 = r.d.trim_start_matches('D').parse().map_err(|_| format!("{} names no revision", r.d))?;
         let diffs = call("differential.querydiffs", json!({"revisionIDs": [num]}))?;
         let mut all: Vec<(u64, &Value)> = diffs.as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v))).collect();
-        all.sort_by(|a, b| b.0.cmp(&a.0));
+        all.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
         let mut raw_of = |id: u64, out: &mut PullRead| -> Result<String, String> {
             if let Some(raw) = stored(&r.link, id).or_else(|| out.raws.iter().find(|(l, i, _)| *l == r.link && *i == id).map(|(_, _, raw)| raw.clone())) {
                 return Ok(raw);

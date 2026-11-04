@@ -228,7 +228,7 @@ impl App {
         if r.stack != self.stack {
             self.switch_stack(&r.stack);
         }
-        let review = Some(r.id.clone()).filter(|_| crate::held::waiting(&self.db, &r)).or_else(|| followed_up(&self.db, &r));
+        let review = crate::held::waiting(&self.db, &r).then(|| r.id.clone()).or_else(|| followed_up(&self.db, &r));
         match review {
             Some(id) => self.open_review(&id, None),
             None => {
