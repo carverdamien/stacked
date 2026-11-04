@@ -50,7 +50,11 @@ held (alt elsewhere) a block of them, their columns only. ⌘C copies it
 (ctrl-c elsewhere, which quits only when nothing is selected), each line
 without the blanks at its end. A click or a key for the editor lets it go.
 A click is a press let go where it was pressed, so that a drag is not one;
-the cursor does not follow the mouse while its button is down.
+the cursor does not follow the mouse while its button is down. A drag
+that starts on HEAD's row (`▶ HEAD`) selects nothing: it drags HEAD, as
+in the browser (above), each cell the mouse goes over with the button
+down sent to the editor, then where the button is let go; the editor
+tells the window where HEAD's row is with each screen it sends.
 
 StackED runs where `stacked app` was started, as the editor in the terminal
 does: it opens the database the editor would (`-f`, `$STACKED_FILE`, the

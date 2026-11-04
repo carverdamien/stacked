@@ -232,6 +232,33 @@ fn each_window_s_editor_runs_in_its_own_folder() {
     assert!(!last.contains("▶ HEAD"), "{last}");
 }
 
+#[test]
+fn head_s_row_is_held_for_a_drag_and_head_dragged_onto_a_patch_is_put_down_there_in_the_window_too() {
+    let (tmp, db) = setup();
+    let s = Session::open(&db, &tmp.path().join("src")).unwrap();
+    s.send(Input::Size(100, 30));
+    // The screen the window is sent says where a press is held for a drag:
+    // HEAD's row, after patch 2, and nowhere else.
+    let o = until(&s, "HEAD's row, held for a drag", |o| {
+        matches!(o, Output::Screen(b, _, _, drags) if find(b, "▶ HEAD").is_some_and(|(_, y)| !drags.is_empty() && drags.iter().all(|r| r.y == y)))
+    });
+    let Output::Screen(buf, ..) = o else { unreachable!() };
+    // Where a text is in the patches pane, its 25 columns.
+    let in_list = |said: &str| {
+        (0..buf.area.height).find_map(|y| {
+            let row: String = (0..25).map(|x| buf[(x, y)].symbol()).collect();
+            row.find(said).map(|b| (row[..b].chars().count() as u16, y))
+        })
+    };
+    let (head, one) = (in_list("▶ HEAD").unwrap(), in_list("Bug 1 - shout two").unwrap());
+    // Pressed there, dragged onto patch 1, let go there: HEAD put down
+    // under patch 1.
+    s.send(Input::Down { x: head.0, y: head.1 });
+    s.send(Input::Drag { x: one.0, y: one.1 });
+    s.send(Input::Up { at: Some(one) });
+    screen(&s, "HEAD moved", |b| text(b).contains("HEAD is at patch 1 of s, detached"));
+}
+
 #[cfg(feature = "moz-phab")]
 #[test]
 fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_window_too() {

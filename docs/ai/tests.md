@@ -656,7 +656,20 @@ far as its ends and no further; by pages too, a page the middle's height
 less a line; nothing out of a box open, over the middle while a patch is
 moved, nor over the top bar or the bottom line; after a key, ↑↓ where
 the cursor is, wherever the mouse is, pgdn for a page, until the mouse
-moves again), the comments pane's previews,
+moves again), HEAD with the mouse (being moved, put down by a click on
+its own row once the mouse over a patch put it under the patch; its row
+pressed and let go with no drag, the click it was, HEAD's row picked,
+then its menu; pressed and dragged, moved as `Move HEAD…` moves it,
+under the patch the mouse is over, at the base over the stack's header,
+and put down where the button is let go over the patches; let go over
+the middle or off the screen, left where it was; Esc while it is
+dragged, left where it was, the mouse then going by and the button let
+go dropping nothing; dragged where Move HEAD would not move HEAD, the
+view of why opened, as `Move HEAD…` opens it; with moz-phab, let go below
+its last commit marked `!`, said why as a click there says it, HEAD
+being moved still; and a press on a patch's row a click at once, a drag
+from there the mouse going by), the mouse going over the search's scope
+turning nothing, and a click on it turning it, the comments pane's previews,
 moving a patch, the long lines of messages wrapped (a patch's menu
 offering it only when its message has some at the settings' width, the
 note saying how many lines of which patches; the edit landing for review,
@@ -1102,7 +1115,9 @@ without it, as `/favicon.ico` is, the rows as they change, a key and a click,
 1 on the versions of a patch opening the menu of the views of the
 interdiffs under its heading, a click picking side by side, the version
 drawn so, and the change from a version to the next, picked so, drawn as
-a patch of its own once its files are read,
+a patch of its own once its files are read, HEAD's row pressed, dragged
+onto patch 1 and let go there, `stacked web` run in the checkout, HEAD
+put down under patch 1,
 the wheel's ↑ after a key, sent with the cell under the mouse, on a patch,
 listing files, going to the last file of the patch above, whatever is
 under the mouse, and the editor left, the page told, the worktree made ahead
@@ -1163,7 +1178,9 @@ marked on its own; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the wheel said once it turned a notch, with the cell under the mouse
-(none over no cell), what it turned short of a notch kept, and
+(none over no cell), what it turned short of a notch kept, the mouse
+moved with the left button down said as `d` where it would be `v`, and
+the button let go with its cell (none off the screen), and
 the mouse followed only while the page has the focus: the cell where
 the mouse was last seen while the page did not have the focus said at once
 when the page has it again (unless the mouse left the page), so that the
@@ -1175,6 +1192,9 @@ click, 1 on the versions of a patch opening the menu of the views of the
 interdiffs under its heading, a click picking side by side, the version
 drawn so, and the change from a version to the next, under its own
 heading, picked so, drawn as a patch of its own once its files are read,
+the screen sent saying HEAD's row is where a press is held for a drag,
+HEAD's row pressed, dragged onto patch 1 and let go there, HEAD put down
+under patch 1,
 the wheel's ↑ after a key, sent with the cell under the mouse, on a
 patch, listing files, going to the last file of the patch above, whatever
 is under the mouse, the mouse over a patch then gone, a window
@@ -1245,7 +1265,11 @@ and dim, the faces, wide characters, the lines of boxes and blocks), what
 it makes of keys, clicks, the wheel (sent with the cell the mouse was last
 seen over, none off the grid or once the mouse is gone, in the background
 too; in lines, 40 points a line, or in pages, what turned short of one
-kept; while a comment is written too) and
+kept; while a comment is written too), a press where the editor drags
+(HEAD's row, as the screen sent says), the editor's: the press, each
+other cell the mouse goes over once, and the button let go, with its cell
+or none off the grid, nothing selected, every other drag selecting text
+and every other press let go where it was pressed a click, and
 pastes, and the window itself, run
 by egui with no window: the grid's size sent, the screen painted, what is
 done sent, the wait for `$EDITOR`, and closing, and text dragged over lit

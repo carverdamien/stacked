@@ -333,7 +333,8 @@ keys.
 In the browser and in StackED the mouse works too: a click picks or opens
 what is under it, a right click opens its menu, and the wheel scrolls the
 pane under it. After a key, the wheel moves the cursor, as the arrows do,
-until the mouse moves again.
+until the mouse moves again. Dragging HEAD's line onto a patch, and
+letting go there, moves your checkout's HEAD there, as `Move HEAD…` does.
 
 ## Phabricator
 

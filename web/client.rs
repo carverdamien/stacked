@@ -11,12 +11,14 @@
 //!
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
 //! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
-//! `m X Y l|r`, a click on a cell, with the left or the right button; `w X
-//! Y N`, the wheel turned N lines over a cell, down, or up below 0 (`w N`
-//! over none); `v X Y`, the mouse over another cell while the page has the
-//! focus, or, when the page gets the focus back, over the cell where the
-//! mouse was last seen while the page did not have it; `o`, the mouse gone
-//! from the screen, or the page losing the focus.
+//! `m X Y l|r`, a click on a cell, with the left or the right button, said
+//! as the button is pressed; `u X Y`, the left button let go over a cell
+//! (`u` over none); `w X Y N`, the wheel turned N lines over a cell, down,
+//! or up below 0 (`w N` over none); `v X Y`, the mouse over another cell
+//! while the page has the focus, or, when the page gets the focus back,
+//! over the cell where the mouse was last seen while the page did not have
+//! it; `d X Y` for that, the left button down; `o`, the mouse gone from the
+//! screen, or the page losing the focus.
 
 /// Where the cursor is, in a run's modifiers: past ratatui's own.
 pub const CURSOR: u32 = 1 << 16;
@@ -216,6 +218,28 @@ pub fn moved(mouse: &mut Mouse, x: f64, y: f64, cw: f64, ch: f64, focused: bool)
     }
 }
 
+/// The mouse at `(x, y)` pixels of the screen, its cells `cw` by `ch`, the
+/// left button down: as `moved` says it, `d X Y` rather than `v X Y`, for
+/// the editor to drag what the press was held on (HEAD's row), or else to
+/// take it for the mouse going by.
+pub fn dragged(mouse: &mut Mouse, x: f64, y: f64, cw: f64, ch: f64, focused: bool) -> String {
+    let said = moved(mouse, x, y, cw, ch, focused);
+    match said.strip_prefix("v ") {
+        Some(at) => format!("d {at}"),
+        None => said,
+    }
+}
+
+/// The left button let go at `(x, y)` pixels of the screen, its cells `cw`
+/// by `ch`: `u X Y`, or `u` over no cell, for the editor to put down what
+/// it drags, or to click what the press was held on.
+pub fn up(x: f64, y: f64, cw: f64, ch: f64) -> String {
+    match cell(x, y, cw, ch) {
+        Some(at) => format!("u {} {}", at.0, at.1),
+        None => "u".into(),
+    }
+}
+
 /// The mouse gone from the screen: said, and the cell it was over
 /// forgotten, so that coming back over it says so; the cell where it was
 /// seen while the page did not have the focus is forgotten too.
@@ -334,6 +358,17 @@ mod wasm {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "C" fn dragged(x: f64, y: f64, cw: f64, ch: f64, focused: u32) -> usize {
+        let mut mouse = MOUSE.lock().unwrap();
+        give(super::dragged(&mut mouse, x, y, cw, ch, focused != 0))
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn up(x: f64, y: f64, cw: f64, ch: f64) -> usize {
+        give(super::up(x, y, cw, ch))
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "C" fn left() -> usize {
         let mut mouse = MOUSE.lock().unwrap();
         give(super::left(&mut mouse))
@@ -414,6 +449,22 @@ mod tests {
         assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -39.0), "", "short of a notch again");
         assert_eq!(wheel(&mut turned, 5.0, 5.0, 0.0, 20.0, 119.0), "w 2", "over no cell");
         assert_eq!(paste("a\r\nb\t"), "k c 61 -\nk Enter -\nk c 62 -\nk c 20 -");
+    }
+
+    #[test]
+    fn a_drag_and_the_left_button_let_go_are_lines_for_the_server_too() {
+        let mut mouse = Mouse::default();
+        // Pressed: the click, as ever. Then the mouse over another cell with
+        // the button down: said as the mouse going by is, `d` for `v`.
+        assert_eq!(click(&mut mouse, 17.0, 41.0, 8.0, 20.0, false), "m 2 2 l");
+        assert_eq!(dragged(&mut mouse, 17.0, 41.0, 8.0, 20.0, true), "d 2 2");
+        assert_eq!(dragged(&mut mouse, 20.0, 45.0, 8.0, 20.0, true), "", "the same cell");
+        assert_eq!(dragged(&mut mouse, 33.0, 45.0, 8.0, 20.0, true), "d 4 2");
+        // The page without the focus: not followed, as the mouse is not.
+        assert_eq!(dragged(&mut mouse, 41.0, 45.0, 8.0, 20.0, false), "o");
+        // Let go: with the cell it is over, over none off the screen.
+        assert_eq!(up(33.0, 45.0, 8.0, 20.0), "u 4 2");
+        assert_eq!(up(-5.0, 45.0, 8.0, 20.0), "u");
     }
 
     #[test]

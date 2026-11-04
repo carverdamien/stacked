@@ -98,6 +98,14 @@ pub enum Input {
     Key(KeyEvent),
     /// A click on a cell, with the right button if `right`.
     Click { x: u16, y: u16, right: bool },
+    /// The left button pressed on a cell where a press is held for a drag
+    /// (`Output::Screen`'s drags: HEAD's row): the editor clicks there once
+    /// the button is let go there, or drags HEAD.
+    Down { x: u16, y: u16 },
+    /// The mouse over another cell, the button pressed so still down.
+    Drag { x: u16, y: u16 },
+    /// That button let go, over a cell if the mouse is over one.
+    Up { at: Option<(u16, u16)> },
     /// The wheel turned over a cell, if the mouse is over one.
     Wheel { at: Option<(u16, u16)>, turned: Turned },
     /// The mouse over another cell.
@@ -111,10 +119,11 @@ pub enum Input {
 /// What the editor sends the window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Output {
-    /// The screen drawn, where the cursor is while text is written, and
-    /// where text was drawn as one (`App::regions`), which text selected
-    /// keeps to.
-    Screen(Buffer, Option<(u16, u16)>, Vec<Rect>),
+    /// The screen drawn, where the cursor is while text is written, where
+    /// text was drawn as one (`App::regions`), which text selected keeps
+    /// to, and where a press of the left button is held for a drag
+    /// (`App::drags`: HEAD's row), where no text is selected.
+    Screen(Buffer, Option<(u16, u16)>, Vec<Rect>, Vec<Rect>),
     /// `$EDITOR` runs: the window waits for it.
     Editing,
     /// The editor was quit.
@@ -324,6 +333,12 @@ fn work(mut app: App, inputs: &Receiver<Input>, outputs: &Sender<Output>, wake: 
             let effect = match input {
                 Input::Key(k) => app.key(k),
                 Input::Click { x, y, right } => app.click(x, y, right),
+                Input::Down { x, y } => app.down(x, y),
+                Input::Drag { x, y } => {
+                    app.drag(x, y);
+                    Effect::None
+                }
+                Input::Up { at } => app.up(at),
                 Input::Wheel { at, turned } => app.wheel(at, turned),
                 Input::Hover(x, y) => {
                     app.hover(x, y);
@@ -364,7 +379,7 @@ fn work(mut app: App, inputs: &Receiver<Input>, outputs: &Sender<Output>, wake: 
         let Some((cols, rows)) = size else { continue };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         let cursor = app.draw(&mut buf);
-        let screen = Output::Screen(buf, cursor, app.regions());
+        let screen = Output::Screen(buf, cursor, app.regions(), app.drags());
         if shown.as_ref() != Some(&screen) {
             send(screen.clone());
             shown = Some(screen);
@@ -443,8 +458,9 @@ impl Window {
     fn frame(&mut self, ctx: &egui::Context) {
         loop {
             match self.session.from.try_recv() {
-                Ok(Output::Screen(buf, cursor, regions)) => {
+                Ok(Output::Screen(buf, cursor, regions, drags)) => {
                     self.screen = Some((buf, cursor, regions));
+                    self.pointer.drags = drags;
                     self.painted = None;
                     self.editing = false;
                 }
@@ -1077,7 +1093,7 @@ impl Grid {
 }
 
 /// What the mouse has done: the cell it is over, how far the wheel turned
-/// short of a line, and the text it selects.
+/// short of a line, the text it selects, and what it drags.
 #[derive(Debug, Default)]
 struct Pointer {
     over: Option<(u16, u16)>,
@@ -1096,6 +1112,14 @@ struct Pointer {
     selected: Option<Selection>,
     /// ⌘C with text selected (ctrl-c elsewhere): it, to copy.
     copy: bool,
+    /// Where a press of the left button is held for the editor to drag
+    /// what it is on, HEAD's row, as the screen last sent says: no text is
+    /// selected from there.
+    drags: Vec<Rect>,
+    /// The left button held down since it was pressed there, and the cell
+    /// the editor was told the mouse is over since, the one pressed at
+    /// first.
+    dragging: Option<(u16, u16)>,
 }
 
 /// Text selected with the mouse, from the cell the drag started on to the
@@ -1167,7 +1191,7 @@ impl Pointer {
         if away {
             return self.over.take().map(|_| Input::Unhover);
         }
-        let at = grid.cell_at(self.seen.take()?).filter(|_| self.down.is_none())?;
+        let at = grid.cell_at(self.seen.take()?).filter(|_| self.down.is_none() && self.dragging.is_none())?;
         self.over = Some(at);
         Some(Input::Hover(at.0, at.1))
     }
@@ -1205,7 +1229,10 @@ impl Pointer {
 /// or not, with the lines or the pages it turned; a paste typed, while
 /// text is written (`writing`), and nothing elsewhere. A drag with the left
 /// button selects the text it goes over, in `pointer`, the mouse over
-/// nothing meanwhile; ⌘C (ctrl-c elsewhere) copies it.
+/// nothing meanwhile; ⌘C (ctrl-c elsewhere) copies it. But from where the
+/// editor drags what is pressed (`Pointer::drags`, HEAD's row): the press,
+/// each other cell the mouse goes over with the button down, and the
+/// button let go are the editor's, and nothing is selected.
 fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, focused: bool, writing: bool, mac: bool) -> Vec<Input> {
     let mut out = Vec::new();
     out.extend(pointer.focus(focused, grid));
@@ -1247,6 +1274,16 @@ fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, focused: b
             egui::Event::Copy if pointer.selected.is_some() => pointer.copy = true,
             egui::Event::Copy if !mac => out.push(Input::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))),
             egui::Event::Cut if !mac => out.push(Input::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))),
+            // Pressed where the editor drags from: each other cell the mouse
+            // goes over said, for the editor to drag HEAD there.
+            egui::Event::PointerMoved(pos) if pointer.dragging.is_some() => {
+                if let Some(at) = grid.cell_at(*pos)
+                    && pointer.dragging != Some(at)
+                {
+                    pointer.dragging = Some(at);
+                    out.push(Input::Drag { x: at.0, y: at.1 });
+                }
+            }
             // Dragged: the text from where it started to here selected, the
             // cursor left where it is.
             egui::Event::PointerMoved(pos) if pointer.down.is_some() => {
@@ -1295,12 +1332,27 @@ fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, focused: b
                         }
                     }
                     (true, false) => {}
+                    // Pressed where the editor drags from (HEAD's row): held
+                    // for the editor, which clicks there once the button is
+                    // let go there, or drags; nothing selected.
                     (false, true) => {
                         pointer.selected = None;
-                        pointer.down = grid.cell_at(*pos).map(|at| (at, modifiers.alt));
+                        let at = grid.cell_at(*pos);
+                        let drags = |&(x, y): &(u16, u16)| pointer.drags.iter().any(|r| r.contains(ratatui::layout::Position::new(x, y)));
+                        if let Some(at) = at.filter(drags) {
+                            pointer.dragging = Some(at);
+                            out.push(Input::Down { x: at.0, y: at.1 });
+                            continue;
+                        }
+                        pointer.down = at.map(|at| (at, modifiers.alt));
                     }
-                    // Let go where it was pressed: a click; elsewhere, what
-                    // it went over selected.
+                    // Held for the editor: let go, over a cell or not. Else let
+                    // go where it was pressed: a click; elsewhere, what it went
+                    // over selected.
+                    (false, false) if pointer.dragging.is_some() => {
+                        pointer.dragging = None;
+                        out.push(Input::Up { at: grid.cell_at(*pos) });
+                    }
                     (false, false) => {
                         if let Some((from, block)) = pointer.down.take() {
                             let to = grid.nearest(*pos);
@@ -1874,6 +1926,54 @@ mod tests {
     }
 
     #[test]
+    fn a_press_where_the_editor_drags_is_the_editor_s_and_every_other_drag_selects_text() {
+        // Cells of 10 by 20 points, from (6, 6): 8 by 4 of them; HEAD's row
+        // the third, where the screen sent says a press is held for a drag.
+        let grid = Grid::new(egui::Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0)), vec2(10.0, 20.0));
+        let mut pointer = Pointer {
+            drags: vec![Rect::new(0, 2, 8, 1)],
+            ..Pointer::default()
+        };
+        let run = |pointer: &mut Pointer, events: Vec<egui::Event>| inputs(&events, &grid, pointer, true, false, true);
+        let on = |x: u16, y: u16| pos2(6.0 + 10.0 * x as f32 + 1.0, 6.0 + 20.0 * y as f32 + 1.0);
+        let moved = |x, y| egui::Event::PointerMoved(on(x, y));
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        // Pressed there: the editor's, nothing selected; each other cell the
+        // mouse goes over with the button down, said once; let go, said with
+        // the cell it is over.
+        assert_eq!(run(&mut pointer, vec![button(on(1, 2), true)]), [Input::Down { x: 1, y: 2 }]);
+        assert_eq!(
+            run(&mut pointer, vec![moved(1, 2), moved(3, 1), moved(3, 1), moved(4, 0)]),
+            [Input::Drag { x: 3, y: 1 }, Input::Drag { x: 4, y: 0 }]
+        );
+        assert_eq!(run(&mut pointer, vec![button(on(4, 0), false)]), [Input::Up { at: Some((4, 0)) }]);
+        assert_eq!(pointer.selected, None);
+        // Let go where it was pressed: the editor's too, which clicks there;
+        // let go off the grid, over no cell.
+        assert_eq!(
+            run(&mut pointer, vec![button(on(2, 2), true), button(on(2, 2), false)]),
+            [Input::Down { x: 2, y: 2 }, Input::Up { at: Some((2, 2)) }]
+        );
+        assert_eq!(
+            run(&mut pointer, vec![button(on(2, 2), true), button(pos2(500.0, 500.0), false)]),
+            [Input::Down { x: 2, y: 2 }, Input::Up { at: None }]
+        );
+        // Anywhere else, a drag selects text as ever, and a press let go
+        // where it was pressed is a click.
+        assert_eq!(run(&mut pointer, vec![button(on(1, 1), true), moved(3, 1), button(on(3, 1), false)]), []);
+        assert_eq!(pointer.selected, Some(Selection { from: (1, 1), to: (3, 1), block: false }));
+        assert_eq!(run(&mut pointer, vec![button(on(1, 3), true), button(on(1, 3), false)]), [Input::Click { x: 1, y: 3, right: false }]);
+        // No row of the editor's to drag: as anywhere else.
+        pointer.drags.clear();
+        assert_eq!(run(&mut pointer, vec![button(on(1, 2), true), button(on(1, 2), false)]), [Input::Click { x: 1, y: 2, right: false }]);
+    }
+
+    #[test]
     fn the_text_selected_keeps_to_the_region_it_starts_in() {
         // Two panes, a line between them, and the bar above them.
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 4));
@@ -1978,7 +2078,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         buf.set_string(2, 0, "hello", Style::new().fg(Color::Green));
         buf.set_string(0, 1, "picked", Style::new().bg(Color::Blue));
-        outputs.send(Output::Screen(buf.clone(), None, vec![])).unwrap();
+        outputs.send(Output::Screen(buf.clone(), None, vec![], vec![])).unwrap();
         let out = frame(&ctx, &mut window, vec![]);
         let painted = texts(&out);
         let at = |x: u16, y: u16| pos2(PAD + x as f32 * cell.x, PAD + y as f32 * cell.y);
@@ -2010,14 +2110,14 @@ mod tests {
             [plain(KeyCode::Down), plain(KeyCode::Char('x')), Input::Click { x: 3, y: 1, right: true }]
         );
         // While text is written, the cursor is painted, and a paste types.
-        outputs.send(Output::Screen(buf.clone(), Some((4, 1)), vec![])).unwrap();
+        outputs.send(Output::Screen(buf.clone(), Some((4, 1)), vec![], vec![])).unwrap();
         let out = frame(&ctx, &mut window, vec![egui::Event::Paste("ok".into())]);
         assert_eq!(inputs.try_iter().collect::<Vec<_>>(), [plain(KeyCode::Char('o')), plain(KeyCode::Char('k'))]);
         assert!(out.platform_output.ime.is_some(), "an input method composes where text is written");
         // A face the fonts lack is made: bold drawn twice, a pixel apart.
         let mut bold = buf.clone();
         bold.set_string(0, 2, "strong", Style::new().add_modifier(Modifier::BOLD));
-        outputs.send(Output::Screen(bold, None, vec![])).unwrap();
+        outputs.send(Output::Screen(bold, None, vec![], vec![])).unwrap();
         window.real = [true, false, false, false];
         let out = frame(&ctx, &mut window, vec![]);
         let strong: Vec<Pos2> = texts(&out).into_iter().filter(|(t, ..)| t == "strong").map(|(.., pos)| pos).collect();
@@ -2028,7 +2128,7 @@ mod tests {
         let out = frame(&ctx, &mut window, vec![press.clone()]);
         assert_eq!(inputs.try_iter().count(), 0);
         assert!(texts(&out).iter().any(|(t, ..)| t.contains("StackED goes on once vim exits")), "it says what it waits for");
-        outputs.send(Output::Screen(buf, None, vec![])).unwrap();
+        outputs.send(Output::Screen(buf, None, vec![], vec![])).unwrap();
         frame(&ctx, &mut window, vec![press]);
         assert_eq!(inputs.try_iter().collect::<Vec<_>>(), [plain(KeyCode::Down)]);
         // The window grown: the grid's new size sent.
@@ -2062,7 +2162,7 @@ mod tests {
         buf.set_string(0, 2, "patch two", Style::new());
         buf.set_string(10, 2, "let y = 2;", Style::new());
         let regions = vec![Rect::new(0, 1, 9, rows - 2), Rect::new(10, 1, cols - 10, rows - 2)];
-        outputs.send(Output::Screen(buf, None, regions)).unwrap();
+        outputs.send(Output::Screen(buf, None, regions, vec![])).unwrap();
         frame(&ctx, &mut window, vec![]);
         let at = |x: u16, y: u16| pos2(PAD + (x as f32 + 0.5) * cell.x, PAD + (y as f32 + 0.5) * cell.y);
         let button = |pos, pressed| egui::Event::PointerButton {
@@ -2122,7 +2222,7 @@ mod tests {
         // comes.
         outputs.send(Output::Editing).unwrap();
         assert_eq!(pass(&mut window, false, vec![egui::Event::WindowFocused(false)]), []);
-        outputs.send(Output::Screen(Buffer::empty(Rect::new(0, 0, cols, rows)), None, vec![])).unwrap();
+        outputs.send(Output::Screen(Buffer::empty(Rect::new(0, 0, cols, rows)), None, vec![], vec![])).unwrap();
         assert_eq!(pass(&mut window, false, vec![]), [Input::Unhover]);
         // Where egui has no viewport's info to say it, the input says whether
         // the window is the active one: it is, as in the frames of the other

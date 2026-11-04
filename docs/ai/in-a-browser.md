@@ -30,6 +30,22 @@ sight. A click in the box puts the cursor where the
 click is. Writing a comment, or reading what `?` says, the mouse going by
 moves nothing. A paste types what is pasted, into a comment being written.
 
+HEAD being moved goes under the patch the mouse is over (under the
+stack's header, at the base), and a click on HEAD's own row (`↕ HEAD`)
+puts it down there, as Enter does; a click on the patch it is under does
+too. HEAD's row (`▶ HEAD`) can be dragged: pressed, then moved over
+another cell with the button down, it moves HEAD as `Move HEAD…` does,
+which shows why in a view of its own when it would not move HEAD. HEAD
+then follows the mouse over the patches, as when it is moved with the
+keys, and letting go of the button over the patches puts it down where it
+is; over a place below its last commit marked `!`, the bottom line says
+why, as for a click there, and HEAD is still being moved. Let go
+anywhere else, or after Esc, HEAD is left where it was. Pressed and let
+go on HEAD's row with no drag, it is the click it was, done as the button
+is let go: HEAD's row picked, a second time its menu. Nothing else is
+dragged: a press anywhere else is a click at once, and the mouse moved
+with the button down is the mouse going by.
+
 The wheel scrolls what is under the mouse while the mouse is in use: from
 the mouse going over another cell, or a click, until the next key, a key
 typed into a comment too. The view of the pane or of the box under the
@@ -88,7 +104,9 @@ runs there goes to `$EDITOR` alone.
 The server runs the editor as the terminal does, drawn into a buffer of the
 page's size, and sends the page the rows that changed (server-sent events);
 the page sends its keys, its clicks and its wheel back, the wheel with the
-cell under the mouse and the lines it turned. Keys that come together are drawn
+cell under the mouse and the lines it turned, and with the left button
+down, each cell the mouse goes over, then the cell where the button is
+let go. Keys that come together are drawn
 once, after the last, and each is done on the screen as the keys before it
 left it, as in a terminal, which draws the screen after each key: Home,
 then Space at once, opens the stack's menu with the stack's comments to
@@ -98,4 +116,5 @@ is wasm
 made lines for the server, the wheel's small turns kept until they make a
 notch, 40 pixels), carried by fifty lines of JS (`web/index.html`). The
 editor knows whether the mouse is in use, and what the wheel scrolls
-under it (`tui/wheel.rs`), as it does for StackED.
+under it (`tui/wheel.rs`), as it does for StackED; and what a press on
+HEAD's row is, a click or a drag (`tui/drag.rs`).

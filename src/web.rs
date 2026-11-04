@@ -271,10 +271,12 @@ fn fitted(cols: u16, rows: u16) -> (u16, u16) {
 }
 
 /// What a line a browser sent does: a key pressed (`k NAME MODS`, `k c HEX
-/// MODS`), a click on a cell (`m X Y l|r`), the wheel turned N lines over
-/// a cell (`w X Y N`, down, up below 0; `w N` over none), the mouse over
-/// another (`v X Y`) or gone from the screen (`o`), a new size (`s COLS
-/// ROWS`).
+/// MODS`), a click on a cell (`m X Y l|r`), the left button pressed for
+/// it, which HEAD's row holds for a drag (`App::down`), the wheel turned N
+/// lines over a cell (`w X Y N`, down, up below 0; `w N` over none), the
+/// mouse over another (`v X Y`), over another with the left button down
+/// (`d X Y`), or gone from the screen (`o`), the left button let go over a
+/// cell (`u X Y`; `u` over none), a new size (`s COLS ROWS`).
 fn act(app: &mut App, line: &str, size: &mut (u16, u16)) -> Effect {
     let parts: Vec<&str> = line.split_whitespace().collect();
     match parts.as_slice() {
@@ -283,9 +285,21 @@ fn act(app: &mut App, line: &str, size: &mut (u16, u16)) -> Effect {
             None => Effect::None,
         },
         ["m", x, y, button] => match (x.parse(), y.parse()) {
-            (Ok(x), Ok(y)) => app.click(x, y, *button == "r"),
+            (Ok(x), Ok(y)) if *button == "r" => app.click(x, y, true),
+            (Ok(x), Ok(y)) => app.down(x, y),
             _ => Effect::None,
         },
+        ["d", x, y] => {
+            if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
+                app.drag(x, y);
+            }
+            Effect::None
+        }
+        ["u", x, y] => match (x.parse(), y.parse()) {
+            (Ok(x), Ok(y)) => app.up(Some((x, y))),
+            _ => Effect::None,
+        },
+        ["u"] => app.up(None),
         ["w", x, y, n] => match (x.parse(), y.parse(), n.parse()) {
             (Ok(x), Ok(y), Ok(n)) => app.wheel(Some((x, y)), crate::tui::Turned::Lines(n)),
             _ => Effect::None,

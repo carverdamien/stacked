@@ -1178,6 +1178,182 @@ fn the_wheel_scrolls_the_pane_on_the_right_of_why_move_head_does_not_move_head_t
     assert_eq!(at(&app), (sel, false, 0));
 }
 
+/// Where `text` is in the patches pane of a screen drawn 120 wide, its 30
+/// columns: its first cell.
+fn in_patches(screen: &str, text: &str) -> (u16, u16) {
+    for (y, line) in screen.lines().enumerate() {
+        let pane: String = line.chars().take(30).collect();
+        if let Some(b) = pane.find(text) {
+            return (pane[..b].chars().count() as u16, y as u16);
+        }
+    }
+    panic!("no {text:?} in the patches pane:\n{screen}");
+}
+
+#[test]
+fn a_click_on_head_s_own_row_while_head_is_moved_puts_it_down_there() {
+    let (_tmp, db, src) = setup();
+    let mut app = open_in(&db, &src);
+    // HEAD moved from its menu; the mouse over patch 1 puts it under patch
+    // 1, its row on the next line, where the mouse goes next.
+    to_head_row(&mut app);
+    choose(&mut app, "Move HEAD…");
+    assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{:?}", app.mode);
+    let one = in_patches(&draw(&mut app), "Bug 1 - shout two");
+    app.hover(one.0, one.1);
+    assert!(matches!(app.mode, Mode::MovingHead { to: 1 }), "{:?}", app.mode);
+    let head = in_patches(&draw(&mut app), "↕ HEAD");
+    assert_eq!(head.1, one.1 + 1);
+    // A click on it: put down there, as Enter puts it down.
+    app.hover(head.0, head.1);
+    assert_eq!(app.click(head.0, head.1, false), Effect::None);
+    app.settle();
+    assert!(app.mode == Mode::Normal && app.status.starts_with("HEAD is at patch 1 of s, detached"), "{}", app.status);
+}
+
+#[test]
+fn head_s_row_dragged_moves_head_as_move_head_does_and_puts_it_down_where_it_is_let_go() {
+    let (_tmp, db, src) = setup();
+    let mut app = open_in(&db, &src);
+    let screen = draw(&mut app);
+    let (head, one) = (in_patches(&screen, "▶ HEAD"), in_patches(&screen, "Bug 1 - shout two"));
+    // A press on HEAD's row, let go where it was pressed: the click it is,
+    // HEAD's row picked; again, HEAD's menu.
+    app.hover(head.0, head.1);
+    assert_eq!(app.down(head.0, head.1), Effect::None);
+    assert!(!app.on_head(), "held, not clicked yet");
+    assert_eq!(app.up(Some(head)), Effect::None);
+    assert!(app.on_head() && app.mode == Mode::Normal, "{:?}", app.mode);
+    draw(&mut app);
+    app.down(head.0, head.1);
+    app.up(Some(head));
+    assert!(menu_title(&app).starts_with("HEAD"), "{}", menu_title(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Pressed there, then dragged onto patch 1: HEAD moved as Move HEAD…
+    // moves it, under patch 1, as the mouse over it places it; over the
+    // stack's header, at the base.
+    draw(&mut app);
+    app.down(head.0, head.1);
+    app.drag(one.0, one.1);
+    assert!(matches!(app.mode, Mode::MovingHead { to: 1 }), "{:?}", app.mode);
+    let header = in_patches(&draw(&mut app), "≡ s");
+    app.drag(header.0, header.1);
+    assert!(matches!(app.mode, Mode::MovingHead { to: 0 }), "{:?}", app.mode);
+    // Let go over patch 1: put down under it, as Enter puts it down.
+    let one = in_patches(&draw(&mut app), "Bug 1 - shout two");
+    app.drag(one.0, one.1);
+    draw(&mut app);
+    assert_eq!(app.up(Some(one)), Effect::None);
+    app.settle();
+    app.look_at_head();
+    app.settle();
+    assert!(app.mode == Mode::Normal && app.status.starts_with("HEAD is at patch 1 of s, detached"), "{}", app.status);
+    let screen = draw(&mut app);
+    let (head, one, two) = (in_patches(&screen, "▶ HEAD"), in_patches(&screen, "Bug 1 - shout two"), in_patches(&screen, "Bug 2 - add b"));
+    assert_eq!(head.1, one.1 + 1, "{screen}");
+    // Dragged onto patch 2, then let go out of the patches, over the
+    // middle, or off the screen: left where it was.
+    for at in [Some((60, 5)), None] {
+        app.down(head.0, head.1);
+        app.drag(two.0, two.1);
+        assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{:?}", app.mode);
+        assert_eq!(app.up(at), Effect::None);
+        assert_eq!(app.mode, Mode::Normal, "{at:?}");
+        draw(&mut app);
+    }
+    // Esc while it is dragged: left where it was, as ever; the mouse then
+    // goes by, and the button let go drops nothing.
+    app.down(head.0, head.1);
+    app.drag(two.0, two.1);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+    app.drag(one.0, one.1);
+    assert_eq!((app.mode.clone(), app.hovered), (Mode::Normal, Some(Spot::Patch(Some(0)))));
+    assert_eq!(app.up(Some(one)), Effect::None);
+    assert_eq!(app.mode, Mode::Normal);
+    app.settle();
+    assert_eq!(in_patches(&draw(&mut app), "▶ HEAD"), head, "where it was");
+    // A press on a patch's row is a click at once, as ever, and a drag from
+    // there the mouse going by: the patch picked, nothing moved.
+    assert_eq!(app.down(two.0, two.1), Effect::None);
+    assert_eq!((app.focus, app.on_stack, app.sel, app.on_head()), (Focus::List, false, 1, false));
+    app.drag(one.0, one.1);
+    assert_eq!(app.up(Some(one)), Effect::None);
+    assert_eq!((app.mode.clone(), app.sel, app.hovered), (Mode::Normal, 1, Some(Spot::Patch(Some(0)))));
+}
+
+#[test]
+fn head_s_row_dragged_where_move_head_would_not_move_head_says_why_as_move_head_does() {
+    let (_tmp, db, src) = setup();
+    // A commit of yours on top: Move HEAD would not move HEAD.
+    std::fs::write(src.join("c.txt"), "c\n").unwrap();
+    git(&src, &["add", "c.txt"]);
+    git(&src, &["commit", "-qm", "Mine"]);
+    let mut app = open_in(&db, &src);
+    let screen = draw(&mut app);
+    let (head, one) = (in_patches(&screen, "▶ HEAD"), in_patches(&screen, "Bug 1 - shout two"));
+    // Pressed on HEAD's row and dragged: the view of why, as Move HEAD…
+    // opens it; let go, nothing more.
+    app.down(head.0, head.1);
+    app.drag(one.0, one.1);
+    app.settle();
+    assert_eq!((app.screen, &app.mode), (Screen::HeadWhy, &Mode::Normal));
+    assert_eq!(app.up(Some(one)), Effect::None);
+    assert_eq!((app.screen, &app.mode), (Screen::HeadWhy, &Mode::Normal));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn head_dragged_and_let_go_below_its_last_commit_marked_is_said_why_as_a_click_there_is() {
+    let (_tmp, db, src) = setup();
+    let trailer = "Differential Revision: https://phabricator.services.mozilla.com/D34";
+    let mut app = open_in(&db, &src);
+    // Locked below patch 2, as the lock's own test leaves it.
+    (app.focus, app.on_stack, app.sel) = (Focus::List, false, 0);
+    choose(&mut app, "Move HEAD…");
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    reword(&db, 1, &format!("Bug 2 - add b\n\n{trailer}"), None);
+    app.refresh();
+    choose(&mut app, "Move HEAD…");
+    keys(&mut app, &[KeyCode::End, KeyCode::Enter]);
+    app.settle();
+    reword(&db, 1, "Bug 2 - add b", None);
+    app.refresh();
+    app.look_at_head();
+    app.settle();
+    let lock = "HEAD is locked below patch 2: the commit of patch 2 names D34, which the patch does not name";
+    // Dragged over the stack's header: kept at patch 2, the lowest place it
+    // may go, as the mouse going by keeps it; let go there, said why, HEAD
+    // being moved still.
+    let screen = draw(&mut app);
+    let (head, header) = (in_patches(&screen, "▶ HEAD"), in_patches(&screen, "≡ s"));
+    app.down(head.0, head.1);
+    app.drag(header.0, header.1);
+    assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{:?}", app.mode);
+    draw(&mut app);
+    assert_eq!(app.up(Some(header)), Effect::None);
+    assert_eq!(app.status, lock);
+    assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{:?}", app.mode);
+}
+
+#[test]
+fn the_mouse_going_over_the_search_s_scope_steps_nothing_and_a_click_steps_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    key(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "Search");
+    let scope = |app: &App| app.searching.as_ref().unwrap().scope;
+    assert_eq!(scope(&app).name(), "all");
+    let (x, y) = at(&draw(&mut app), "‹ all ›");
+    for dx in 0..7 {
+        app.hover(x + dx, y);
+    }
+    assert_eq!(scope(&app).name(), "all", "the mouse going by");
+    app.click(x + 2, y, false);
+    assert_eq!(scope(&app).name(), stacked::search::Scope::All.step(true).name(), "a click");
+}
+
 /// The editor that `open` opens, clicked with each button. Out of its box,
 /// on `out`, a click closes it when nothing is written, and picks nothing
 /// of what is under it. With something written, a click out of the box

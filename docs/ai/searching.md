@@ -2,7 +2,8 @@
 
 `Search…`, in every menu, opens the search on a screen of its own. On the
 left, at the top, where it looks, a button (`‹ comment ›`) that ← → turn
-to `all`, `patch`, `comment` or `history` (a click does too), and what you
+to `all`, `patch`, `comment` or `history` (a click does too, as → does;
+the mouse going over it turns nothing), and what you
 type; under it, what is found, appended as it is found, in a thread of its
 own: the screen never waits on it, and what you type starts it again. At
 the bottom, how many it found, and whether it is still looking. On the

@@ -76,6 +76,7 @@ pub use submitting::Submitting;
 mod wheel;
 pub use wheel::Turned;
 use wheel::{Wheeled, moved};
+mod drag;
 
 fn by_style(by: Option<&By>) -> Style {
     match by {
@@ -2520,6 +2521,10 @@ pub struct App {
     /// the wheel left it, what it picked in sight or not (`free`), as long
     /// as that screen is drawn.
     wheeled: Vec<(Screen, Wheeled)>,
+    /// The left button pressed on HEAD's row and not let go yet, in the
+    /// browser and in StackED: where, and whether it dragged HEAD since
+    /// (`down`, `drag`, `up`).
+    held: Option<drag::Held>,
 }
 
 /// The stack's history, as last made: of which stack, at how many records
@@ -3014,6 +3019,7 @@ impl App {
             scrolls: std::cell::RefCell::new(Vec::new()),
             wheel_turn: std::cell::Cell::new(None),
             wheeled: Vec::new(),
+            held: None,
             db,
             cfg,
         };
@@ -4494,19 +4500,24 @@ impl App {
                 return Effect::None;
             }
             // HEAD being moved goes under the patch clicked (under the
-            // header, at the base), and is put down there with a click on it;
-            // not below its last commit marked `!`, which is said.
+            // header, at the base), and is put down there with a click on it,
+            // or on its own row, where it is drawn; not below its last commit
+            // marked `!`, which is said.
             Mode::MovingHead { to } => {
-                if let Some(Spot::Patch(at)) = spot {
-                    let there = at.map_or(0, |at| at + 1);
-                    if there < low {
-                        self.status = lock;
-                        return Effect::None;
+                match spot {
+                    Some(Spot::Patch(at)) => {
+                        let there = at.map_or(0, |at| at + 1);
+                        if there < low {
+                            self.status = lock;
+                            return Effect::None;
+                        }
+                        if *to == there {
+                            return press(self, KeyCode::Enter);
+                        }
+                        *to = there;
                     }
-                    if *to == there {
-                        return press(self, KeyCode::Enter);
-                    }
-                    *to = there;
+                    Some(Spot::HeadRow) => return press(self, KeyCode::Enter),
+                    _ => {}
                 }
                 return Effect::None;
             }
@@ -4544,8 +4555,10 @@ impl App {
     /// not picked, the line picked staying so until a click. Elsewhere,
     /// what is there picked, as the arrows would, so that a click does on
     /// it what Enter does: in a menu, its item; a patch being moved goes
-    /// there. Not while a comment is written, nor over what `?` says. The
-    /// mouse is in use from then on, until the next key (`wheel`).
+    /// there, and HEAD being moved under the patch. Not the search's
+    /// scope, which a pick steps, nor while a comment is written, nor over
+    /// what `?` says. The mouse is in use from then on, until the next key
+    /// (`wheel`).
     pub fn hover(&mut self, x: u16, y: u16) {
         self.mouse = true;
         let spot = self.spot_at(x, y);
@@ -4594,8 +4607,9 @@ impl App {
             }
             // Not onto the banner, nor off it: it opens and closes under a
             // key or a click, not under the mouse going by, which would move
-            // what is under the mouse.
-            Mode::Normal if !side(&spot) && matches!(spot, Spot::Banner | Spot::BannerLine(_)) == self.on_banner => {
+            // what is under the mouse. Nor the search's scope, which a pick
+            // steps, as → does: a click steps it, the mouse going by does not.
+            Mode::Normal if !side(&spot) && spot != Spot::SearchScope && matches!(spot, Spot::Banner | Spot::BannerLine(_)) == self.on_banner => {
                 self.pick_spot(spot);
             }
             _ => {}
@@ -4983,11 +4997,14 @@ impl App {
         }
         // A key, typed into a comment too: the mouse is no longer in use,
         // and what the wheel scrolled brings what it picked back into sight.
+        // HEAD dragged is dragged no more: Esc leaves it where it was, and
+        // the button let go after a key drops nothing.
         self.mouse = false;
         self.wheeled.clear();
         if let Mode::Menu(m) = &mut self.mode {
             m.wheeled = false;
         }
+        self.held = None;
         // The keys as the settings map them, but in the comment editor,
         // which reads what is typed. A key that does nothing still closes
         // what `?` said.

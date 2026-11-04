@@ -52,7 +52,12 @@ says the same.
 `Move HEAD…`, in the stack's menu, each patch's and HEAD's line's, moves
 that checkout along the stack: ↑↓ place HEAD's line (`↕ HEAD`), the
 checkout as it is meanwhile, the patches drawn as they are, and Enter moves
-it there, Esc leaving it where it was. HEAD is
+it there, Esc leaving it where it was. In the browser and in StackED, the
+mouse over a patch places HEAD's line under it, and a click on HEAD's
+line, or on the patch it is under, moves it there; and HEAD's line
+dragged with the mouse, its button held, is moved as `Move HEAD…` moves
+it, put down where the button is let go over the patches (In a browser,
+above). HEAD is
 then detached at the stack's base with the patches up to there applied as
 commits, those the checkout has already, message too, taken as they are;
 the branch it was on stays where it was. Not while files git tracks have

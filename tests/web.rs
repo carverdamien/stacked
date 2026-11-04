@@ -650,6 +650,50 @@ fn move_head_says_why_it_does_not_move_head_in_the_browser_too() {
 }
 
 #[test]
+fn head_s_row_dragged_onto_a_patch_puts_head_down_there_in_the_browser_too() {
+    let (tmp, db) = setup();
+    let src = tmp.path().join("src");
+    // `stacked web`, run in the checkout, its home the test's.
+    let mut child = stacked(&tmp.path().join("home"))
+        .args(["-f", db.to_str().unwrap(), "web", "--no-open"])
+        .current_dir(&src)
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = BufReader::new(child.stderr.take().unwrap());
+    let _child = Running(child);
+    let mut line = String::new();
+    said.read_line(&mut line).unwrap();
+    let url = line.split_whitespace().find_map(|w| w.strip_prefix("http://127.0.0.1:")).expect(&line).to_string();
+    let (port, token) = url.split_once("/?t=").unwrap();
+    let port: u16 = port.parse().unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, token, 100);
+    // HEAD's row after patch 2, and patch 1's line, in the patches.
+    let found = std::cell::RefCell::new((None, None));
+    until(&mut events, "HEAD's row and patch 1's", |l| {
+        let mut found = found.borrow_mut();
+        if text(l).contains("▶ HEAD main") {
+            found.0 = Some(cell_of(l, "▶ HEAD"));
+        }
+        if text(l).contains(" 1 Bug 1 - shout two") {
+            found.1 = Some(cell_of(l, "Bug 1 - shout two"));
+        }
+        found.0.is_some() && found.1.is_some()
+    });
+    let (head, one) = found.into_inner();
+    let ((hx, hy), (ox, oy)) = (head.unwrap(), one.unwrap());
+    // Pressed on HEAD's row, which the page says as a click, dragged onto
+    // patch 1 with the button down, then let go there: HEAD put down under
+    // patch 1, as Enter puts it down.
+    ask(port, &host, &input, &format!("v {hx} {hy}\nm {hx} {hy} l\nd {ox} {oy}\nu {ox} {oy}\n"));
+    until(&mut events, "HEAD moved", |l| text(l).contains("HEAD is at patch 1 of s, detached"));
+    ask(port, &host, &input, "k c 63 c\n");
+    until(&mut events, "bye", |l| l == "data: bye");
+}
+
+#[test]
 fn the_stack_s_lint_is_offered_on_its_menu_in_the_browser_too() {
     let (tmp, db) = setup();
     let src = tmp.path().join("src");
