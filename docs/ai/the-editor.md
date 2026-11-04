@@ -745,22 +745,24 @@ the help then names those:
   History…, on its history and on its stack diff; the review of what
   landed, while its right pane shows the stack diff of its change (the
   cursor on its stack operations, or in the stack diff), not on a comment
-  nor on a patch looked at closer; and the screens of what an edit
-  changed (History, below) and of what differs from Phabricator (above).
-  It is laid out as the ask dialog is (Asking the agent, below): a line
-  for each choice, `Label: [ value ]`, and under it one short line saying
-  what the value set draws; then Done and Cancel; in the middle of the
-  screen, as a menu is:
+  nor on a patch looked at closer; the screens of what an edit changed
+  (History, below) and of what differs from Phabricator (above); and the
+  review of what a submit sends to Phabricator, while it shows code
+  (Phabricator, below). It is laid out as the ask dialog is (Asking the
+  agent, below): a line for each choice, `Label: [value]`, its value in
+  brackets as the ask dialog draws one set, and under it one short line
+  saying what the value set draws; then Done and Cancel; in the middle of
+  the screen, as a menu is:
 
   ```
   ┌─ the view of the interdiffs ─────────────────────────────────┐
-  │ Compare: [ the two diffs ]                                   │
+  │ Compare: [the two diffs]                                     │
   │   each version's diff, compared line by line                 │
   │                                                              │
-  │ View: [ interdiff ]                                          │
+  │ View: [interdiff]                                            │
   │   a sign for which version has the line, then its own        │
   │                                                              │
-  │ Lines: [ every line ]                                        │
+  │ Lines: [every line]                                          │
   │   context, index lines and the base's changes too            │
   │                                                              │
   │ < Done >   < Cancel >                                        │
@@ -796,10 +798,10 @@ the help then names those:
 
   ```
   ┌─ the view of the interdiffs ─────────────────────────────────┐
-  │ Compare: [ the two diffs ]                                   │
+  │ Compare: [the two diffs]                                     │
   │   each version's diff, compared line by line                 │
   │                                                              │
-  │ View: [ interdiff ]                                          │
+  │ View: [interdiff]                                            │
   │   a si┌──────────────┐sion has the line, then its own        │
   │       │ interdiff    │                                       │
   │ Lines:│ columns      │                                       │

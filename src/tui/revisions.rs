@@ -227,6 +227,40 @@ fn only_wrapped(before: &str, after: &str) -> bool {
 }
 
 /// `code`, each file of change `change` as one version leaves it, then as
+/// the other does, as a diff (`submit::files_diff`), drawn `w` wide as the
+/// views of the interdiffs draw a revision's files where they show them
+/// rather than an interdiff: side by side (`sides`), each file's two
+/// versions beside each other (`files_side_by_side`); else as it is, one
+/// sign before each line, as an interdiff and in a column per version, a
+/// line too wide folded. Each line drawn with the lines of `code` it
+/// shows, by their places there. As the view of what differs from
+/// Phabricator draws a latest diff on another base (`view_of`), and the
+/// review of a submit its code (`submitting`).
+pub(super) fn files_drawn(change: &str, code: &str, sides: bool, w: usize) -> Vec<(Parts, Vec<usize>)> {
+    if sides {
+        return files_side_by_side(change, code, w);
+    }
+    let lines: Vec<ops::InterLine> = code.lines().map(ops::InterLine::from).collect();
+    let mut out = Vec::new();
+    for (j, parts) in inter_parts(&lines.iter().collect::<Vec<_>>()).iter().enumerate() {
+        for piece in fold_parts(parts, w, 1) {
+            out.push((piece, vec![j]));
+        }
+    }
+    out
+}
+
+/// What heads the files of a revision's latest diff and of a version of
+/// its patch, `mine` (`this version's`, `what is sent`), drawn as
+/// `files_drawn` draws them: side by side (`sides`), whose is on which side.
+pub(super) fn files_heading(sides: bool, mine: &str) -> String {
+    match sides {
+        true => format!("the code: Phabricator's on the left, {mine} on the right"),
+        false => format!("the code: Phabricator's, then {mine}"),
+    }
+}
+
+/// `code`, each file of change `change` as one version leaves it, then as
 /// the other does, as a diff (`submit::files_diff`), the two side by side
 /// `w` wide, as the code view puts a patch's files side by side: the old
 /// file's lines on the left and the new one's on the right, each as the
@@ -761,16 +795,6 @@ impl App {
         let mut at: Vec<interdiffs::Seen> = (0..said.len()).map(only).collect();
         // The places of what follows, from there on.
         let mut id = said.len();
-        // Lines of a diff as an interdiff, folded to the width under their
-        // signs, each piece with its line, the first of them at `from`.
-        let folded = |all: &[ops::InterLine], from: usize, out: &mut Vec<Parts>, at: &mut Vec<interdiffs::Seen>| {
-            for (j, parts) in inter_parts(&all.iter().collect::<Vec<_>>()).iter().enumerate() {
-                for piece in fold_parts(parts, w, 1) {
-                    out.push(piece);
-                    at.push(only(from + j));
-                }
-            }
-        };
         if !inter.is_empty() {
             out.push(vec![(String::new(), Style::new())]);
             at.push(only(id));
@@ -802,20 +826,13 @@ impl App {
             out.push(vec![(String::new(), Style::new())]);
             // A diff of the files, one sign before each line: as an
             // interdiff and in a column per version, as it is.
-            let heading = match v {
-                InterLayout::Sides => " the code: Phabricator's on the left, this version's on the right",
-                _ => " the code: Phabricator's, then this version's",
-            };
-            out.push(vec![(heading.to_string(), color::file())]);
+            let sides = v == InterLayout::Sides;
+            out.push(vec![(format!(" {}", files_heading(sides, "this version's")), color::file())]);
             at.extend([only(id), only(id + 1)]);
             id += 2;
-            if v == InterLayout::Sides {
-                for (parts, shows) in files_side_by_side(&p.change, code, w) {
-                    out.push(parts);
-                    at.push(interdiffs::Seen { shows: shows.iter().map(|k| id + k).collect(), rows: vec![] });
-                }
-            } else {
-                folded(&code.lines().map(ops::InterLine::from).collect::<Vec<_>>(), id, &mut out, &mut at);
+            for (parts, shows) in files_drawn(&p.change, code, sides, w) {
+                out.push(parts);
+                at.push(interdiffs::Seen { shows: shows.iter().map(|k| id + k).collect(), rows: vec![] });
             }
         }
         (title, out, at)

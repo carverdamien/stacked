@@ -442,8 +442,10 @@ another view keeping the cursor's half, a middle too narrow drawn as one
 and said, and the layout a setting), the views of the interdiffs (the
 dialog of 1 on the versions of a patch, History… and its stack diff, the
 screen of what an edit changed, the review's stack diff and, with
-moz-phab, what differs from Phabricator: Compare, View and Lines as
-drawn, each its value and the line under it, then Done and Cancel,
+moz-phab, what differs from Phabricator and the review of what a submit
+sends: Compare, View and Lines as drawn, each its value in brackets as
+the ask dialog draws one set (`[the two diffs]`) and the line under it,
+then Done and Cancel,
 opening on the choices as they are, those set elsewhere too, ↑↓ from line
 to line and to the buttons, round past either end, Home and End, ← → from
 button to button, never round; ← → stepping a value, never round past
@@ -580,7 +582,22 @@ wrapped otherwise a change, its break marked; the diff after the message
 painted as words as ever), the submit's review comparing the title and
 summary so, side by side too, and saying at its top why a new diff is
 sent when the latest diff makes the patch's changes on the patches below
-as they were before a rebase, no code under it, then sending one,
+as they were before a rebase, no code under it, then sending one; its
+code drawn in the view the dialog of 1 sets there, as the view of what
+differs from Phabricator draws a revision's files: as it is, as an
+interdiff and in a column per version, each file side by side, then in
+the views of the change as the middle draws a patch, unified, side by
+side and compact, the cursor kept on its line from view to view and
+back, the title and summary side by side with the code, the top bar
+saying the view, every line still drawn with only what the patches
+changed; Esc opening its menu and Esc in it closing it, Enter and Space
+doing nothing, a right click opening the menu next to the cell clicked
+and a left click nothing; that menu `Send it to Phabricator`, `Cancel:
+send nothing` and `The view of the code…`, which opens the dialog, `?` on
+it saying what it does, and no Search…, Runs… nor Quit; Send and Cancel
+there sending it and sending nothing as Enter and Esc did; the bottom bar
+and `?` saying Esc for the menu and 1 for the view, no Enter, no Space;
+and with no code, no 1 in the bottom bar, 1 doing nothing,
 the cursor looking the same on every line, as `cursor` paints it, whatever
 the line's own colours (a line added, a line removed, a hunk's header, a
 file's name, each line of a comment, a line read, the patch picked in its
@@ -1223,7 +1240,9 @@ summary and parent alone in its place, grayed while what differs is not
 known, as its revision has no diff yet, saying so, then offered for a
 summary that differs,
 `?` saying what it sends, its review saying at its top that the code is
-not sent and why, the status staying as it is, no code under it, Enter
+not sent and why, the status staying as it is, no code under it, so no
+view to set: 1, Enter and Space doing nothing, the bottom bar naming no
+1, its menu no view of the code; `Send it to Phabricator` in that menu
 sending the summary alone, no diff, no Changes Planned and no reviewers,
 the bottom line saying what came of it, and once it is fetched again
 after the submit, the diff alone differing, the update grayed, the menu
@@ -1252,7 +1271,11 @@ there setting it, the version drawn so at once, and the change from a
 version to the next, the code set so on Compare and kept with Done, drawn
 as a patch of its own once its files are read, and only what the patches
 changed, set so on Lines and kept with Done, the lines left out said where
-they were, HEAD's row pressed, dragged
+they were, with moz-phab the review of what a submit sends, its menu
+opened by a right click, its view of the code opening the dialog, the
+code set there by clicks in its list drawn unified at once and kept with
+Done, and Cancel: send nothing, in the menu Esc opens, sending nothing,
+HEAD's row pressed, dragged
 onto patch 1 and let go there, `stacked web` run in the checkout, HEAD
 put down under patch 1, a line of the review's list marked by the mouse
 over it, underlined in the runs of its row and not reversed, then picked
@@ -1387,7 +1410,11 @@ side there setting it, the version drawn so at once, and the change from
 a version to the next, the code set so on Compare and kept with Done,
 drawn as a patch of its own once its files are read, and only what the
 patches changed, set so on Lines and kept with Done, the lines left out
-said where they were,
+said where they were, with moz-phab the review of what a submit sends, its
+menu opened by a right click, its view of the code opening the dialog,
+the code set there by clicks in its list drawn unified at once and kept
+with Done, and Cancel: send nothing, in the menu Esc opens, sending
+nothing,
 the screen sent saying HEAD's row is where a press is held for a drag,
 HEAD's row pressed, dragged onto patch 1 and let go there, HEAD put down
 under patch 1, a line of the review's list marked by the mouse over it,

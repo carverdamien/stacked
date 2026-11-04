@@ -1,6 +1,6 @@
 //! The dialog of the views of the interdiffs, which `1` opens on every
 //! screen that shows them (`App::inter_screen`), laid out as the ask dialog
-//! is: a line for each choice, `Label: [ value ]`, one short line under it
+//! is: a line for each choice, `Label: [value]`, one short line under it
 //! saying what the value set draws, then Done and Cancel. Compare: the two
 //! versions' diffs (the interdiff), or the code, the change from the old
 //! version to the new one as a patch of its own; View: how what is compared
@@ -326,11 +326,11 @@ impl App {
     /// the line under them.
     pub(super) fn views_lines(&self) -> [String; 6] {
         [
-            format!("Compare: [ {} ]", compared(self.inter.change())),
+            format!("Compare: [{}]", compared(self.inter.change())),
             self.views_under(COMPARE_LINE),
-            format!("View: [ {} ]", named(self.inter)),
+            format!("View: [{}]", named(self.inter)),
             self.views_under(VIEW_LINE),
-            format!("Lines: [ {} ]", lines_named(self.inter_lines)),
+            format!("Lines: [{}]", lines_named(self.inter_lines)),
             self.views_under(LINES_LINE),
         ]
     }

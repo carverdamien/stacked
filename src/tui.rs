@@ -1642,8 +1642,10 @@ pub enum Action {
     SendSubmit,
     #[cfg(feature = "moz-phab")]
     CancelSubmit,
+    /// The dialog of the views of the interdiffs, from the menu of the
+    /// review of a submit, for its code.
     #[cfg(feature = "moz-phab")]
-    SubmitSide(bool),
+    SubmitViews,
     Runs,
     Search,
     Stacks,
@@ -1949,9 +1951,9 @@ fn about(action: &Action) -> String {
         #[cfg(feature = "moz-phab")]
         Action::CancelSubmit => "send nothing to Phabricator".into(),
         #[cfg(feature = "moz-phab")]
-        Action::SubmitSide(true) => "show the code of what is sent side by side".into(),
-        #[cfg(feature = "moz-phab")]
-        Action::SubmitSide(false) => "show the code of what is sent unified".into(),
+        Action::SubmitViews => {
+            "pick how the code of what is sent is drawn, in the dialog of the views of the interdiffs: as a diff of the files, or each file side by side, as two diffs are compared; or as the middle draws a patch, unified, side by side, or side by side and compact".into()
+        }
         Action::Runs => "see the agent's asks and the pulls, and what came of them".into(),
         Action::Search => "search the comments, the patches and the files they touch, and the history: what is found is listed as it is found, and enter goes to it".into(),
         Action::Stacks => "switch to another stack".into(),
@@ -4591,6 +4593,13 @@ impl App {
             }
             Mode::Normal => {}
         }
+        // On the review of a submit, a right click anywhere opens its menu,
+        // as Esc does there; a click with the left button does nothing, as
+        // the review's lines are no spot to pick.
+        if right && self.on_submit() {
+            self.menu_here();
+            return Effect::None;
+        }
         let Some(spot) = spot else { return Effect::None };
         let was = self.on(spot);
         if !self.pick_spot(spot) {
@@ -5265,7 +5274,9 @@ impl App {
             self.toggle_change_whole();
             return Effect::None;
         }
-        if k.code == KeyCode::Char(' ') {
+        // Space opens the menu, but on the review of a submit, where Esc
+        // does and Space does nothing (`submit_key`).
+        if k.code == KeyCode::Char(' ') && !self.on_submit() {
             self.menu_here();
             return Effect::None;
         }
@@ -6851,7 +6862,10 @@ impl App {
         // after Enter in the middle, and here elsewhere.
         if self.screen != Screen::Main {
             out.extend(self.open_help());
-            out.push("Press Space for the menu.".into());
+            // Esc there, on the review of a submit, said with the rest.
+            if !self.on_submit() {
+                out.push("Press Space for the menu.".into());
+            }
         }
         let mut out: Vec<String> = out.into_iter().map(|l| self.say_keys(l)).collect();
         // The search's keys are its own, whatever the settings map: said
@@ -7574,8 +7588,12 @@ impl App {
     }
 
     /// The items for the menu's end, everywhere: undo, redo, the view, the
-    /// runs, quit.
+    /// runs, quit. But on the review of a submit, whose menu sends it or
+    /// not, and has the view of its code (`submit_items`), alone.
     fn common(&self, items: &mut Vec<Item>) {
+        if self.on_submit() {
+            return;
+        }
         let h = self.by_hand().is_none();
         items.push(Item::line());
         // Nothing is edited from History…, nor from a review, nor from what
@@ -8784,7 +8802,7 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Action::CancelSubmit => self.submit_cancel(),
             #[cfg(feature = "moz-phab")]
-            Action::SubmitSide(side) => self.submit_side(side),
+            Action::SubmitViews => self.open_views(),
             Action::AskAbout(rev) => self.write(Target::About(rev), Focus::Diff, ""),
             Action::GoToAbout(rev) => {
                 if let Some(n) = self.about(rev).first() {

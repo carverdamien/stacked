@@ -304,9 +304,100 @@ fn the_page_s_tab_has_stacked_s_icon_asked_for_with_the_token_as_all_else_is() {
     assert_eq!(ask(port, &host, "GET /favicon.ico", "").0, "HTTP/1.1 403 Forbidden");
 }
 
+/// One editor of this process at a time submits to Phabricator: the
+/// stand-in a submit reads is the process's own.
+#[cfg(feature = "moz-phab")]
+fn one_submit() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Stack `s` of `setup_with`, its first patch naming D11, given a version
+/// of its own after the first, which says `TWO` otherwise; and a stand-in
+/// for Phabricator as a submit reads it: D11 in work, its latest diff that
+/// first version, and its repository. What was asked of it.
+#[cfg(feature = "moz-phab")]
+fn d11_in_work() -> (tempfile::TempDir, PathBuf, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let (tmp, db) = setup_with("Bug 1 - shout two\n\nDifferential Revision: https://phabricator.example.com/D11");
+    let raw = {
+        let d = stacked::db::Db::load(&db).unwrap();
+        d.patch(&d.stack("s").unwrap().patches[0]).diff.clone()
+    };
+    stacked::db::Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft { diff: old.diff.replace("+TWO", "+Two"), ..stacked::mbox::Draft::from(&old) };
+        stacked::ops::replace(d, "s", 0, draft, "edit").map(|_| ())
+    })
+    .unwrap();
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = asked.clone();
+    stacked::submit::stand_in(Some(Box::new(move |m, _| {
+        seen.lock().unwrap().push(m.to_string());
+        Ok(match m {
+            "differential.revision.search" => serde_json::json!({"data": [{"id": 11, "phid": "PHID-DREV-11", "fields": {
+                "title": "WIP: Bug 1 - shout two", "summary": "", "status": {"value": "changes-planned", "name": "Changes Planned"},
+                "isDraft": false, "bugzilla.bug-id": "1", "repositoryPHID": "PHID-REPO-1"}}]}),
+            "edge.search" => serde_json::json!({"data": [], "cursor": {"after": null}}),
+            "differential.querydiffs" => serde_json::json!({"5": {"sourceControlBaseRevision": "", "properties": {}}}),
+            "differential.getrawdiff" => serde_json::Value::String(raw.clone()),
+            "diffusion.repository.search" => serde_json::json!({"data": [{"phid": "PHID-REPO-1", "fields": {"vcs": "git"}}]}),
+            _ => return Err(format!("{m}: not asked in this test")),
+        })
+    })));
+    (tmp, db, asked)
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_review_of_a_submit_opens_its_menu_with_a_right_click_and_draws_its_code_in_the_view_its_dialog_sets_in_the_browser_too() {
+    let _one = one_submit();
+    let (_tmp, db, asked) = d11_in_work();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the patches", |l| l.starts_with("data: r ") && l.contains("Bug 2 - add b"));
+    let click = |events: &mut BufReader<TcpStream>, what: &str, item: &str| {
+        let seen = until(events, what, |l| text(l).contains(item));
+        let (x, y) = cell_of(seen.last().unwrap(), item);
+        ask(port, &host, &input, &format!("m {x} {y} l\n"));
+        seen
+    };
+    // The first patch's submit, from its Phabricator menu, the patch's menu
+    // opened with a right click: what is sent read, then reviewed on a
+    // screen of its own.
+    ask(port, &host, &input, "m 5 2 r\n");
+    click(&mut events, "the patch's menu", "Phabricator ");
+    click(&mut events, "the patch's Phabricator menu", "Submit to Phabricator as WIP");
+    until(&mut events, "the review of the submit", |l| text(l).contains("D11: what is sent to Phabricator, for your review"));
+    // A right click there opens its menu, as Esc does: its view of the
+    // code, clicked, opens the dialog of the views of the interdiffs.
+    ask(port, &host, &input, "m 60 12 r\n");
+    click(&mut events, "the review's menu", "The view of the code…");
+    // A click on what is compared opens its list; one on the code there
+    // sets it, the code unified at once, as the middle draws a patch; Done
+    // keeps it.
+    click(&mut events, "what is compared, in the dialog", "Compare: [the two diffs]");
+    click(&mut events, "the code in the list", "│ the code ");
+    let mut seen = until(&mut events, "the code set", |l| text(l).contains("Compare: [the code]"));
+    ask(port, &host, &input, "k End -\nk Enter -\n");
+    let unified = |l: &str| text(l).contains(" · change unified");
+    if !seen.iter().any(|l| unified(l)) {
+        seen.extend(until(&mut events, "the code unified", unified));
+    }
+    // Esc opens the menu again; Cancel: send nothing there sends nothing.
+    ask(port, &host, &input, "k Esc -\n");
+    click(&mut events, "the review's menu again", "Cancel: send nothing");
+    until(&mut events, "nothing sent", |l| text(l).contains("nothing was sent to Phabricator"));
+    let asked = asked.lock().unwrap().clone();
+    assert!(!asked.iter().any(|m| m.starts_with("differential.revision.edit") || m == "differential.creatediff"), "{asked:?}");
+    stacked::submit::stand_in(None);
+}
+
 #[cfg(feature = "moz-phab")]
 #[test]
 fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_browser_too() {
+    let _one = one_submit();
     let (tmp, db) = setup();
     let arc = r#"{"phabricator.uri": "https://phabricator.example.com/", "repository.callsign": "TEST"}"#;
     std::fs::write(tmp.path().join("src/.arcconfig"), arc).unwrap();
@@ -1984,7 +2075,7 @@ fn one_sets_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_b
     // change from v1 to v2 as a patch of its own at once, its files read
     // away from the screen. Done keeps it.
     ask(port, &host, &input, "k c 31 -\n");
-    let line = "Compare: [ the two diffs ]";
+    let line = "Compare: [the two diffs]";
     let seen = until(&mut events, "what is compared, in the dialog", |l| text(l).contains(line));
     let (x, y) = cell_of(seen.last().unwrap(), line);
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
@@ -1995,7 +2086,7 @@ fn one_sets_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_b
     // What the screen says of the change and its line may come before the
     // dialog says the code is set, or after Done, once the dialog no longer
     // hides them.
-    let mut seen = until(&mut events, "the code set", |l| text(l).contains("Compare: [ the code ]"));
+    let mut seen = until(&mut events, "the code set", |l| text(l).contains("Compare: [the code]"));
     ask(port, &host, &input, "k End -\nk Enter -\n");
     let said = |l: &str| text(l).contains("The code is the change from v1 to v2");
     let line = |l: &str| text(l).trim_end().ends_with("+Two") && !text(l).contains("++Two");
@@ -2028,7 +2119,7 @@ fn one_sets_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_browser_too(
     // version's pane side by side at once, each half under a heading of its
     // version.
     ask(port, &host, &input, "k c 31 -\n");
-    let line = "View: [ interdiff ]";
+    let line = "View: [interdiff]";
     let seen = until(&mut events, "the view, in the dialog", |l| text(l).contains(line));
     let (x, y) = cell_of(seen.last().unwrap(), line);
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
@@ -2064,7 +2155,7 @@ fn one_sets_only_what_the_patches_changed_of_a_patch_s_versions_in_the_browser_t
     // the version's pane drawn at once without the lines the two versions
     // have alike, each place they were saying how many. Done keeps it.
     ask(port, &host, &input, "k c 31 -\n");
-    let line = "Lines: [ every line ]";
+    let line = "Lines: [every line]";
     let seen = until(&mut events, "the lines, in the dialog", |l| text(l).contains(line));
     let (x, y) = cell_of(seen.last().unwrap(), line);
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
@@ -2075,7 +2166,7 @@ fn one_sets_only_what_the_patches_changed_of_a_patch_s_versions_in_the_browser_t
     // What the screen says of what is left out, and the line, may come
     // before the dialog says the lines are set, or after Done, once the
     // dialog no longer hides them.
-    let mut seen = until(&mut events, "the lines set", |l| text(l).contains("Lines: [ only what changed ]"));
+    let mut seen = until(&mut events, "the lines set", |l| text(l).contains("Lines: [only what changed]"));
     ask(port, &host, &input, "k End -\nk Enter -\n");
     let said = |l: &str| text(l).contains("lines are left out here.");
     let line = |l: &str| text(l).trim_end().ends_with("++Two");

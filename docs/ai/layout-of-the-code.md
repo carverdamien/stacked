@@ -164,11 +164,14 @@
   its screens for reviewing what the agent brought back, and for
   searching;
   `tui/submitting.rs`, what a submit to Phabricator sends, said in a
-  dialog, or reviewed on a screen of its own, before it is sent;
+  dialog, or reviewed on a screen of its own, before it is sent, its code
+  in the view of the interdiffs that 1 sets, its menu on Esc;
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
   which the patches pane shows, and the Phabricator line over the message
   of the patch the middle shows, from what is stored, with how long ago it
-  was fetched, what differs on a screen of its own, the pulls, of the
+  was fetched, what differs on a screen of its own, a revision's files
+  drawn as the views of the interdiffs draw them there and on the review
+  of a submit, the pulls, of the
   stack, of the patch's revision, with its choice, or into a new stack,
   and the stack's pull under way, reading Phabricator, waiting its turn
   or being made, its line's menu and its drop, the submit item as

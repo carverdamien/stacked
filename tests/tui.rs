@@ -13172,13 +13172,13 @@ fn one_on_every_screen_of_interdiffs_opens_the_dialog_of_their_views_on_the_choi
     assert_eq!(
         views_box(&mut app),
         [
-            "Compare: [ the two diffs ]",
+            "Compare: [the two diffs]",
             "  each version's diff, compared line by line",
             "",
-            "View: [ interdiff ]",
+            "View: [interdiff]",
             "  a sign for which version has the line, then its own",
             "",
-            "Lines: [ every line ]",
+            "Lines: [every line]",
             "  context, index lines and the base's changes too",
             "",
             "< Done >   < Cancel >",
@@ -13213,7 +13213,7 @@ fn one_on_every_screen_of_interdiffs_opens_the_dialog_of_their_views_on_the_choi
     choose(&mut app, "History…");
     assert!(app.hint().contains("1: view · "), "{}", app.hint());
     keys(&mut app, &[KeyCode::Char('1')]);
-    assert_eq!(views_box(&mut app)[3..5], ["View: [ side by side ]", "  the old version on the left, the new one on the right"]);
+    assert_eq!(views_box(&mut app)[3..5], ["View: [side by side]", "  the old version on the left, the new one on the right"]);
     keys(&mut app, &[KeyCode::Esc, KeyCode::Right]);
     assert!(app.hint().contains("1: view · "), "{}", app.hint());
     keys(&mut app, &[KeyCode::Char('1')]);
@@ -13269,7 +13269,7 @@ fn left_and_right_on_a_line_of_the_dialog_of_the_views_step_its_value_and_the_sc
     // names it, and the screen behind says how to read the columns.
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!((app.inter, views(&app).line), (InterLayout::Columns, VIEW_LINE));
-    assert_eq!(views_box(&mut app)[3..5], ["View: [ columns ]", "  a column per version: what its patch does with the line"]);
+    assert_eq!(views_box(&mut app)[3..5], ["View: [columns]", "  a column per version: what its patch does with the line"]);
     assert_eq!(app.status, "each interdiff is drawn in a column per version: what each one's patch does with each line, the old version's first");
     let screen = draw(&mut app);
     assert!(screen.lines().next().unwrap().contains("· interdiffs in columns"), "{screen}");
@@ -13277,7 +13277,7 @@ fn left_and_right_on_a_line_of_the_dialog_of_the_views_step_its_value_and_the_sc
     // → again: side by side, the last; → past it sets nothing.
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(app.inter, InterLayout::Sides);
-    assert_eq!(views_box(&mut app)[3..5], ["View: [ side by side ]", "  the old version on the left, the new one on the right"]);
+    assert_eq!(views_box(&mut app)[3..5], ["View: [side by side]", "  the old version on the left, the new one on the right"]);
     assert!(draw(&mut app).lines().next().unwrap().contains("· interdiffs side-by-side"));
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!((app.inter, app.status.as_str()), (InterLayout::Sides, ""));
@@ -13287,7 +13287,7 @@ fn left_and_right_on_a_line_of_the_dialog_of_the_views_step_its_value_and_the_sc
     assert_eq!(app.hint(), "↑↓ choose · ←→: set the lines · enter: open the list · esc: cancel · ?: what it does");
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(app.inter_lines, InterLines::Changed);
-    assert_eq!(views_box(&mut app)[6..8], ["Lines: [ only what changed ]", "  no context, no index lines, none of the base's changes"]);
+    assert_eq!(views_box(&mut app)[6..8], ["Lines: [only what changed]", "  no context, no index lines, none of the base's changes"]);
     assert_eq!(
         app.status,
         "only what the patches changed is drawn: of each interdiff, no line both versions have alike, no context line and no index line, and of the change, no line the change of base made; a line says how many are left out at each place"
@@ -13297,13 +13297,13 @@ fn left_and_right_on_a_line_of_the_dialog_of_the_views_step_its_value_and_the_sc
     assert_eq!((app.inter_lines, app.status.as_str()), (InterLines::Changed, ""));
     keys(&mut app, &[KeyCode::Left]);
     assert_eq!(app.inter_lines, InterLines::Every);
-    assert_eq!(views_box(&mut app)[6..8], ["Lines: [ every line ]", "  context, index lines and the base's changes too"]);
+    assert_eq!(views_box(&mut app)[6..8], ["Lines: [every line]", "  context, index lines and the base's changes too"]);
     // What is compared: → the code, at once, the change from v2 to v3.
     keys(&mut app, &[KeyCode::Home]);
     assert_eq!(app.hint(), "↑↓ choose · ←→: set what is compared · enter: open the list · esc: cancel · ?: what it does");
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(app.inter, InterLayout::ChangeSides);
-    assert_eq!(views_box(&mut app)[..2], ["Compare: [ the code ]", "  each file from the old version to the new one"]);
+    assert_eq!(views_box(&mut app)[..2], ["Compare: [the code]", "  each file from the old version to the new one"]);
     app.wait_files();
     assert!(draw(&mut app).contains("The code is the change from v2 to v3"));
 }
@@ -13327,7 +13327,7 @@ fn what_is_compared_set_in_the_dialog_of_the_views_the_view_keeps_its_name_in_th
     assert_eq!(app.views_values(VIEW_LINE), [("unified", true), ("side by side", true), ("compact", true)]);
     assert_eq!(
         views_box(&mut app)[..5],
-        ["Compare: [ the code ]", "  each file from the old version to the new one", "", "View: [ side by side ]", "  the old version on the left, the new one on the right"]
+        ["Compare: [the code]", "  each file from the old version to the new one", "", "View: [side by side]", "  the old version on the left, the new one on the right"]
     );
     assert_eq!(
         app.status,
@@ -13342,16 +13342,16 @@ fn what_is_compared_set_in_the_dialog_of_the_views_the_view_keeps_its_name_in_th
     // In columns, which the code has not: the code's first, unified.
     keys(&mut app, &[KeyCode::Down, KeyCode::Left, KeyCode::Up, KeyCode::Right]);
     assert_eq!(app.inter, InterLayout::ChangeUnified);
-    assert_eq!(views_box(&mut app)[3..5], ["View: [ unified ]", "  - for the old version's own lines, + for the new one's"]);
+    assert_eq!(views_box(&mut app)[3..5], ["View: [unified]", "  - for the old version's own lines, + for the new one's"]);
     // Compact, which the two diffs have not: their first, the interdiff.
     keys(&mut app, &[KeyCode::Down, KeyCode::Right, KeyCode::Right]);
     assert_eq!(app.inter, InterLayout::ChangeCompact);
-    assert_eq!(views_box(&mut app)[3..5], ["View: [ compact ]", "  side by side, with no gap where one side has more lines"]);
+    assert_eq!(views_box(&mut app)[3..5], ["View: [compact]", "  side by side, with no gap where one side has more lines"]);
     keys(&mut app, &[KeyCode::Up, KeyCode::Left]);
     assert_eq!(app.inter, InterLayout::Interdiff);
     assert_eq!(
         views_box(&mut app)[..5],
-        ["Compare: [ the two diffs ]", "  each version's diff, compared line by line", "", "View: [ interdiff ]", "  a sign for which version has the line, then its own"]
+        ["Compare: [the two diffs]", "  each version's diff, compared line by line", "", "View: [interdiff]", "  a sign for which version has the line, then its own"]
     );
 }
 
@@ -13372,7 +13372,7 @@ fn enter_on_a_line_of_the_dialog_of_the_views_opens_the_list_of_its_values_under
     assert_eq!((views(&app).line, views(&app).list, app.inter), (VIEW_LINE, Some(0), InterLayout::Interdiff));
     let buf = drawn(&mut app, 30);
     let screen = text_of(&buf);
-    let (vx, vy) = at(&screen, "View: [ interdiff ]");
+    let (vx, vy) = at(&screen, "View: [interdiff]");
     let (lx, ly) = (vx + "View: ".len() as u16, vy + 1);
     let rows: Vec<String> = (ly..ly + 5).map(|y| (lx..lx + 16).map(|x| buf[(x, y)].symbol()).collect()).collect();
     assert_eq!(rows, ["┌──────────────┐", "│ interdiff    │", "│ columns      │", "│ side by side │", "└──────────────┘"], "{screen}");
@@ -13401,7 +13401,7 @@ fn enter_on_a_line_of_the_dialog_of_the_views_opens_the_list_of_its_values_under
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!((views(&app).line, views(&app).list, app.inter), (VIEW_LINE, None, InterLayout::Columns));
     let screen = draw(&mut app);
-    assert!(screen.contains(" View: [ columns ] ") && !screen.contains("│ side by side │"), "the list closed:\n{screen}");
+    assert!(screen.contains(" View: [columns] ") && !screen.contains("│ side by side │"), "the list closed:\n{screen}");
     // Opened again, on the one set; Esc closes it and sets nothing.
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(views(&app).list, Some(1));
@@ -13413,7 +13413,7 @@ fn enter_on_a_line_of_the_dialog_of_the_views_opens_the_list_of_its_values_under
     keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
     assert_eq!(views(&app).list, Some(0));
     let screen = draw(&mut app);
-    let (cx, cy) = at(&screen, "Compare: [ the two diffs ]");
+    let (cx, cy) = at(&screen, "Compare: [the two diffs]");
     let list = ["┌───────────────┐", "│ the two diffs │", "│ the code      │", "└───────────────┘"];
     for (k, value) in list.into_iter().enumerate() {
         assert_eq!(at_from(&screen, value, cx as usize + 9), (cx + 9, cy + 1 + k as u16), "{value:?} under the line\n{screen}");
@@ -13425,7 +13425,7 @@ fn enter_on_a_line_of_the_dialog_of_the_views_opens_the_list_of_its_values_under
     keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
     assert_eq!((views(&app).line, views(&app).list), (LINES_LINE, Some(0)));
     let screen = draw(&mut app);
-    let (lx, ly) = at(&screen, "Lines: [ every line ]");
+    let (lx, ly) = at(&screen, "Lines: [every line]");
     let list = ["┌───────────────────┐", "│ every line        │", "│ only what changed │", "└───────────────────┘"];
     for (k, value) in list.into_iter().enumerate() {
         assert_eq!(at_from(&screen, value, lx as usize + 7), (lx + 7, ly + 1 + k as u16), "{value:?} under the line\n{screen}");
@@ -13599,8 +13599,8 @@ fn the_dialog_of_the_views_is_clicked_as_the_ask_dialog_is() {
     keys(&mut app, &[KeyCode::Char('1')]);
     // The mouse over a line takes the cursor there, and over a button.
     let screen = draw(&mut app);
-    let (vx, vy) = at(&screen, "View: [ interdiff ]");
-    let (lx, ly) = at(&screen, "Lines: [ every line ]");
+    let (vx, vy) = at(&screen, "View: [interdiff]");
+    let (lx, ly) = at(&screen, "Lines: [every line]");
     let (cx, cy) = at(&screen, "< Cancel >");
     app.hover(lx, ly);
     assert_eq!(views(&app).line, LINES_LINE);
@@ -13626,7 +13626,7 @@ fn the_dialog_of_the_views_is_clicked_as_the_ask_dialog_is() {
     // as Esc there does: on the line itself, on the lines' line, on Done,
     // out of the box. None of them closes the dialog, nor presses Done.
     let screen = draw(&mut app);
-    let (vx, vy) = at(&screen, "View: [ columns ]");
+    let (vx, vy) = at(&screen, "View: [columns]");
     let (dx, dy) = at(&screen, "< Done >");
     for (x, y, on) in [(vx, vy, "the line"), (lx, ly, "the lines' line"), (dx, dy, "Done"), (0, 2, "out of the box")] {
         app.click(vx, vy, false);
@@ -13737,7 +13737,7 @@ fn side_by_side_on_a_pane_too_narrow_for_it_the_interdiffs_are_drawn_as_interdif
         app.status,
         "each interdiff is drawn side by side where its pane has 60 columns: this pane has 59, so its interdiffs are drawn as interdiffs until it is wider"
     );
-    assert_eq!(box_of(&narrow(&mut app), "the view of the interdiffs")[3..5], ["View: [ side by side ]", "  too narrow here, under 60 columns: drawn as an interdiff"]);
+    assert_eq!(box_of(&narrow(&mut app), "the view of the interdiffs")[3..5], ["View: [side by side]", "  too narrow here, under 60 columns: drawn as an interdiff"]);
     assert_eq!(app.help()[1], "This pane is under 60 columns, too narrow for side by side: its interdiffs are drawn as interdiffs until it has room.");
     // Done: the top bar and ? say why.
     for code in [KeyCode::End, KeyCode::Enter] {
@@ -13773,7 +13773,7 @@ fn the_settings_start_the_interdiffs_side_by_side_and_the_view_set_holds_on_ever
     let screen = draw(&mut app);
     assert!(screen.lines().any(|l| l.contains("+line 39 was") && l.contains("│+line 39 said")), "{screen}");
     keys(&mut app, &[KeyCode::Char('1')]);
-    assert_eq!(views_box(&mut app)[3], "View: [ side by side ]");
+    assert_eq!(views_box(&mut app)[3], "View: [side by side]");
     // In a column per version from there: History's stack diff so too,
     // then the versions again.
     keys(&mut app, &[KeyCode::Down, KeyCode::Left, KeyCode::End, KeyCode::Enter]);
@@ -21681,6 +21681,25 @@ fn submitted(app: &mut App) -> Vec<String> {
     app.submitting.as_ref().map(|s| s.texts()).unwrap_or_default()
 }
 
+/// The line of the review of what a submit sends that its cursor is on,
+/// as it is drawn, the spaces it ends with left out.
+#[cfg(feature = "moz-phab")]
+fn submit_row(app: &mut App) -> String {
+    let rows = submitted(app);
+    let at = app.submitting.as_ref().map_or(0, |s| s.cursor);
+    rows.get(at).map_or(String::new(), |r| r.trim_end().to_string())
+}
+
+/// Item `item` of the menu of the review of what a submit sends, which Esc
+/// opens there: `Send it to Phabricator`, `Cancel: send nothing`.
+#[cfg(feature = "moz-phab")]
+fn submit_menu(app: &mut App, item: &str) {
+    assert_eq!(app.screen, Screen::Submit);
+    keys(app, &[KeyCode::Esc]);
+    assert_eq!(menu_title(app), "what is sent to Phabricator");
+    choose(app, item);
+}
+
 #[cfg(feature = "moz-phab")]
 #[test]
 fn a_patch_with_no_revision_is_sent_as_a_new_one_once_the_dialog_says_what_is_sent_and_where() {
@@ -21765,7 +21784,9 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     // then this, the reviewers the title names written as moz-phab writes
     // them; the parent, before then after; the status; then the code: a.txt
     // changed, c.txt that only Phabricator's version adds, gone back to what
-    // the patches below leave, none. Of reviewers, nothing else is said.
+    // the patches below leave, none; as an interdiff, as the view of what
+    // differs from Phabricator draws a revision's files, the diff of them
+    // as it is. Of reviewers, nothing else is said.
     let order = [
         "what is sent",
         "   D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and stays Changes Planned.",
@@ -21780,10 +21801,11 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
         "+parent: D12, the revision of patch 2",
         " status: stays Changes Planned",
         "the code: Phabricator's, then what is sent",
-        "a.txt",
+        "   Each file as the latest diff of D13 leaves it, then as patch 3 leaves it, both on the patches below patch 3.",
+        "diff --git a/a.txt b/a.txt",
         "-LINE 20",
         "+Line twenty",
-        "c.txt",
+        "diff --git a/c.txt b/c.txt",
         "deleted file mode 100644",
         "-sea",
     ];
@@ -21793,25 +21815,25 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     assert!(!rows.iter().any(|r| r.contains("reviewers")), "{rows:#?}");
     let screen = draw(&mut app);
     assert!(screen.lines().nth(1).unwrap().starts_with(" D13: what is sent to Phabricator, for your review"), "{screen}");
-    assert_eq!(app.hint(), "↑↓: scroll · enter: send it to Phabricator · esc: send nothing · 1: side by side · space: menu · ?: what can I do here");
-    // Side by side, and back.
-    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(app.hint(), "↑↓: scroll · esc: menu · 1: view · ?: what can I do here");
+    // Side by side, set in the dialog of 1: the title and summary too.
+    // Scrolled, to the end, and back to the top; then as an interdiff again.
+    inter_view(&mut app, InterLayout::Sides);
     let screen = draw(&mut app);
-    // Scrolled, to the end, and back to the top.
+    assert!(screen.lines().any(|l| l.contains("-Old why.") && l.contains("│+New why.")), "{screen}");
     keys(&mut app, &[KeyCode::PageDown, KeyCode::PageDown]);
     assert!(draw(&mut app).contains("-sea"));
     keys(&mut app, &[KeyCode::Home]);
-    assert!(screen.lines().any(|l| l.contains("-Old why.") && l.contains("│+New why.")), "{screen}");
-    keys(&mut app, &[KeyCode::Char('1'), KeyCode::End, KeyCode::Home]);
-    // Esc: nothing is sent.
-    keys(&mut app, &[KeyCode::Esc]);
+    inter_view(&mut app, InterLayout::Interdiff);
+    // Cancel: send nothing, in the menu Esc opens: nothing is sent.
+    submit_menu(&mut app, "Cancel: send nothing");
     assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "nothing was sent to Phabricator"));
     assert!(phab.lock().unwrap().writes().is_empty());
-    // Reviewed again, Enter sends it: the diff, then the parent in an edit
-    // of its own; no reviewers.
+    // Reviewed again, Send it to Phabricator sends it: the diff, then the
+    // parent in an edit of its own; no reviewers.
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
-    keys(&mut app, &[KeyCode::Enter]);
+    submit_menu(&mut app, "Send it to Phabricator");
     assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "sending patch 3 to Phabricator…"));
     app.settle();
     assert_eq!(app.status, "D13 has the new diff of patch 3 now. D13 stays Changes Planned. The parent of D13 is D12 now.");
@@ -21828,6 +21850,142 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     assert!(phab.lock().unwrap().of_reviewers().is_empty(), "no call of reviewers at all");
     let r = phab.lock().unwrap().revisions[&13].clone();
     assert_eq!((r.status.as_str(), r.summary.as_str(), r.parents.clone()), ("changes-planned", "New why.", vec!["PHID-DREV-12".to_string()]));
+    stacked::submit::stand_in(None);
+}
+
+/// Patch 3 of a stack whose revision D13 Phabricator has in work, at the
+/// version of the patch before the one in the stack, which changes a.txt
+/// otherwise and adds c.txt, with another summary; what a submit sends it
+/// read, and reviewed on its screen. The stand-in of Phabricator, kept as
+/// long as the guard lives.
+#[cfg(feature = "moz-phab")]
+fn reviewing_a_submit() -> (tempfile::TempDir, PathBuf, std::sync::Arc<std::sync::Mutex<Phab>>, std::sync::MutexGuard<'static, ()>, Editor) {
+    let (tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\nOld why.\n\n{LINK}13")]);
+    let earlier = patch_of(&db, 2).diff;
+    let mine = earlier.split("diff --git a/c.txt").next().unwrap().replace("+LINE 20", "+Line twenty");
+    next_version(&db, 2, &format!("Bug 3 - three\n\nNew why.\n\n{LINK}13"), &mine);
+    let mut p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &earlier);
+    p.revisions.get_mut(&13).unwrap().summary = "Old why.".into();
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let one = phab_stand_in(&phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    phab_choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!((app.screen, app.status.as_str()), (Screen::Submit, ""));
+    (tmp, db, phab, one, app)
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn esc_on_what_a_submit_sends_opens_its_menu_a_right_click_too_and_enter_and_space_do_nothing() {
+    let (_tmp, _db, phab, _one, mut app) = reviewing_a_submit();
+    // Enter and Space do nothing there: nothing sent, nothing open.
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Char(' ')]);
+    assert_eq!((app.screen, app.mode.clone(), app.status.as_str()), (Screen::Submit, Mode::Normal, ""));
+    // Esc opens its menu: Send it to Phabricator and Cancel: send nothing,
+    // then the view of its code; no Search…, Runs… nor Quit. Esc in the menu
+    // closes it, back on the review.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(menu_title(&app), "what is sent to Phabricator");
+    assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), ["Send it to Phabricator", "Cancel: send nothing", "", "The view of the code…"]);
+    pick_item(&mut app, "The view of the code…");
+    assert_eq!(
+        app.help()[0],
+        "Press Enter to pick how the code of what is sent is drawn, in the dialog of the views of the interdiffs: as a diff of the files, or each file side by side, as two diffs are compared; or as the middle draws a patch, unified, side by side, or side by side and compact."
+    );
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.screen, app.mode.clone()), (Screen::Submit, Mode::Normal));
+    // The bottom bar and ? say so: Esc for the menu, 1 for the view, no
+    // Enter.
+    assert_eq!(app.hint(), "↑↓: scroll · esc: menu · 1: view · ?: what can I do here");
+    let help = app.help();
+    assert_eq!(
+        help[1..],
+        [
+            "Press Esc for the menu, or click with the right button: Send it to Phabricator sends it, D13 read again first, and if it changed on Phabricator since this was read, nothing is sent; Cancel: send nothing sends nothing.",
+            "Press ↑↓ (pgup pgdn home end) to scroll, and 1 to pick how the code is drawn: as a diff of the files, or each file side by side, as two diffs are compared; or as the middle draws a patch, unified, side by side, or side by side and compact. Side by side, the title and summary, and what else changes, are side by side too.",
+        ],
+        "{help:#?}"
+    );
+    // A click with the left button does nothing there; one with the right
+    // opens the menu, next to the cell clicked.
+    draw(&mut app);
+    assert_eq!(app.click(40, 10, false), Effect::None);
+    assert_eq!((app.screen, app.mode.clone()), (Screen::Submit, Mode::Normal));
+    assert_eq!(app.click(40, 10, true), Effect::None);
+    assert_eq!(menu_title(&app), "what is sent to Phabricator");
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.at == Some((40, 10))), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.screen, app.mode.clone()), (Screen::Submit, Mode::Normal));
+    assert!(phab.lock().unwrap().writes().is_empty(), "nothing sent");
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn one_on_what_a_submit_sends_opens_the_dialog_of_the_views_and_its_code_follows_each_view_its_place_kept() {
+    let (_tmp, _db, phab, _one, mut app) = reviewing_a_submit();
+    // As an interdiff, as the view of what differs from Phabricator draws a
+    // revision's files: the diff of them, as it is. The cursor on the line
+    // a.txt has sent.
+    let rows = submitted(&mut app);
+    let at = rows.iter().position(|r| r == "+Line twenty").unwrap_or_else(|| panic!("{rows:#?}"));
+    assert!(rows.contains(&"the code: Phabricator's, then what is sent".to_string()) && rows.contains(&"diff --git a/a.txt b/a.txt".to_string()), "{rows:#?}");
+    for _ in 0..at {
+        key(&mut app, KeyCode::Down);
+    }
+    assert_eq!(submit_row(&mut app), "+Line twenty");
+    // 1 opens the dialog of the views of the interdiffs, on the view as it
+    // is; so does the menu's item.
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert!(matches!(&app.mode, Mode::Views(d) if d.was == (InterLayout::Interdiff, InterLines::Every)), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    choose(&mut app, "The view of the code…");
+    assert!(matches!(app.mode, Mode::Views(_)), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    // In a column per version: the files as they are too, the top bar
+    // saying the view; the cursor on its line.
+    inter_view(&mut app, InterLayout::Columns);
+    assert_eq!(submit_row(&mut app), "+Line twenty");
+    assert!(draw(&mut app).lines().next().unwrap().contains(" · interdiffs in columns"));
+    // Side by side: each file's two versions beside each other, the line
+    // of both; the title and summary side by side too, under their
+    // heading.
+    inter_view(&mut app, InterLayout::Sides);
+    let row = submit_row(&mut app);
+    assert!(row.starts_with("-LINE 20") && row.ends_with("│+Line twenty"), "{row}");
+    let rows = submitted(&mut app);
+    assert!(rows.iter().any(|l| l.starts_with("-Old why.") && l.trim_end().ends_with("│+New why.")), "{rows:#?}");
+    assert!(rows.contains(&"the code: Phabricator's on the left, what is sent on the right".to_string()), "{rows:#?}");
+    // The code, unified, as the middle draws a patch: each file's name, its
+    // hunks, a file deleted; the cursor on its line.
+    inter_view(&mut app, InterLayout::ChangeUnified);
+    assert_eq!(submit_row(&mut app), "+Line twenty");
+    let rows = submitted(&mut app);
+    for line in ["the code: Phabricator's, then what is sent", "a.txt", "-LINE 20", "c.txt", "deleted file mode 100644", "-sea"] {
+        assert!(rows.contains(&line.to_string()), "{line:?} in {rows:#?}");
+    }
+    assert!(!rows.iter().any(|r| r.starts_with("diff --git")), "{rows:#?}");
+    assert!(draw(&mut app).lines().next().unwrap().contains(" · change unified"));
+    // Side by side, the line of both sides; compact too.
+    inter_view(&mut app, InterLayout::ChangeSides);
+    let row = submit_row(&mut app);
+    assert!(row.starts_with("-LINE 20") && row.ends_with("│+Line twenty"), "{row}");
+    assert!(submitted(&mut app).iter().any(|l| l.starts_with("-Old why.") && l.trim_end().ends_with("│+New why.")));
+    inter_view(&mut app, InterLayout::ChangeCompact);
+    assert!(submit_row(&mut app).contains("+Line twenty"), "{}", submit_row(&mut app));
+    assert!(draw(&mut app).lines().next().unwrap().contains(" · change side-by-side, compact"));
+    // Back as an interdiff: on the line it was on, the title and summary
+    // one under the other again.
+    inter_view(&mut app, InterLayout::Interdiff);
+    assert_eq!(submit_row(&mut app), "+Line twenty");
+    assert!(submitted(&mut app).contains(&"-Old why.".to_string()));
+    // Only what the patches changed: on one base, nothing of the code left
+    // out.
+    inter_lines(&mut app, InterLines::Changed);
+    assert_eq!(submit_row(&mut app), "+Line twenty");
+    assert!(phab.lock().unwrap().writes().is_empty(), "nothing sent");
     stacked::submit::stand_in(None);
 }
 
@@ -21866,8 +22024,8 @@ fn a_latest_diff_of_the_patch_s_changes_made_before_a_rebase_is_reviewed_saying_
     );
     assert_eq!(rows[sent], "   D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and stays Changes Planned.");
     assert!(!rows.iter().any(|r| r.contains("The code does not change") || r.starts_with("the code")), "{rows:#?}");
-    // Enter sends it: a new diff.
-    keys(&mut app, &[KeyCode::Enter]);
+    // Sent from the menu: a new diff.
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
     assert_eq!(
@@ -21891,7 +22049,7 @@ fn a_revision_changed_on_phabricator_since_its_review_opened_is_sent_nothing() {
     assert_eq!(app.screen, Screen::Submit);
     // Someone retitles it meanwhile.
     phab.lock().unwrap().revisions.get_mut(&13).unwrap().title = "Someone's title".into();
-    choose(&mut app, "Send it to Phabricator");
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.");
     assert!(phab.lock().unwrap().writes().is_empty());
@@ -21946,7 +22104,11 @@ fn a_revision_whose_code_is_the_patch_s_already_is_reviewed_for_its_message_alon
     assert!(rows.contains(&"-Why.".to_string()) && rows.contains(&"+Why, said again.".to_string()), "{rows:#?}");
     assert!(!rows.iter().any(|r| r.starts_with("the code")), "{rows:#?}");
     assert!(!rows.iter().any(|r| r.contains("parent:")), "the parent is D12 already: {rows:#?}");
-    keys(&mut app, &[KeyCode::Enter]);
+    // No code: no view to set, 1 doing nothing.
+    assert_eq!(app.hint(), "↑↓: scroll · esc: menu · ?: what can I do here");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(app.mode, Mode::Normal);
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 has the title and summary of patch 3 now.");
     assert_eq!(phab.lock().unwrap().writes(), ["differential.revision.edit summary"]);
@@ -21965,7 +22127,11 @@ fn a_revision_whose_code_is_the_patch_s_already_is_reviewed_for_its_message_alon
 fn the_title_and_summary_sent_are_compared_as_an_interdiff_compares_two_messages_side_by_side_too() {
     let message = format!("Bug 3 - three\n\nThe parser reads the entire\nfile before it checks\nthe header.\n\nBecause.\n\n{LINK}13");
     let (_tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &message]);
-    let mut p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
+    // Phabricator has the version of patch 3 before the one in the stack,
+    // which changes a.txt otherwise: a new diff is sent, its code shown.
+    let earlier = patch_of(&db, 2).diff;
+    next_version(&db, 2, &message, &earlier.replace("+LINE 20", "+Line twenty"));
+    let mut p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &earlier);
     let r = p.revisions.get_mut(&13).unwrap();
     (r.summary, r.parents) = ("The parser reads the whole file\nbefore it checks the header.\n\nBecause.".into(), vec!["PHID-DREV-12".into()]);
     let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
@@ -22007,15 +22173,16 @@ fn the_title_and_summary_sent_are_compared_as_an_interdiff_compares_two_messages
         assert_eq!(style_after(app, new, 0, 40), as_drawn(color::add()), "its sign");
     };
     check(&mut app);
-    // Side by side (1): Phabricator's lines on the left, those sent on the
-    // right, each wrapped as it is, coloured the same way.
-    keys(&mut app, &[KeyCode::Char('1')]);
+    // Side by side, set in the dialog of 1: Phabricator's lines on the
+    // left, those sent on the right, each wrapped as it is, coloured the
+    // same way.
+    inter_view(&mut app, InterLayout::Sides);
     let screen = draw_sized(&mut app, 120, 40);
     let beside = |left: &str, right: &str| screen.lines().any(|l| l.contains(left) && l.contains(&format!("│{right}")));
     assert!(beside(old, new) && beside("-before it checks the header.", "+file before it checks") && beside("~", "+the header."), "{screen}");
     assert!(beside(" Because.", " Because."), "{screen}");
     check(&mut app);
-    keys(&mut app, &[KeyCode::Esc]);
+    submit_menu(&mut app, "Cancel: send nothing");
     assert!(phab.lock().unwrap().writes().is_empty());
     stacked::submit::stand_in(None);
 }
@@ -22027,9 +22194,9 @@ fn in_what_a_submit_sends_a_line_of_the_title_and_summary_opens_its_links() {
     let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
     let why = format!("https://example.com/{here}/why");
     let bugzilla = format!("https://bugzilla.example.com/{here}");
-    // Phabricator has the code as it is, the summary not.
+    // Phabricator has the summary and the code of the version before.
     let diff = patch_of(&db, 2).diff;
-    next_version(&db, 2, &format!("Bug 3 - three\n\nWhy: {why}\n\n{LINK}13"), &diff);
+    next_version(&db, 2, &format!("Bug 3 - three\n\nWhy: {why}\n\n{LINK}13"), &diff.replace("+LINE 20", "+Line twenty"));
     let mut p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &diff);
     let r = p.revisions.get_mut(&13).unwrap();
     (r.summary, r.parents) = ("Why.".into(), vec!["PHID-DREV-12".into()]);
@@ -22048,11 +22215,11 @@ fn in_what_a_submit_sends_a_line_of_the_title_and_summary_opens_its_links() {
         key(&mut app, KeyCode::Down);
     }
     draw(&mut app);
-    assert_eq!(app.hint(), "↑↓: scroll · enter: send it to Phabricator · esc: send nothing · 1: side by side · o: open the link · space: menu · ?: what can I do here");
+    assert_eq!(app.hint(), "↑↓: scroll · esc: menu · o: open the link · 1: view · ?: what can I do here");
     assert!(app.help().contains(&format!("Press o to open {why} in your browser.")), "{:?}", app.help());
-    keys(&mut app, &[KeyCode::Char(' ')]);
+    keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(link_items(&app), [format!("Open {why} in your browser")]);
-    assert_eq!(links_after(&app, "Send it to Phabricator", "Show the code side by side"), 1);
+    assert_eq!(links_after(&app, "Send it to Phabricator", "The view of the code…"), 1);
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.screen, Screen::Submit, "Esc closed the menu alone");
     assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
@@ -22069,7 +22236,7 @@ fn in_what_a_submit_sends_a_line_of_the_title_and_summary_opens_its_links() {
     assert_eq!(opened_with(&mut app, 'o'), format!("opened {bug} in your browser"));
     assert!(opened(&bug));
     // Side by side: the line of both sides, Phabricator's with no link.
-    keys(&mut app, &[KeyCode::Char('1')]);
+    inter_view(&mut app, InterLayout::Sides);
     for _ in 0..rows.len() {
         if app.links_here().iter().any(|l| l.url == why) {
             break;
@@ -22264,9 +22431,19 @@ fn a_revision_in_review_is_offered_its_title_summary_and_parent_alone_in_the_pla
         app.help()
     );
     assert!(phab.lock().unwrap().writes().is_empty(), "nothing sent yet");
-    // Enter sends it: the summary alone, no diff, the status kept; the
-    // bottom line says what came of it.
-    keys(&mut app, &[KeyCode::Enter]);
+    // No code: no view to set. The bottom bar names no 1, which does
+    // nothing there, and the menu Esc opens has no view of the code; Enter
+    // and Space do nothing either.
+    assert_eq!(app.hint(), "↑↓: scroll · esc: menu · ?: what can I do here");
+    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Enter, KeyCode::Char(' ')]);
+    assert_eq!((app.screen, app.mode.clone()), (Screen::Submit, Mode::Normal));
+    assert!(app.help().contains(&"Press ↑↓ (pgup pgdn home end) to scroll.".to_string()), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), ["Send it to Phabricator", "Cancel: send nothing"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    // Send it to Phabricator sends it: the summary alone, no diff, the
+    // status kept; the bottom line says what came of it.
+    submit_menu(&mut app, "Send it to Phabricator");
     assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "updating D13 on Phabricator…"));
     app.settle();
     assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
@@ -22588,8 +22765,7 @@ fn a_submit_fetches_the_revision_it_sent_to_again_once_it_is_done() {
     assert_eq!(comments_read(&phab), 1);
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
-    assert_eq!(app.screen, Screen::Submit);
-    keys(&mut app, &[KeyCode::Enter]);
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 is Changes Planned now. Patch 2 has no revision, so D13 gets no parent.");
     let r = phab.lock().unwrap().revisions[&13].clone();
@@ -23231,7 +23407,7 @@ fn a_summary_wrapped_otherwise_differs_space_showing_the_lines_of_both_until_a_s
     assert!(said > 0, "{rows:#?}");
     assert_eq!(rows[from + said..from + said + 7], [" WIP: Bug 3 - three", " ", old, new, "+before it checks the header.", " ", " Because."], "{rows:#?}");
     // Sent, the summary as this version writes it: given back so, in sync.
-    keys(&mut app, &[KeyCode::Enter]);
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
     assert_eq!(phab.lock().unwrap().revisions[&13].summary, "The parser reads the whole file\nbefore it checks the header.\n\nBecause.");
@@ -23260,7 +23436,7 @@ fn a_patch_submitted_and_unchanged_since_is_in_sync_phabricator_giving_back_what
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · the title or summary differs · no new comments"));
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
-    keys(&mut app, &[KeyCode::Enter]);
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
     // Phabricator keeps them as they were sent: the title as moz-phab
@@ -23701,8 +23877,7 @@ fn a_revision_not_modified_since_it_was_stored_is_read_no_more_and_one_found_as_
     next_patch(&mut app);
     phab_choose(&mut app, "Update D13 on Phabricator: its title and summary");
     app.settle();
-    assert_eq!(app.screen, Screen::Submit);
-    keys(&mut app, &[KeyCode::Enter]);
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 has the title and summary of patch 3 now.");
     assert_eq!(since(), ["edge.search", "differential.diff.search", "transaction.search"]);
@@ -23926,7 +24101,7 @@ fn a_submit_and_a_pull_store_what_they_read() {
     let s = state().expect("stored");
     assert_eq!((s.status.as_str(), s.title.as_str(), s.summary.as_str(), s.phid.as_str(), s.diff), ("changes-planned", "WIP: Bug 3 - three", "Why.", "PHID-DREV-13", 1000));
     assert_eq!(Db::load(&db).unwrap().raw_diff(link, 1000), Some(patch_of(&db, 2).diff.as_str()));
-    keys(&mut app, &[KeyCode::Esc]);
+    submit_menu(&mut app, "Cancel: send nothing");
     assert_eq!(app.status, "nothing was sent to Phabricator");
     app.refresh();
     app.settle();
@@ -23940,7 +24115,7 @@ fn a_submit_and_a_pull_store_what_they_read() {
     assert_eq!(app.screen, Screen::Submit);
     phab.lock().unwrap().revisions.get_mut(&13).unwrap().title = "Someone's title".into();
     stacked::phab::statuses_stand_in(&db, None);
-    keys(&mut app, &[KeyCode::Enter]);
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.");
     assert_eq!(state().map(|s| s.title), Some("Someone's title".to_string()));
@@ -24079,7 +24254,7 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     assert_eq!(app.screen, Screen::Submit);
     let rows = submitted(&mut app);
     assert!(rows.contains(&"   Its parent is set to D11, the revision of patch 1.".to_string()), "{rows:#?}");
-    keys(&mut app, &[KeyCode::Enter]);
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D13 keeps its diff, title and summary. The parent of D13 is D11 now.");
     assert_eq!(phab.lock().unwrap().writes(), ["differential.revision.edit parents.set"]);
@@ -24094,7 +24269,7 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     assert_eq!(marks_agree(&mut app), ['✓', '✓', '✗']);
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
-    keys(&mut app, &[KeyCode::Enter]);
+    submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
     assert_eq!(app.status, "D12 keeps its diff, title and summary. The parent of D12 is D13 now.");
     assert_eq!(edges(&phab), 3);
@@ -26611,7 +26786,7 @@ fn the_change_side_by_side_on_a_pane_too_narrow_for_it_is_drawn_unified_and_that
     keys(&mut app, &[KeyCode::Char('1')]);
     assert_eq!(
         views_box(&mut app)[..5],
-        ["Compare: [ the code ]", "  each file from the old version to the new one", "", "View: [ side by side ]", "  the old version on the left, the new one on the right"]
+        ["Compare: [the code]", "  each file from the old version to the new one", "", "View: [side by side]", "  the old version on the left, the new one on the right"]
     );
     keys(&mut app, &[KeyCode::Esc]);
     // 80 columns: the version's pane has 59, under the 60 two sides need:
@@ -26627,7 +26802,7 @@ fn the_change_side_by_side_on_a_pane_too_narrow_for_it_is_drawn_unified_and_that
     );
     key(&mut app, KeyCode::Char('1'));
     let dialog = box_of(&draw_sized(&mut app, 80, 40), "the view of the interdiffs");
-    assert_eq!(dialog[3..5], ["View: [ side by side ]", "  too narrow here, under 60 columns: drawn unified"]);
+    assert_eq!(dialog[3..5], ["View: [side by side]", "  too narrow here, under 60 columns: drawn unified"]);
     key(&mut app, KeyCode::Down);
     draw_sized(&mut app, 80, 40);
     assert_eq!(app.help()[1], "This pane is under 60 columns, too narrow for the code side by side: the code is drawn unified until the pane has room.");
@@ -26839,7 +27014,7 @@ fn one_sets_every_line_or_only_what_the_patches_changed_in_every_view_and_on_eve
     // saying what it draws.
     choose(&mut app, "Versions of this patch…");
     keys(&mut app, &[KeyCode::Char('1')]);
-    assert_eq!(views_box(&mut app)[6..8], ["Lines: [ every line ]", "  context, index lines and the base's changes too"]);
+    assert_eq!(views_box(&mut app)[6..8], ["Lines: [every line]", "  context, index lines and the base's changes too"]);
     keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Enter, KeyCode::Down]);
     assert_eq!(app.hint(), "↑↓ choose · enter: set the lines · esc: close the list · ?: what it does");
     keys(&mut app, &[KeyCode::Char('?')]);
@@ -26899,7 +27074,7 @@ fn one_sets_every_line_or_only_what_the_patches_changed_in_every_view_and_on_eve
     assert_eq!(views(&app).was, (InterLayout::Interdiff, InterLines::Changed));
     assert_eq!(
         views_box(&mut app)[3..8],
-        ["View: [ interdiff ]", "  a sign for which version has the line, then its own", "", "Lines: [ only what changed ]", "  no context, no index lines, none of the base's changes"]
+        ["View: [interdiff]", "  a sign for which version has the line, then its own", "", "Lines: [only what changed]", "  no context, no index lines, none of the base's changes"]
     );
     keys(&mut app, &[KeyCode::Esc]);
     // In a column per version: what says what each column is, then what is
@@ -26962,7 +27137,7 @@ fn the_settings_start_the_interdiffs_with_only_what_the_patches_changed() {
     let lines = under_names(&version_lines(&mut app));
     assert!(lines.contains(&"⋯ 5 lines are left out here.".to_string()) && !lines.iter().any(|l| l.contains("line 38")), "{lines:#?}");
     keys(&mut app, &[KeyCode::Char('1')]);
-    assert_eq!(views_box(&mut app)[6], "Lines: [ only what changed ]");
+    assert_eq!(views_box(&mut app)[6], "Lines: [only what changed]");
     keys(&mut app, &[KeyCode::Esc]);
     // Set in the file as any setting is.
     let (cfg, wrong) = stacked::config::Config::parse("[view]\ninterdiff_lines = \"changed\"\ninterdiff = \"columns\"\n").unwrap();

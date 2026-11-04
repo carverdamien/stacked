@@ -578,9 +578,10 @@ impl App {
     }
 
     /// Whether the screen draws its interdiffs in a view of the change, as
-    /// last drawn.
+    /// last drawn, for 3 to show its files whole: not the review of a
+    /// submit, which reads none of them whole.
     pub(super) fn change_drawn(&self) -> bool {
-        self.inter_screen() && self.inter_in(self.inter_w.get()).change()
+        self.inter_screen() && !self.on_submit() && self.inter_in(self.inter_w.get()).change()
     }
 
     /// 3, while the screen draws its interdiffs in a view of the change:

@@ -465,11 +465,34 @@ changes as version 2 of patch 3, but it was made on the patches below
 patch 3 as they were before, and it no longer applies on them as they are
 now, so a new diff of patch 3 is sent, made on them.`), and the code is
 then each file as that version leaves it, then as the patch does, both on
-the patches below it as they are now. ↑↓ (pgup pgdn home end) scroll, and 1 shows the code side by
-side, or unified again, the lines of the title and summary that differ
-side by side too, Phabricator's on the left, coloured the same way.
-Enter, or `Send it to Phabricator` in its menu, sends it; Esc, or
-`Cancel: send nothing`, sends nothing. Before anything
+the patches below it as they are now. ↑↓ (pgup pgdn home end) scroll. 1
+opens the dialog of the views of the interdiffs (The editor, above), as
+on every screen of them, and the code is drawn in the view it sets, as
+the screen of what differs from Phabricator draws a revision's files:
+compared as two diffs, the diff of the files as it is, as an interdiff
+and in a column per version, or side by side, each file as the latest
+diff leaves it beside the same file as the patch leaves it (`the code:
+Phabricator's on the left, what is sent on the right`); compared as the
+code, as the middle draws a patch, unified, side by side, or side by
+side and compact. Every line is drawn, whatever lines the dialog sets, as
+both are on the patches below: nothing a change of base made is left
+out. From one view to another, the screen keeps its place, the cursor on
+the line it was on, and back. Side by side, the lines of the title and
+summary that differ are side by side too, Phabricator's on the left,
+coloured the same way, and so are those of what else changes. The top
+bar says the view, as on the screens of interdiffs; `3` shows no file
+whole there. Esc opens the screen's menu, and so does a click with the
+right button, next to the cell clicked; Enter and Space do nothing there,
+and a click with the left button does nothing either. The menu has
+`Send it to Phabricator`, which sends it, `Cancel: send nothing`, which
+sends nothing, and `The view of the code…`, which opens the dialog as 1
+does; on a line of the title and summary that has links, those links
+after them. Esc in the menu closes it, back on the screen. The bottom bar
+says `↑↓: scroll · esc: menu · 1: view · ?: what can I do here`, and `?`
+says the same. When no code is sent, as when the code is the patch's
+already, there is no view to set: 1 does nothing, the bottom bar names
+no 1, the menu has no view of the code, and what the screen says is
+unified. Before anything
 is sent, the revision is read again, and what is read stored: if its
 latest diff, its status, its title, summary or bug, or its parents changed
 meanwhile, nothing is (`D123 changed on Phabricator since you reviewed it,
@@ -555,9 +578,12 @@ stay as it is (`status: stays Needs Review`). It shows no code. When the
 code differs too, the screen says so at its top, and why it is not sent
 (`The code of patch 3 is not sent: D123 is Needs Review, not in work, and
 only a revision in work gets a new diff.`); else that the code does not
-change. Enter, or `Send it to Phabricator` in its menu, sends it, the
-bottom line saying `updating D123 on Phabricator…` meanwhile; Esc, or
-`Cancel: send nothing`, sends nothing. Before anything is sent, the
+change. With no code, there is no view to set: 1 does nothing there, and
+the bottom bar names no 1 (`↑↓: scroll · esc: menu · ?: what can I do
+here`). `Send it to Phabricator`, in the menu Esc or a right click opens,
+sends it, the bottom line saying `updating D123 on Phabricator…`
+meanwhile; `Cancel: send nothing` sends nothing; that menu has no view of
+the code. Before anything is sent, the
 revision is read again, as for a submit in work: if its latest diff, its
 status, its title, summary or bug, or its parents changed meanwhile,
 nothing is. When nothing differs, nothing is sent, and the bottom line

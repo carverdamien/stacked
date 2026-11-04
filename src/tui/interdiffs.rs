@@ -1098,12 +1098,16 @@ impl App {
     /// Whether the screen shows interdiffs, for 1 to pick their view: the
     /// versions of a patch, History…, the review of what landed while its
     /// right pane shows the stack diff of its change, and what differs from
-    /// Phabricator or what an edit changed, on a screen of its own.
+    /// Phabricator or what an edit changed, on a screen of its own; and the
+    /// review of a submit, while it shows code, as what differs from
+    /// Phabricator does (`submitting`).
     pub(super) fn inter_screen(&self) -> bool {
         match self.screen {
             Screen::Versions | Screen::History => true,
             Screen::Review => self.review_on_diff(),
             Screen::Text => self.text.as_ref().is_some_and(|t| t.inter.is_some()),
+            #[cfg(feature = "moz-phab")]
+            Screen::Submit => self.submit_code(),
             _ => false,
         }
     }
