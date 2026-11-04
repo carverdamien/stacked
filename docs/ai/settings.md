@@ -312,6 +312,36 @@ settings:
   editor, a line typed in a box, and the search's own screen read what is
   typed, whatever the keys, and the bottom bar names their keys as they
   are there (`enter: a new line · esc: close`).
+- `[web]` (built with the `web` feature, on by default; read either way,
+  so one file serves both builds), read from `~/.stacked/config.toml`
+  alone: `port`, the port of 127.0.0.1 `stacked web` listens on unless
+  `--port N` names one for that run (In a browser, above): `"random"`
+  (unless set), any free one each time; `"fixed-random"`, any free one the
+  first time, which `stacked web` then writes in the file as `kept_port`,
+  beside `port`, the rest of the file as it was (as `stacked config`
+  writes a setting, once what it makes reads back), and listens on each
+  time after, whatever the database; or a port from 1 to 65535, a number
+  (`port = 8080`; one in quotes is read as well). Any other value, of any
+  kind, is said (`web.port: "sometimes" is not "random", "fixed-random" or
+  a port from 1 to 65535`), and `"random"` kept; `stacked config` refuses
+  to write it (`web.port is "random", "fixed-random" or a port from 1 to
+  65535, not "sometimes"`). `kept_port`, the port
+  `"fixed-random"` took: while `port` is another, it is passed over, and
+  kept, so that going back to `"fixed-random"` finds it again; taken out
+  (`stacked config --unset web.kept_port`), the next launch with
+  `"fixed-random"` takes any free one again, and writes it. A file it
+  cannot be written in, or that would not read back with it, is said
+  (`port 51234 cannot be kept in the settings as web.kept_port, so the
+  next launch with web.port = "fixed-random" takes any free port again:
+  …`), and the port taken is listened on all the same. A port in use, set,
+  kept or given, is said in a line, `port 8080 of 127.0.0.1 is in use`,
+  and `stacked web` exits with 1, trying no other. Nothing of it is kept
+  in a database, nor in `state.json`. A checkout's own `.stacked/local.toml`
+  that sets them has them passed over, each said (`web.port is read only
+  from the settings' file, never from a checkout's own .stacked/local.toml:
+  here it is passed over`), and not marked as the checkout's by `stacked
+  config`; `stacked config --local` refuses to write or read them there,
+  and takes them out.
 - `[lint]`: `command`, the linter of a checkout, which the stack's `Lint the
   stack` runs, and which asks that change the stack may run on the files
   they change (Linting, above): a checkout's own setting alone, read only
@@ -343,7 +373,8 @@ A checkout's own settings, `.stacked/local.toml` at its top (beside the
 stacks' worktrees, out of git's sight), override `~/.stacked/config.toml` there:
 what it sets is its own, a list whole and a table's settings each (`[keys]
 down` alone, the other keys as they were); what it does not set, or sets
-wrong, is the other file's. The settings used are those of the checkout
+wrong, is the other file's; but for `[web]`, which is read from
+`~/.stacked/config.toml` alone (above). The settings used are those of the checkout
 stacked runs in, but for what a stack's agent does (`[agent]`: its tools,
 where it works, the program run): those are of the stack's checkout,
 wherever stacked runs, and read when an ask starts, so that a change

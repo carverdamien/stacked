@@ -83,11 +83,17 @@ picked at once, if the mouse went over the page in the meantime and is
 still there. The click that gives the page the focus back thus acts as any
 other click does, whether the browser sends the click before the focus or
 after: a click on a line of the patch is Enter on that line. `--port N`
-listens on port N (else any free one), `--no-open` only says where it is.
+listens on port N for that run, any free one for 0; without it, the
+settings' `web.port` says which (Settings, below): any free one each time
+unless set, the one `"fixed-random"` took the first time and wrote in the
+settings, whatever the database, or the one it names. A port in use is
+said in a line, `port 8080 of 127.0.0.1 is in use`, and `stacked web` does
+not start, trying no other. `--no-open` only says where it is.
 
 It listens on 127.0.0.1 only, and only a page holding the token in the
-address it opened (a new one each time) may see it or drive it: a page from
-elsewhere could otherwise send it keys. The page's tab shows StackED's icon
+address it opened (a new one each time, whatever the port) may see it or
+drive it: a page from elsewhere could otherwise send it keys. The page's
+tab shows StackED's icon
 (In a window of its own: StackED, below), 32 pixels square, or 64 on a
 screen of high density, each size drawn once and written as a PNG by
 stacked itself, with no eframe (`icon.rs`); the page asks for it with the

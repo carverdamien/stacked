@@ -1205,7 +1205,22 @@ removed (Quit in the page; `stacked web` itself sent SIGINT, SIGTERM or
 SIGHUP, the first while `$EDITOR` runs left to `$EDITOR`, the second
 waiting for it), and two
 `stacked web` at once, each putting its database, named from where it
-runs, on the list StackED's Open Recent shows, the ask dialog (opened with
+runs, on the list StackED's Open Recent shows, the port `stacked web`
+listens on, a free one found for a test by binding 0 first, as the code
+does, and all tried again on another, up to ten times, should another
+process take that one before `stacked web` listens on it, as it then says,
+so that only stacked can fail them (any free one each time, unset or `"random"`, the one taken before
+held meanwhile, nothing written in the settings; with `"fixed-random"`,
+any free one the first time, written in the settings beside `port` as
+`kept_port`, the rest of the file as it was, then that one on another
+database, its token a new one, the first one's refused there, nothing
+written in the databases nor in `state.json`; a port set listened on, the
+port kept passed over though it is in use; `--port` going over a port set
+that is in use, 0 any free one, and over `"fixed-random"` keeping nothing;
+a port in use, set, kept or given, said in a line, `stacked web` exiting
+with 1, the settings as they were; and the port `"fixed-random"` took, in
+a file where it would not read back, its table's header written `[ web
+]`, said, and listened on all the same, the file as it was), the ask dialog (opened with
 nothing set from `Ask agent about all…`, clicked, its permission set by
 clicks on its line and on an option of the list that opens under it, then
 stepped by → and back by ←, its effort picked in the list Enter opens, ↑
@@ -1827,7 +1842,18 @@ keys of before said to be gone where a file names them, refused to
 start in, as interdiffs unless set, in columns or side by side, or the
 change unified, side by side or compact, another refused and nothing
 written, and their lines, every line unless set, or only what the patches
-changed, other lines refused and nothing written; those in `change.rs`,
+changed, other lines refused and nothing written, `stacked web`'s port,
+`"random"` unless set, `"random"`, `"fixed-random"` or a port from 1 to
+65535, one in quotes too, any other value, of any kind, said and
+`"random"` kept, the rest of the file read, the port `"fixed-random"` kept
+read beside it and one that is no port said, both written as any setting
+is, the rest of the file as it was, the kept port passed over and kept
+while `port` is another, values refused with the file as it was, and both
+printed, built with `web`, and read back the same; and `[web]` the
+settings' file's alone: a checkout's own that sets it, wrong too, as the
+settings' file has it, each key said to be passed over, the rest of it
+read, neither marked as the checkout's nor the one in use there, refused
+to `--local` for writing and for reading, and taken out there; those in `change.rs`,
 the change from one version to another on one base, each file from the
 one to the other, nothing dim, the same
 files no change; across a change of base, the line it made in place of

@@ -322,8 +322,12 @@ keys.
 - **A browser**: `stacked web` serves the editor on this machine and opens
   your browser on it. It listens on 127.0.0.1 only, and only the page with
   the token in the address it opened can see it or drive it. `--port N`
-  picks the port, and `--no-open` only says where it is. `$EDITOR` opens
-  in the terminal where you started `stacked web`.
+  picks the port, and `--no-open` only says where it is. Without
+  `--port`, the setting `web.port` picks it: `"random"`, any free port each
+  time (unless set), `"fixed-random"`, any free port the first time, which
+  stacked writes in your settings and listens on every time after, or a
+  port number; a port in use is said, and `stacked web` does not start.
+  `$EDITOR` opens in the terminal where you started `stacked web`.
 - **StackED**: `stacked app` opens the editor in a window of its own, with
   no terminal and no browser. Its File menu opens more databases, each in a
   window of its own, and remembers the ones opened last. `$EDITOR` opens in

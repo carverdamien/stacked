@@ -7,6 +7,9 @@
 //! Only this machine's pages, holding the token the browser was opened
 //! with, may see it or drive it: a page from elsewhere could otherwise send
 //! it keys. What runs `$EDITOR` runs it where `stacked web` was started.
+//!
+//! It listens on the port `--port` names, else on the one the settings'
+//! `[web]` say (`listen`); the token is new each time, whatever the port.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -22,6 +25,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use unicode_width::UnicodeWidthStr;
 
+use crate::config::{Port, Web};
 use crate::db::{Error, Result};
 use crate::tui::{App, Effect};
 
@@ -82,16 +86,41 @@ pub struct Bound {
     pub token: String,
 }
 
-/// Listens on `port` of 127.0.0.1, any free one for 0.
+/// Listens on `port` of 127.0.0.1, any free one for 0. A port in use is
+/// said so, in a line naming it, and no other is tried.
 pub fn bind(port: u16) -> Result<Bound> {
-    let listener =
-        TcpListener::bind(("127.0.0.1", port)).map_err(|e| Error(format!("cannot listen on 127.0.0.1:{port}: {e}")))?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AddrInUse if port != 0 => Error(format!("port {port} of 127.0.0.1 is in use")),
+        _ => Error(format!("cannot listen on 127.0.0.1:{port}: {e}")),
+    })?;
     let port = listener.local_addr().map_err(|e| Error(e.to_string()))?.port();
-    Ok(Bound {
-        listener,
-        port,
-        token: token(),
-    })
+    Ok(Bound { listener, port, token: token() })
+}
+
+/// Listens as `stacked web` does: on `given`, the port `--port` names, as
+/// it is, any free one for 0; else as the settings' `[web]` say, `web`: any
+/// free port for `"random"`; for `"fixed-random"`, the port kept, else any
+/// free one, then kept, written as `web.kept_port` in the settings' file at
+/// `settings` for the launches after; or the port `web.port` names. A port
+/// in use is said, and no other is tried. With the server, why the port
+/// taken could not be kept, if it could not: it is listened on all the
+/// same, and the next launch takes any free one again.
+pub fn listen(given: Option<u16>, web: &Web, settings: &Path) -> Result<(Bound, Option<String>)> {
+    let port = match (given, web.port, web.kept_port) {
+        (Some(p), ..) | (None, Port::Fixed(p), _) | (None, Port::FixedRandom, Some(p)) => p,
+        (None, Port::Random, _) => 0,
+        (None, Port::FixedRandom, None) => {
+            let bound = bind(0)?;
+            let unkept = crate::config::set(settings, "web.kept_port", &[bound.port.to_string()]).err().map(|e| {
+                format!(
+                    "port {} cannot be kept in the settings as web.kept_port, so the next launch with web.port = \"fixed-random\" takes any free port again: {e}",
+                    bound.port
+                )
+            });
+            return Ok((bound, unkept));
+        }
+    };
+    Ok((bind(port)?, None))
 }
 
 impl Bound {

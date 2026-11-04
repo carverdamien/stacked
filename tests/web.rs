@@ -3,7 +3,7 @@
 #![cfg(feature = "web")]
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, Command, Stdio};
@@ -931,6 +931,272 @@ fn the_database_the_editor_opens_is_on_the_list_stacked_s_open_recent_reads() {
         menu.sort();
         assert_eq!(menu, listed, "as StackED's menu lists them");
     }
+}
+
+/// `stacked web --no-open` on `db`, `args` after it, run in `dir`, its home
+/// `home`, what it says on stderr piped.
+fn web_in(home: &Path, dir: &Path, db: &Path, args: &[&str]) -> Command {
+    let mut cmd = stacked(home);
+    cmd.args(["-f", db.to_str().unwrap(), "web", "--no-open"]).args(args).current_dir(dir).stdin(Stdio::null()).stderr(Stdio::piped());
+    cmd
+}
+
+/// `stacked web`, run, once it said where it is: what it said before, a
+/// line each, and the port and the token of the address it said.
+struct Served {
+    child: Running,
+    said: BufReader<ChildStderr>,
+    before: Vec<String>,
+    port: u16,
+    token: String,
+}
+
+/// `stacked web --no-open` on `db`, `args` after it, run in `dir`, its home
+/// `home`, as it says where it is; or, if it ends first, all it said, a
+/// line each.
+fn try_served(home: &Path, dir: &Path, db: &Path, args: &[&str]) -> Result<Served, Vec<String>> {
+    let mut child = web_in(home, dir, db, args).spawn().unwrap();
+    let mut said = BufReader::new(child.stderr.take().unwrap());
+    let child = Running(child);
+    let mut before = Vec::new();
+    loop {
+        let mut line = String::new();
+        if said.read_line(&mut line).unwrap() == 0 {
+            return Err(before);
+        }
+        // "the editor is at http://127.0.0.1:PORT/?t=TOKEN".
+        if let Some(url) = line.split_whitespace().find_map(|w| w.strip_prefix("http://127.0.0.1:")) {
+            let (port, token) = url.split_once("/?t=").expect(&line);
+            let (port, token) = (port.parse().unwrap(), token.to_string());
+            return Ok(Served { child, said, before, port, token });
+        }
+        before.push(line.trim_end().to_string());
+    }
+}
+
+/// As `try_served`, which is to say where it is.
+fn served(home: &Path, dir: &Path, db: &Path, args: &[&str]) -> Served {
+    try_served(home, dir, db, args).unwrap_or_else(|said| panic!("it never said where it is: {said:#?}"))
+}
+
+/// What `stacked web` says as it ends when `port` is in use.
+fn in_use(port: u16) -> String {
+    format!("stacked: port {port} of 127.0.0.1 is in use")
+}
+
+/// The launch `tried`, unless it ended saying that `port`, free a moment
+/// ago, is in use: another process took it first, and None says so.
+fn unless_taken(tried: Result<Served, Vec<String>>, port: u16) -> Option<Served> {
+    match tried {
+        Ok(s) => Some(s),
+        Err(said) if said == [in_use(port)] => None,
+        Err(said) => panic!("it never said where it is: {said:#?}"),
+    }
+}
+
+/// What `attempt` makes of a port free a moment ago, tried again while it
+/// gives back None, as another process took the port first (`unless_taken`):
+/// up to ten times, so that only `stacked web` itself can fail it.
+fn while_taken<T>(mut attempt: impl FnMut() -> Option<T>) -> T {
+    (0..10).find_map(|_| attempt()).expect("another process took each of ten ports free a moment ago first")
+}
+
+impl Served {
+    /// The status line of the page it serves, asked for with `token`.
+    fn page(&self, token: &str) -> String {
+        ask(self.port, &format!("127.0.0.1:{}", self.port), &format!("GET /?t={token}"), "").0
+    }
+
+    /// Quit in the page, as ctrl-c there quits: waited for until it has
+    /// exited, and its port is free again.
+    fn quit(mut self) {
+        let host = format!("127.0.0.1:{}", self.port);
+        ask(self.port, &host, &format!("POST /input?t={}", self.token), "k c 63 c\n");
+        let status = exit_of(&mut self.child);
+        let mut rest = String::new();
+        self.said.read_to_string(&mut rest).unwrap();
+        assert!(status.success(), "{status}: {rest}");
+    }
+}
+
+/// How `child` exited, waited for.
+fn exit_of(child: &mut Running) -> std::process::ExitStatus {
+    let started = Instant::now();
+    loop {
+        if let Some(s) = child.0.try_wait().unwrap() {
+            return s;
+        }
+        assert!(started.elapsed() < PATIENCE, "still running");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// `stacked web --no-open` on `db`, `args` after it, run in `dir`, its home
+/// `home`, which is to exit by itself: how it exited, and all it said.
+fn exited(home: &Path, dir: &Path, db: &Path, args: &[&str]) -> (std::process::ExitStatus, String) {
+    let mut child = web_in(home, dir, db, args).spawn().unwrap();
+    let mut said = child.stderr.take().unwrap();
+    let status = exit_of(&mut Running(child));
+    let mut all = String::new();
+    said.read_to_string(&mut all).unwrap();
+    (status, all)
+}
+
+/// A port of 127.0.0.1 that was free a moment ago: the one the system gives
+/// for 0, as `stacked web` takes any free one, given back at once.
+fn free_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
+}
+
+/// A port of 127.0.0.1 in use for as long as the listener this gives with
+/// it is held.
+fn held_port() -> (TcpListener, u16) {
+    let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    (held, port)
+}
+
+/// The settings' file of `stacked` run with `home` (`$STACKED_HOME`), made
+/// to hold `text`.
+fn settings_of(home: &Path, text: &str) -> PathBuf {
+    std::fs::create_dir_all(home).unwrap();
+    let settings = home.join("config.toml");
+    std::fs::write(&settings, text).unwrap();
+    settings
+}
+
+#[test]
+fn stacked_web_listens_on_any_free_port_each_time_unless_the_settings_say_otherwise() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let settings = home.join("config.toml");
+    // Unset, as before there was the setting, then set so: any free port
+    // each time, the one taken before held meanwhile, and nothing written.
+    for written in [None, Some("[web]\nport = \"random\"\n")] {
+        if let Some(text) = written {
+            settings_of(&home, text);
+        }
+        let first = served(&home, tmp.path(), &db, &[]);
+        let port = first.port;
+        first.quit();
+        // Held here, unless another took it meanwhile: either way, not free.
+        let _held = TcpListener::bind(("127.0.0.1", port)).ok();
+        let next = served(&home, tmp.path(), &db, &[]);
+        assert!(next.before.is_empty() && next.port != port, "{:?}, on {port}", next.before);
+        assert_eq!(next.page(&next.token), "HTTP/1.1 200 OK");
+        next.quit();
+        assert_eq!(std::fs::read_to_string(&settings).ok().as_deref(), written);
+    }
+}
+
+#[test]
+fn fixed_random_takes_any_free_port_the_first_time_writes_it_in_the_settings_and_listens_on_it_after_on_any_database() {
+    let (tmp, db) = setup();
+    let other = tmp.path().join("other.jsonl");
+    std::fs::copy(&db, &other).unwrap();
+    let home = tmp.path().join("home");
+    let mine = "# mine\n[web]\nport = \"fixed-random\"\n";
+    let settings = settings_of(&home, mine);
+    let kept = |port: u16| format!("{mine}kept_port = {port}\n");
+    let databases = || (std::fs::read(&db).unwrap(), std::fs::read(&other).unwrap());
+    let before = databases();
+    // The first launch: any free port, written beside the setting, the rest
+    // of the file as it was. The next, on another database: that port
+    // again, as the settings say. Should another process take the port
+    // between the two, both are tried again, from the settings as they were.
+    let ((port, token), next) = while_taken(|| {
+        settings_of(&home, mine);
+        let first = served(&home, tmp.path(), &db, &[]);
+        assert!(first.before.is_empty(), "{:?}", first.before);
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), kept(first.port));
+        let (port, token) = (first.port, first.token.clone());
+        first.quit();
+        unless_taken(try_served(&home, tmp.path(), &other, &[]), port).map(|next| ((port, token), next))
+    });
+    // Its token a new one, the first one's refused there.
+    assert!(next.before.is_empty(), "{:?}", next.before);
+    assert_eq!(next.port, port);
+    assert_ne!(next.token, token);
+    assert_eq!(next.page(&token), "HTTP/1.1 403 Forbidden");
+    assert_eq!(next.page(&next.token), "HTTP/1.1 200 OK");
+    next.quit();
+    // Kept in the settings alone: nothing written in the databases, nor in
+    // the state, which holds the databases opened, as ever.
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), kept(port));
+    assert!(databases() == before, "a database was written");
+    let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(home.join("state.json")).unwrap()).unwrap();
+    assert_eq!(state.as_object().unwrap().keys().collect::<Vec<_>>(), ["recent", "open"], "{state}");
+}
+
+#[test]
+fn a_port_set_is_listened_on_and_one_given_with_port_goes_over_the_settings() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let (_held, used) = held_port();
+    // A port set, free a moment ago: that one, the port kept for
+    // fixed-random, in use, passed over.
+    let (free, set) = while_taken(|| {
+        let free = free_port();
+        settings_of(&home, &format!("[web]\nport = {free}\nkept_port = {used}\n"));
+        unless_taken(try_served(&home, tmp.path(), &db, &[]), free).map(|s| (free, s))
+    });
+    assert_eq!((set.port, set.page(&set.token).as_str()), (free, "HTTP/1.1 200 OK"));
+    set.quit();
+    // Over a port set that is in use, --port: the port it gives, any free
+    // one for 0.
+    let settings = settings_of(&home, &format!("[web]\nport = {used}\n"));
+    let (given, s) = while_taken(|| {
+        let given = free_port();
+        unless_taken(try_served(&home, tmp.path(), &db, &["--port", &given.to_string()]), given).map(|s| (given, s))
+    });
+    assert_eq!(s.port, given);
+    s.quit();
+    let s = served(&home, tmp.path(), &db, &["--port", "0"]);
+    assert_eq!(s.page(&s.token), "HTTP/1.1 200 OK");
+    s.quit();
+    // Over fixed-random, none kept yet: nothing kept by that launch.
+    settings_of(&home, "[web]\nport = \"fixed-random\"\n");
+    served(&home, tmp.path(), &db, &["--port", "0"]).quit();
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[web]\nport = \"fixed-random\"\n");
+}
+
+#[test]
+fn a_port_in_use_is_said_in_a_line_and_stacked_web_does_not_start() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let (_held, port) = held_port();
+    // Said, no other port tried, the settings as they were.
+    let refused = |written: &str, args: &[&str]| {
+        let settings = settings_of(&home, written);
+        let (status, said) = exited(&home, tmp.path(), &db, args);
+        assert_eq!((status.code(), said), (Some(1), format!("{}\n", in_use(port))), "{written:?} {args:?}");
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), written);
+    };
+    // Set, kept for fixed-random, or given.
+    refused(&format!("[web]\nport = {port}\n"), &[]);
+    refused(&format!("[web]\nport = \"fixed-random\"\nkept_port = {port}\n"), &[]);
+    refused("", &["--port", &port.to_string()]);
+}
+
+#[test]
+fn a_port_fixed_random_cannot_keep_in_the_settings_is_said_and_listened_on_all_the_same() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    // A table's header as stacked does not write one: the setting written
+    // beside it would not read back.
+    let written = "[ web ]\nport = \"fixed-random\"\n";
+    let settings = settings_of(&home, written);
+    let s = served(&home, tmp.path(), &db, &[]);
+    let said = format!(
+        "stacked: port {} cannot be kept in the settings as web.kept_port, so the next launch with web.port = \"fixed-random\" takes any free port again: {}: ",
+        s.port,
+        settings.display()
+    );
+    assert!(s.before.first().is_some_and(|l| l.starts_with(&said)), "{:#?}", s.before);
+    assert!(s.before.last().is_some_and(|l| l.ends_with("; nothing written")), "{:#?}", s.before);
+    assert_eq!(s.page(&s.token), "HTTP/1.1 200 OK");
+    s.quit();
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), written);
 }
 
 /// Work landed on stack `s` of `db`: an answer, the tool it could not use,

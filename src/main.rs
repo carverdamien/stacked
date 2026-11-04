@@ -99,9 +99,14 @@ enum Cmd {
     /// stacked without it.
     #[cfg(feature = "web")]
     Web {
-        /// The port of 127.0.0.1 to listen on; else any free one.
-        #[arg(long, default_value_t = 0)]
-        port: u16,
+        /// The port of 127.0.0.1 to listen on this time, 0 for any free
+        /// one. Without it, the settings' web.port says which: "random"
+        /// (unless set), any free one each time; "fixed-random", any free
+        /// one the first time, which stacked writes in the settings as
+        /// web.kept_port and listens on each time after; or a port from 1
+        /// to 65535. A port in use is said, and no other is tried.
+        #[arg(long)]
+        port: Option<u16>,
         /// Only say where it is: do not open the browser.
         #[arg(long)]
         no_open: bool,
@@ -923,7 +928,10 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         Cmd::Demo => stacked::demo::run()?,
         #[cfg(feature = "web")]
         Cmd::Web { port, no_open } => {
-            let bound = stacked::web::bind(port)?;
+            let (bound, unkept) = stacked::web::listen(port, &stacked::config::get().web, &stacked::config::path())?;
+            if let Some(why) = unkept {
+                eprintln!("stacked: {why}");
+            }
             let url = bound.url();
             eprintln!("stacked: the editor is at {url} · quit it there, or ctrl-c here");
             if !no_open {

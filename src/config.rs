@@ -2,16 +2,17 @@
 //! names, or `config.toml` in the folder `$STACKED_HOME` names: `home`): the
 //! database opened by default, the editor and how it is told a line, the
 //! agent claude's asks run, where reviews come from, how the editor starts,
-//! and the keys. Every one is optional, and what is not set is as it would
-//! be with no file. A file that cannot be read is said, and not used: the
-//! defaults are. `stacked config` prints every setting as it is, in the
-//! file's form.
+//! the keys, and the port `stacked web` listens on. Every one is optional,
+//! and what is not set is as it would be with no file. A file that cannot
+//! be read is said, and not used: the defaults are. `stacked config` prints
+//! every setting as it is, in the file's form.
 //!
 //! A checkout's own settings, `.stacked/local.toml` at its top, override
 //! those there: those of the checkout stacked runs in, and for a stack's
-//! agent those of the stack's checkout (`of`). One that git tracks is not
-//! read: it would be the repository's, and a setting can name a program to
-//! run.
+//! agent those of the stack's checkout (`of`); but for `stacked web`'s,
+//! which are the settings' file's alone, as `"fixed-random"` keeps its port
+//! there. One that git tracks is not read: it would be the repository's,
+//! and a setting can name a program to run.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -521,6 +522,87 @@ pub struct Demo {
     pub seen: bool,
 }
 
+/// The port of 127.0.0.1 `stacked web` listens on, unless `--port` names
+/// one: any free one each time; any free one the first time, which stacked
+/// then writes in the settings' file (`web.kept_port`) and listens on each
+/// time after; or the one named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Port {
+    #[default]
+    Random,
+    FixedRandom,
+    Fixed(u16),
+}
+
+impl Port {
+    /// As `stacked config` says it: `random`, `fixed-random`, or the port.
+    pub fn name(self) -> String {
+        match self {
+            Port::Random => "random".into(),
+            Port::FixedRandom => "fixed-random".into(),
+            Port::Fixed(p) => p.to_string(),
+        }
+    }
+
+    /// The port `s` names, as `stacked config` is given it: `random`,
+    /// `fixed-random`, or a port from 1 to 65535.
+    fn parse(s: &str) -> Option<Port> {
+        match s {
+            "random" => Some(Port::Random),
+            "fixed-random" => Some(Port::FixedRandom),
+            _ => port_number(s).map(Port::Fixed),
+        }
+    }
+
+    /// The port `v` names, as the file writes it: "random", "fixed-random",
+    /// or a port, a number (or one in quotes).
+    fn read(v: &toml::Value) -> Option<Port> {
+        match v {
+            toml::Value::String(s) => Port::parse(s),
+            v => port_of(v).map(Port::Fixed),
+        }
+    }
+
+    /// As the file writes it: a name in quotes, a port as a number.
+    fn literal(self) -> String {
+        match self {
+            Port::Fixed(p) => p.to_string(),
+            named => toml::Value::String(named.name()).to_string(),
+        }
+    }
+}
+
+/// The port `s` is, if it is one a setting may name: from 1 to 65535.
+fn port_number(s: &str) -> Option<u16> {
+    s.parse::<u16>().ok().filter(|p| *p > 0)
+}
+
+/// The port `v` is, as the file writes it, if it is one a setting may name:
+/// a number from 1 to 65535, or one in quotes.
+fn port_of(v: &toml::Value) -> Option<u16> {
+    match v {
+        toml::Value::Integer(n) => u16::try_from(*n).ok().filter(|p| *p > 0),
+        toml::Value::String(s) => port_number(s),
+        _ => None,
+    }
+}
+
+/// What `web.port` is told it is not, when it names no port.
+const NOT_A_PORT: &str = "\"random\", \"fixed-random\" or a port from 1 to 65535";
+
+/// `stacked web`: settings of the settings' file alone, never read from a
+/// checkout's own, as `"fixed-random"` keeps its port there, for every
+/// checkout.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Web {
+    /// The port it listens on, unless `--port` names one.
+    pub port: Port,
+    /// The port `"fixed-random"` took the first time, which stacked wrote in
+    /// the settings' file: listened on each time `port` is `"fixed-random"`,
+    /// and passed over, but kept, while it is another.
+    pub kept_port: Option<u16>,
+}
+
 /// Every setting, defaults filled in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -533,6 +615,7 @@ pub struct Config {
     pub view: View,
     pub colors: Colors,
     pub keys: Keymap,
+    pub web: Web,
     pub lint: Lint,
     pub demo: Demo,
 }
@@ -554,6 +637,7 @@ impl Default for Config {
             view: View::default(),
             colors: Colors::default(),
             keys: Keymap::default(),
+            web: Web::default(),
             lint: Lint::default(),
             demo: Demo::default(),
         }
@@ -572,8 +656,19 @@ struct Written {
     view: WrittenView,
     colors: BTreeMap<String, String>,
     keys: BTreeMap<String, OneOrMore>,
+    web: WrittenWeb,
     lint: WrittenLint,
     demo: WrittenDemo,
+}
+
+/// `[web]` as the file writes it: each value read whatever it is, so that
+/// one of the wrong kind is said, its default kept, rather than the file
+/// not used.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct WrittenWeb {
+    port: Option<toml::Value>,
+    kept_port: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -864,6 +959,18 @@ impl Config {
         let (keys, bad) = c.keys.with_names(&named);
         c.keys = keys;
         wrong.extend(bad);
+        if let Some(v) = w.web.port {
+            match Port::read(&v) {
+                Some(p) => c.web.port = p,
+                None => wrong.push(format!("web.port: {v} is not {NOT_A_PORT}")),
+            }
+        }
+        if let Some(v) = w.web.kept_port {
+            match port_of(&v) {
+                Some(p) => c.web.kept_port = Some(p),
+                None => wrong.push(format!("web.kept_port: {v} is not a port from 1 to 65535")),
+            }
+        }
         if let Some(command) = w.lint.command {
             c.lint.command = Some(command.trim().to_string());
         }
@@ -1151,6 +1258,26 @@ impl Config {
                 out.push_str(&format!("{} = {}\n", k.name(), list(&self.keys.names(k))));
             }
         }
+        // `stacked web`'s, built with it (the web feature).
+        if cfg!(feature = "web") {
+            out.push_str(
+                "\n[web]\n# The port of 127.0.0.1 `stacked web` listens on, unless --port N names one for that\n\
+                 # run: \"random\", any free one each time; \"fixed-random\", any free one the first time,\n\
+                 # which stacked then writes below as kept_port and listens on each time after; or a\n\
+                 # port from 1 to 65535. A port in use is said, and `stacked web` does not start. Read\n\
+                 # from the settings' file alone, never from a checkout's own .stacked/local.toml.\n",
+            );
+            out.push_str(&format!("port = {}\n", self.web.port.literal()));
+            out.push_str(
+                "# The port \"fixed-random\" took the first time, which stacked wrote here: listened on\n\
+                 # while port is \"fixed-random\", and passed over, but kept, while it is another. Taken\n\
+                 # out, the next launch with \"fixed-random\" takes any free port again, and writes it.\n",
+            );
+            out.push_str(&match self.web.kept_port {
+                Some(p) => format!("kept_port = {p}\n"),
+                None => "# kept_port = ...   (none taken yet)\n".into(),
+            });
+        }
         // A checkout's own setting alone: said, never written as one, so
         // that this, kept as the settings' file, sets no linter there.
         out.push_str(
@@ -1221,6 +1348,10 @@ enum Kind {
     Pane,
     /// When an ask's worktree is made: ondemand or precreate.
     Workspace,
+    /// The port `stacked web` listens on: random, fixed-random, or a port.
+    Port,
+    /// A port, from 1 to 65535.
+    PortNumber,
 }
 
 /// Every setting there is, as the file names it, and what it holds; the
@@ -1263,6 +1394,8 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("view.stream_lines", Kind::Count),
     ("view.split_width", Kind::Count),
     ("view.message_width", Kind::Count),
+    ("web.port", Kind::Port),
+    ("web.kept_port", Kind::PortNumber),
     ("lint.command", Kind::Text),
     ("demo.seen", Kind::Flag),
 ];
@@ -1334,6 +1467,14 @@ fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
             PWD => return Err(format!("{}; nothing written", no_pwd(key))),
             v => return Err(format!("{key} is ondemand or precreate, not {v:?}")),
         },
+        Kind::Port => match Port::parse(one()?) {
+            Some(p) => p.literal(),
+            None => return Err(format!("{key} is {NOT_A_PORT}, not {:?}", values[0])),
+        },
+        Kind::PortNumber => match port_number(one()?) {
+            Some(p) => p.to_string(),
+            None => return Err(format!("{key} is a port from 1 to 65535, not {:?}", values[0])),
+        },
         Kind::Color => {
             let v = one()?;
             parse_color(v).map_err(|e| format!("{key}: {e}"))?;
@@ -1389,6 +1530,8 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "view.stream_lines" => vec![c.view.stream_lines.to_string()],
         "view.split_width" => vec![c.view.split_width.to_string()],
         "view.message_width" => vec![c.view.message_width.to_string()],
+        "web.port" => vec![c.web.port.name()],
+        "web.kept_port" => c.web.kept_port.iter().map(|p| p.to_string()).collect(),
         "lint.command" => opt(&c.lint.command),
         "demo.seen" => vec![c.demo.seen.to_string()],
         k if k.starts_with("colors.") => match Paint::named(&k["colors.".len()..]) {
@@ -1431,6 +1574,19 @@ pub fn local_only(key: &str) -> bool {
 /// alone.
 fn only_local(key: &str) -> String {
     format!("{key} is a checkout's own setting, read only from its .stacked/local.toml: `stacked setup lint` writes it there; nothing written")
+}
+
+/// Whether `key` is a setting of the settings' file alone, never read from
+/// a checkout's own: `stacked web`'s, as `"fixed-random"` keeps its port
+/// there, for every checkout.
+pub fn global_only(key: &str) -> bool {
+    key.starts_with("web.")
+}
+
+/// Why a checkout's own settings do not take `key`, a setting of the
+/// settings' file alone.
+fn only_global(key: &str) -> String {
+    format!("{key} is read only from the settings' file, never from a checkout's own .stacked/local.toml")
 }
 
 /// The settings' file's settings, and what is wrong with it: a checkout's
@@ -1704,12 +1860,27 @@ fn not_yours(path: &Path) -> Option<String> {
 }
 
 /// `base` with the local file of the checkout `dir` is in over it, if there
-/// is one and it is yours; and what was wrong with it.
+/// is one and it is yours; and what was wrong with it. What it says of
+/// `stacked web`'s settings, the settings' file's alone, is passed over,
+/// and said so.
 fn with_local(base: &Config, dir: &Path) -> (Config, Vec<String>) {
     match local_path(dir) {
         Some(p) if p.exists() => match not_yours(&p) {
             Some(why) => (base.clone(), vec![format!("{why}; it is not read")]),
-            None => base.load_over(&p),
+            None => {
+                let (mut c, mut wrong) = base.load_over(&p);
+                let text = std::fs::read_to_string(&p).unwrap_or_default();
+                let passed: Vec<String> = keys_in(&text).into_iter().filter(|k| global_only(k) && kind_of(k).is_ok()).collect();
+                if !passed.is_empty() {
+                    // As the settings' file has them; what is wrong with them
+                    // here is not said, as they are not read.
+                    c.web = base.web.clone();
+                    let at = format!("{}: web.", p.display());
+                    wrong.retain(|w| !w.starts_with(&at));
+                    wrong.extend(passed.iter().map(|k| format!("{}: {}: here it is passed over", p.display(), only_global(k))));
+                }
+                (c, wrong)
+            }
         },
         _ => (base.clone(), vec![]),
     }
@@ -1739,10 +1910,10 @@ fn sets(text: &str, key: &str) -> bool {
     }
 }
 
-/// The settings the local file of the checkout `dir` is in sets, as
-/// `stacked config` names them, if it is read.
-pub fn local_keys(dir: &Path) -> Vec<String> {
-    let Some(t) = local_text(dir).and_then(|(_, text)| toml::from_str::<toml::Table>(&text).ok()) else {
+/// The settings the settings' file `text` sets, as `stacked config` names
+/// them.
+fn keys_in(text: &str) -> Vec<String> {
+    let Ok(t) = toml::from_str::<toml::Table>(text) else {
         return vec![];
     };
     let mut out = Vec::new();
@@ -1755,11 +1926,23 @@ pub fn local_keys(dir: &Path) -> Vec<String> {
     out
 }
 
+/// The settings the local file of the checkout `dir` is in sets, as
+/// `stacked config` names them, if it is read: but `stacked web`'s, which
+/// are passed over there.
+pub fn local_keys(dir: &Path) -> Vec<String> {
+    let Some((_, text)) = local_text(dir) else {
+        return vec![];
+    };
+    keys_in(&text).into_iter().filter(|k| !global_only(k)).collect()
+}
+
 /// The file whose `key` is the one in use in the checkout `dir` is in: its
-/// local file, if it is read and sets it; else the settings' file, if that
-/// does. None if neither does.
+/// local file, if it is read and sets it (never for `stacked web`'s, the
+/// settings' file's alone); else the settings' file, if that does. None if
+/// neither does.
 pub fn set_in(dir: &Path, key: &str) -> Option<PathBuf> {
-    if let Some((p, text)) = local_text(dir)
+    if !global_only(key)
+        && let Some((p, text)) = local_text(dir)
         && sets(&text, key)
     {
         return Some(p);
@@ -1774,9 +1957,13 @@ pub fn file_sets(path: &Path, key: &str) -> bool {
 }
 
 /// What the local file of the checkout `dir` is in gives `key`, as
-/// `value_of` says it; None if it does not give it any.
+/// `value_of` says it; None if it does not give it any. Refused for
+/// `stacked web`'s settings, the settings' file's alone.
 pub fn local_value(dir: &Path, key: &str) -> Result<Option<Vec<String>>, String> {
     kind_of(key)?;
+    if global_only(key) {
+        return Err(format!("{}: `stacked config {key}` reads it", only_global(key)));
+    }
     let p = local_file(dir)?;
     let text = match std::fs::read_to_string(&p) {
         Ok(t) => t,
@@ -1808,9 +1995,12 @@ pub fn set_local(dir: &Path, key: &str, values: &[String]) -> Result<PathBuf, St
 }
 
 /// Writes each of `settings` in the local file of the checkout `dir` is
-/// in, as `set_local` writes one: all in one go, or none of them. Where it
-/// wrote.
+/// in, as `set_local` writes one: all in one go, or none of them; none of
+/// `stacked web`'s, the settings' file's alone. Where it wrote.
 pub fn set_local_all(dir: &Path, settings: &[(&str, Vec<String>)]) -> Result<PathBuf, String> {
+    if let Some((key, _)) = settings.iter().find(|(key, _)| global_only(key)) {
+        return Err(format!("{}: `stacked config {key} …` writes it there; nothing written", only_global(key)));
+    }
     let lits = literals(settings)?;
     let p = local_to_write(dir)?;
     let folder = p.parent().unwrap_or(Path::new("."));
@@ -2483,5 +2673,102 @@ mod tests {
         unset(&path, "keys.keep_workspace").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[keys]\nmenu = \"m\"\n");
         assert!(Config::load(&path).1.is_empty());
+    }
+
+    #[test]
+    fn stacked_web_s_port_is_random_fixed_random_or_a_port_and_any_other_is_said() {
+        // Random unless set, none kept.
+        let d = Config::default();
+        assert_eq!((d.web.port, d.web.kept_port), (Port::Random, None));
+        assert_eq!(value_of(&d, "web.port"), Ok(vec!["random".to_string()]));
+        assert_eq!(value_of(&d, "web.kept_port"), Ok(vec![]));
+        // Each kind; a port in quotes, as a number.
+        for (written, port) in [
+            ("\"random\"", Port::Random),
+            ("\"fixed-random\"", Port::FixedRandom),
+            ("8080", Port::Fixed(8080)),
+            ("\"8080\"", Port::Fixed(8080)),
+            ("1", Port::Fixed(1)),
+            ("65535", Port::Fixed(65535)),
+        ] {
+            let (c, wrong) = Config::parse(&format!("[web]\nport = {written}\n")).unwrap();
+            assert!(wrong.is_empty(), "{written}: {wrong:?}");
+            assert_eq!(c.web.port, port, "{written}");
+        }
+        // Any other value, of any kind: said, and random kept, the rest of
+        // the file read.
+        for written in ["\"sometimes\"", "0", "65536", "-1", "true", "80.5", "[8080]"] {
+            let (c, wrong) = Config::parse(&format!("editor = \"hx\"\n[web]\nport = {written}\n")).unwrap();
+            assert_eq!((c.web.port, c.editor.as_deref()), (Port::Random, Some("hx")), "{written}");
+            assert_eq!(wrong, [format!("web.port: {written} is not \"random\", \"fixed-random\" or a port from 1 to 65535")]);
+        }
+        // The port fixed-random kept, beside it; one that is no port, said.
+        let (c, wrong) = Config::parse("[web]\nport = \"fixed-random\"\nkept_port = 51234\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!((c.web.port, c.web.kept_port), (Port::FixedRandom, Some(51234)));
+        let (c, wrong) = Config::parse("[web]\nkept_port = 0\n").unwrap();
+        assert_eq!(c.web.kept_port, None);
+        assert_eq!(wrong, ["web.kept_port: 0 is not a port from 1 to 65535"]);
+        // Written as any setting is, the rest of the file as it was: a name
+        // in quotes, a port as a number, the kept port beside them.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let read = || std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, "# mine\n[web]\n").unwrap();
+        set(&path, "web.port", &["fixed-random".to_string()]).unwrap();
+        set(&path, "web.kept_port", &["51234".to_string()]).unwrap();
+        assert_eq!(read(), "# mine\n[web]\nport = \"fixed-random\"\nkept_port = 51234\n");
+        // Another value: the kept port passed over, and kept.
+        set(&path, "web.port", &["8080".to_string()]).unwrap();
+        assert_eq!(read(), "# mine\n[web]\nport = 8080\nkept_port = 51234\n");
+        let (c, wrong) = Config::load(&path);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!((c.web.port, c.web.kept_port), (Port::Fixed(8080), Some(51234)));
+        assert_eq!((value_of(&c, "web.port"), value_of(&c, "web.kept_port")), (Ok(vec!["8080".to_string()]), Ok(vec!["51234".to_string()])));
+        // Refused, the file as it was.
+        for v in ["sometimes", "0", "65536", "-80"] {
+            assert_eq!(set(&path, "web.port", &[v.to_string()]), Err(format!("web.port is \"random\", \"fixed-random\" or a port from 1 to 65535, not {v:?}")));
+        }
+        assert_eq!(set(&path, "web.kept_port", &["random".to_string()]), Err("web.kept_port is a port from 1 to 65535, not \"random\"".to_string()));
+        assert_eq!(read(), "# mine\n[web]\nport = 8080\nkept_port = 51234\n");
+        // Printed, built with stacked web, and read back the same.
+        let text = c.render();
+        assert_eq!(text.contains("\n[web]\n"), cfg!(feature = "web"), "{text}");
+        if cfg!(feature = "web") {
+            assert!(text.contains("\nport = 8080\n# The port \"fixed-random\" took the first time") && text.contains("\nkept_port = 51234\n"), "{text}");
+            assert_eq!(Config::parse(&text), Ok((c, vec![])));
+            let d = Config::default().render();
+            assert!(d.contains("\nport = \"random\"\n") && d.contains("\n# kept_port = ...   (none taken yet)\n"), "{d}");
+        }
+    }
+
+    #[test]
+    fn stacked_web_s_settings_are_the_settings_file_s_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let top = tmp.path().canonicalize().unwrap().join("repo");
+        std::fs::create_dir_all(top.join(".stacked")).unwrap();
+        crate::git::git(&top, &["init", "-q"]).unwrap();
+        let (base, _) = Config::parse("[web]\nport = \"fixed-random\"\nkept_port = 51234\n").unwrap();
+        // A checkout's own that sets them, even wrong: as the settings' file
+        // has them, each said to be passed over, the rest of it read.
+        let local = top.join(".stacked/local.toml");
+        std::fs::write(&local, "editor = \"hx\"\n[web]\nport = \"sometimes\"\nkept_port = 8080\n").unwrap();
+        let (c, mut wrong) = with_local(&base, &top);
+        assert_eq!((&c.web, c.editor.as_deref()), (&base.web, Some("hx")));
+        wrong.sort();
+        let at = local.display();
+        let passed = "is read only from the settings' file, never from a checkout's own .stacked/local.toml: here it is passed over";
+        assert_eq!(wrong, [format!("{at}: web.kept_port {passed}"), format!("{at}: web.port {passed}")]);
+        // Not said to be the checkout's, nor the one in use there.
+        assert_eq!(local_keys(&top), ["editor"]);
+        assert_eq!(set_in(&top, "web.port"), None);
+        // Neither written there, nor read from there; taken out all the same.
+        let only = "web.port is read only from the settings' file, never from a checkout's own .stacked/local.toml";
+        assert_eq!(set_local(&top, "web.port", &["8080".to_string()]), Err(format!("{only}: `stacked config web.port …` writes it there; nothing written")));
+        assert_eq!(local_value(&top, "web.port"), Err(format!("{only}: `stacked config web.port` reads it")));
+        unset_local(&top, "web.port").unwrap();
+        unset_local(&top, "web.kept_port").unwrap();
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), "editor = \"hx\"\n[web]\n");
+        assert_eq!(with_local(&base, &top).1, Vec::<String>::new());
     }
 }
