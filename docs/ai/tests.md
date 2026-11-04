@@ -1002,7 +1002,21 @@ where ← comes back to the file; reading, each saying the lines left to
 mark read as marks are made and taken back, those of white space alone
 counted only as the settings say, a file with no newline at its end ticked
 once read whole, its patch too, the pane keeping its width from patch to
-patch), the
+patch), the tags at the end of each patch's first line (commenting, its
+comments, as long as they are, each title folding in the room its own tag
+leaves; reading, two columns, the same on every line, each right-aligned, two
+cells between them: its comments, as wide as the widest, blank on a patch
+with none, then what is read, `✓`, in part, or not at all, as wide as the
+widest a patch can show, `39/40`, or `9/10` of a patch of ten lines; a
+patch being moved taking them with it, listing files the same, the files
+under the patch as they were, and commenting again as before; the column
+of what is read keeping its place, the comments theirs and the titles
+their room, as lines are marked read, with Space and in the file, up to
+`✓`, though no patch shows a count that wide any longer; no column for the
+comments, nor room for it, while no patch has one waiting, there on every
+line once one has, gone again once the agent answers it; in a narrow
+pane, each title folded under itself in the room the columns leave, a
+word longer than it cut on the first line, the columns whole), the
 statuses of the revisions there (with moz-phab, each status after its
 patch's number, a letter listing files and expanded alike, `[?]` for one
 stacked does not know, no words; none before it is fetched, however long

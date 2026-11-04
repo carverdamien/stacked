@@ -4922,6 +4922,241 @@ fn reading_the_patches_pane_keeps_its_width_from_patch_to_patch() {
     assert_eq!(width(&mut app), Some(35));
 }
 
+/// A database holding stack `s` of a patch for each of `patches`, by its
+/// title and how many lines it adds, in a file of its own (`f1.txt`, then
+/// `f2.txt`…): its lines to read are those and its title. And the
+/// repository.
+fn stack_to_read(patches: &[(&str, usize)]) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("base.txt"), "base\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    for (k, (title, n)) in patches.iter().enumerate() {
+        let lines: String = (1..=*n).map(|j| format!("line {j}\n")).collect();
+        std::fs::write(src.join(format!("f{}.txt", k + 1)), lines).unwrap();
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-qm", title]);
+    }
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", &format!("HEAD~{}", patches.len())]);
+    (tmp, db, src)
+}
+
+/// The first `n` of the lines to read of patch `at` (from 0) of stack `s`
+/// marked read, as one mark: those of its diff first, then its message's
+/// (`progress::changed_lines`).
+fn read_first(db: &Path, at: usize, n: usize) {
+    Db::edit(db, |d| {
+        let p = d.patch(&d.stack("s")?.patches[at]).clone();
+        let keys = stacked::progress::changed_lines(&p).into_iter().filter(|(_, blank)| !blank).map(|(k, _)| k).take(n).collect();
+        d.mark_read(&p.change, keys).map(|_| ())
+    })
+    .unwrap();
+}
+
+/// Stack `s` of five patches (`stack_to_read`) whose lines to read are 5,
+/// 10, 40, 3 and 7: patch 1 read whole, two comments on it; patch 2 read
+/// in part, 3 of its lines; patch 3 too, 12, a comment on it; patch 4 read
+/// whole; patch 5 not read at all.
+fn five_to_read() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    // Each patch: its title, the lines it adds, its comments, and how many
+    // of its lines are read.
+    let patches = [
+        ("Name the MOZ_LOG module", 4, 2, 5),
+        ("Deprecate naming prefixes", 9, 0, 3),
+        ("Log the consoles' module", 39, 1, 12),
+        ("Test the module names", 2, 0, 3),
+        ("Document the module names", 6, 0, 0),
+    ];
+    let (tmp, db, src) = stack_to_read(&patches.map(|(title, lines, _, _)| (title, lines)));
+    for (at, &(_, _, comments, read)) in patches.iter().enumerate() {
+        for _ in 0..comments {
+            stacked(&src, &db, &["comment", "s", "--patch", &(at + 1).to_string(), "Why?"]);
+        }
+        if read > 0 {
+            read_first(&db, at, read);
+        }
+    }
+    (tmp, db, src)
+}
+
+/// `five_to_read`'s patches in the reading mode, in a pane 40 wide.
+const FIVE_READ: [&str; 5] = [
+    "  1 Name the MOZ_LOG module   [2]      ✓",
+    "  2 Deprecate naming prefixes       3/10",
+    "  3 Log the consoles' module  [1]  12/40",
+    "  4 Test the module names              ✓",
+    "  5 Document the module names        0/7",
+];
+
+#[test]
+fn reading_each_patch_s_line_ends_in_two_columns_its_comments_then_what_is_read_the_same_on_every_line() {
+    let (_tmp, db, _src) = five_to_read();
+    let mut app = open(&db).unwrap();
+    // Commenting, as ever: each patch's comments at the end of its line, as
+    // long as they are, the title taking the room they leave. 160 wide, the
+    // pane is 40.
+    let commenting = [
+        format!("{:<36} [2]", "  1 Name the MOZ_LOG module"),
+        "  2 Deprecate naming prefixes".to_string(),
+        format!("{:<36} [1]", "  3 Log the consoles' module"),
+        "  4 Test the module names".to_string(),
+        "  5 Document the module names".to_string(),
+    ];
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..5], commenting, "{rows:#?}");
+    // Reading: two columns, each right-aligned, two cells between them, the
+    // same on every line, the titles leaving room for both. First the
+    // comments, as wide as the widest, `[2]`, blank on the patches with
+    // none; then what is read, against the pane's edge: `✓` read whole,
+    // `3/10` and `12/40` in part, `0/7` not at all, as wide as the widest a
+    // patch can show, `39/40`.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..5], FIVE_READ, "{rows:#?}");
+    assert_eq!(column(&rows[0], "[2]"), column(&rows[2], "[1]"));
+    // A patch being moved takes its tags with it, the numbers by place.
+    choose(&mut app, "Move this patch");
+    keys(&mut app, &[KeyCode::Down]);
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..2], ["  1 Deprecate naming prefixes       3/10", "  ↕ Name the MOZ_LOG module   [2]      ✓"], "{rows:#?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(pane_rows(&mut app, 160, 12)[..5], FIVE_READ, "left where it was");
+    // Listing files, the same, the files of the patch picked under it, as
+    // they were.
+    keys(&mut app, &[KeyCode::Left]);
+    let rows = pane_rows(&mut app, 160, 12);
+    let file = format!("{:<38} ✓", "      f1.txt");
+    let mut listed = FIVE_READ.map(String::from).to_vec();
+    listed.insert(1, file);
+    assert_eq!(rows[..6], listed, "{rows:#?}");
+    // Commenting again: as before.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Char('2')]);
+    assert_eq!(pane_rows(&mut app, 160, 12)[..5], commenting);
+}
+
+#[test]
+fn reading_the_column_of_what_is_read_keeps_its_place_as_lines_are_marked_read() {
+    let (_tmp, db, _src) = five_to_read();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Char('2')]);
+    assert_eq!(pane_rows(&mut app, 160, 12)[..5], FIVE_READ);
+    // Patch 5's lines read but its title, with Space: its count goes up
+    // where it was, nothing else moves.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    app.wait_blocks();
+    down_to(&mut app, "+line 1");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: this hunk, 6 lines"), "{}", app.status);
+    let mut want = FIVE_READ;
+    want[4] = "  5 Document the module names        6/7";
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..5], want, "{rows:#?}");
+    // Patches 2 and 3 read all but a line: their counts as wide as they
+    // get, `9/10` and `39/40`, in the room they had.
+    read_first(&db, 1, 9);
+    read_first(&db, 2, 39);
+    app.refresh();
+    want[1] = "  2 Deprecate naming prefixes       9/10";
+    want[2] = "  3 Log the consoles' module  [1]  39/40";
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..5], want, "{rows:#?}");
+    // Read whole, each shows `✓` where its count ended; and though no
+    // patch shows a count of five cells any longer, the column keeps its
+    // width, the comments theirs, the titles their room.
+    read_first(&db, 1, 10);
+    read_first(&db, 2, 40);
+    app.refresh();
+    want[1] = "  2 Deprecate naming prefixes          ✓";
+    want[2] = "  3 Log the consoles' module  [1]      ✓";
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..5], want, "{rows:#?}");
+}
+
+#[test]
+fn reading_with_no_comment_open_on_any_patch_there_is_no_column_for_comments() {
+    let (_tmp, db, src) = stack_to_read(&[("Name the MOZ_LOG module", 4), ("Deprecate naming prefixes", 9)]);
+    read_first(&db, 1, 3);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Char('2')]);
+    // What is read alone, a space before it, as wide as the widest a patch
+    // can show: of patch 2's ten lines, `9/10`, as all ten read show `✓`.
+    // The title has the room the comments would take.
+    let alone = ["  1 Name the MOZ_LOG module          0/5", "  2 Deprecate naming prefixes       3/10"];
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..2], alone, "{rows:#?}");
+    // A comment on patch 1: the column of the comments comes, on every line,
+    // blank on patch 2's, two cells before what is read.
+    stacked(&src, &db, &["comment", "s", "--patch", "1", "Why?"]);
+    app.refresh();
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..2], ["  1 Name the MOZ_LOG module    [1]   0/5", "  2 Deprecate naming prefixes       3/10"], "{rows:#?}");
+    // The agent's answer the last word of it, the comment is open no longer:
+    // the column goes again.
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        d.set_note(Note { text: append_turn(&n.text, Role::Agent, "Because.", Some("answer")), ..n })
+    })
+    .unwrap();
+    app.refresh();
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!(rows[..2], alone, "{rows:#?}");
+}
+
+#[test]
+fn reading_in_a_narrow_patches_pane_the_titles_fold_or_are_cut_and_the_columns_stay_whole() {
+    let (_tmp, db, _src) = five_to_read();
+    let mut app = open(&db).unwrap();
+    // 88 wide, the pane is 22. Commenting, each title folds in the room its
+    // own tag leaves.
+    let rows = pane_rows(&mut app, 88, 30);
+    let commenting = [
+        "  1 Name the       [2]",
+        "    MOZ_LOG module",
+        "  2 Deprecate naming",
+        "    prefixes",
+        "  3 Log the        [1]",
+        "    consoles'",
+        "    module",
+        "  4 Test the module",
+        "    names",
+        "  5 Document the",
+        "    module names",
+    ];
+    assert_eq!(rows[..11], commenting, "{rows:#?}");
+    // Reading, the columns take 11 cells of each first line, whole, as wide
+    // on every line: each title folds under itself in the 7 left, and a
+    // word longer than that is cut on the first line.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    let rows = pane_rows(&mut app, 88, 30);
+    let reading = [
+        "  1 Name    [2]      ✓",
+        "    the",
+        "    MOZ_LOG",
+        "    module",
+        "  2 Depreca       3/10",
+        "    naming",
+        "    prefixes",
+        "  3 Log the [1]  12/40",
+        "    consoles'",
+        "    module",
+        "  4 Test             ✓",
+        "    the",
+        "    module",
+        "    names",
+        "  5 Documen        0/7",
+        "    the",
+        "    module",
+        "    names",
+    ];
+    assert_eq!(rows[..18], reading, "{rows:#?}");
+}
+
 /// The comments pane's words, as drawn on a screen with the pane there:
 /// each row's part right of the last line between panes, joined.
 fn notes_pane_words(screen: &str) -> String {

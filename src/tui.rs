@@ -10967,21 +10967,57 @@ impl App {
         }
     }
 
-    /// What the patches pane says of patch `id`: its title; and its tags:
-    /// what is read of it, reading; its comments the agent has not answered
-    /// last.
-    fn patch_said(&mut self, id: &str) -> (String, String) {
-        let mut tag = match self.reading.then(|| self.read_of(id)) {
-            Some((n, m)) if m > 0 && n == m => " ✓".to_string(),
-            Some((n, m)) if m > 0 => format!(" {n}/{m}"),
-            _ => String::new(),
-        };
+    /// What the patches pane says of patch `id`: its title; how many of
+    /// its comments the agent has not answered last; and reading, how many
+    /// of its lines are read, of how many (`read_of`).
+    fn patch_said(&mut self, id: &str) -> (String, usize, Option<(usize, usize)>) {
+        let read = self.reading.then(|| self.read_of(id));
         let p = self.db.patch(id);
         let open = self.db.notes(&p.change).iter().filter(|n| last_role(&n.text) != Some(Role::Agent)).count();
-        if open > 0 {
-            tag += &format!(" [{open}]");
+        (p.title().to_string(), open, read)
+    }
+
+    /// What the patches pane says of each of the stack's patches
+    /// (`patch_said`), in the stack's order: its title, and its tags at the
+    /// end of its first line. Not reading, its comments the agent has not
+    /// answered last, ` [2]`, none on a patch with none. Reading, two
+    /// columns, the same on every patch's line, each right-aligned: its
+    /// comments, `[2]`, as wide as the widest, blank on a patch with none;
+    /// then, two cells further, what is read of it, `✓` once all is, else
+    /// `3/10`, against the pane's right edge, blank on a patch with no line
+    /// to read. That column is as wide as it gets, so that it stays as
+    /// lines are read: the widest `n/m` any patch can show, its `n` as many
+    /// digits as `m - 1` (all of it read, a patch shows `✓`). A column no
+    /// patch has a tag in is not there, nor its room; a space goes before
+    /// the first there is.
+    fn patches_said(&mut self) -> Vec<(String, String)> {
+        let ids = self.current().map_or(Vec::new(), |s| s.patches.clone());
+        let said: Vec<_> = ids.iter().map(|id| self.patch_said(id)).collect();
+        let comments = |open: usize| if open > 0 { format!("[{open}]") } else { String::new() };
+        if !self.reading {
+            let tag = |open: usize| if open > 0 { format!(" {}", comments(open)) } else { String::new() };
+            return said.into_iter().map(|(title, open, _)| (title, tag(open))).collect();
         }
-        (p.title().to_string(), tag)
+        let digits = |n: usize| n.to_string().len();
+        let widest = |read: Option<(usize, usize)>| match read {
+            Some((_, m)) if m > 0 => digits(m - 1) + 1 + digits(m),
+            _ => 0,
+        };
+        let comments_w = said.iter().map(|(_, open, _)| comments(*open).len()).max().unwrap_or(0);
+        let read_w = said.iter().map(|(_, _, read)| widest(*read)).max().unwrap_or(0);
+        said.into_iter()
+            .map(|(title, open, read)| {
+                let read = match read {
+                    Some((n, m)) if m > 0 && n == m => "✓".to_string(),
+                    Some((n, m)) if m > 0 => format!("{n}/{m}"),
+                    _ => String::new(),
+                };
+                let cells = [(comments(open), comments_w), (read, read_w)];
+                let columns: Vec<String> = cells.into_iter().filter(|(_, w)| *w > 0).map(|(t, w)| format!("{t:>w$}")).collect();
+                let tag = if columns.is_empty() { String::new() } else { format!(" {}", columns.join("  ")) };
+                (title, tag)
+            })
+            .collect()
     }
 
     /// What the patches pane shows after patch `id`'s number, listing files
@@ -11640,14 +11676,16 @@ impl App {
         // widest (blank where none is known; no column while none is, and
         // no cell for the marks while none is shown), its title whole,
         // folded under itself where the pane is narrower, and its tags at
-        // the end of its first.
+        // the end of its first (`patches_said`), reading in columns as
+        // wide on every line, which the title leaves room for.
         let statuses = self.statuses_said();
         let (letters, marks) = Self::status_col(&statuses);
+        let patches = self.patches_said();
         let lines: Vec<Vec<String>> = order
             .iter()
             .enumerate()
             .map(|(at, &i)| {
-                let (said, tag) = self.patch_said(&s.patches[i]);
+                let (said, tag) = &patches[i];
                 let mark = if moving && at == on { " ↕".to_string() } else { format!("{:>2}", at + 1) };
                 let status = match (letters, statuses.get(i).copied().unwrap_or_default()) {
                     (0, _) => String::new(),
@@ -11658,7 +11696,7 @@ impl App {
                 let (head_w, tag_w) = (head.chars().count(), tag.chars().count());
                 let mut folded = vec![said.clone()];
                 if head_w + said.chars().count() + tag_w > w {
-                    folded = wrap(&said, w.saturating_sub(head_w + tag_w).max(1));
+                    folded = wrap(said, w.saturating_sub(head_w + tag_w).max(1));
                 }
                 if folded.is_empty() {
                     folded.push(String::new());

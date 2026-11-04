@@ -16,6 +16,31 @@ over `≠` (Move HEAD, below, says what each locks). While there is a `!`,
 HEAD's line ends `· locked below patch 2`, folded under itself where the
 pane is too narrow for it.
 
+A patch's first line ends with its tags, against the pane's right edge,
+its title folded under itself, or a word too long for the room cut, to
+leave room for them. Commenting, how many of its comments wait on an
+answer, the agent's not their last word, ` [2]`, none on a patch with
+none. In the reading mode (Reading, below), two columns, the same on every
+patch's line, each right-aligned, the titles leaving room for both on
+every line: first how many of its comments wait, `[2]`, as wide as the
+widest of the stack's, blank on a patch with none; then, two cells
+further, what is read of it, `✓` once all of its lines to read are, else
+how many of how many, `3/10`, blank on a patch with no line to read. That
+column is as wide as it gets: the widest that any of the stack's patches
+can show, its count of lines read as many digits as one less than its
+lines (all of them read, it shows `✓`: `9/10` for ten lines, `39/40` for
+forty), so that nothing moves as lines are read. A column no patch has
+anything in is not there, nor its room: with no comment waiting on any
+patch, what is read alone, after a space. A patch being moved takes its
+tags with it.
+
+```
+  1 Name the MOZ_LOG module   [2]      ✓
+  2 Deprecate naming prefixes       3/10
+  3 Log the consoles' module  [1]  12/40
+  4 Test the module names              ✓
+```
+
 HEAD forked from the stack on its base, with commits the stack does not
 have (yours, or main pulled since, or the stack moved on since HEAD was
 put there), is drawn as a graph:
@@ -87,8 +112,8 @@ has its column blank, and while no status is known there is no column at
 all; the marks are one more cell of it, there once any patch shows one.
 Expanded, the pane is wider by the column, up to half the screen, so that
 each title keeps the room it had and folds as it did. The tags at the end
-of a patch's first line (`[2]`, and `✓` or `3/7` in the reading mode) are
-where they were: the reading mode's `✓` there says that all of the
+of a patch's first line (`[2]`, then `✓` or `3/7` in the reading mode,
+above) are where they were: the reading mode's `✓` there says that all of the
 patch's lines are read, not that Phabricator has this version. A revision
 is a draft when its status is Draft: one in Changes Planned that was never
 sent for review, as `Submit to Phabricator as WIP` makes one, is `[W]`,

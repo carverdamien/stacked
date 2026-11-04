@@ -34,8 +34,9 @@ latest mark holding the line or its block, in this hunk, and says so when
 nothing there is marked. The
 margin shows what Space would mark (`○→✓`), or else what Delete would unmark
 (`✓→○`), and `✓` beside each line read, drawn dim; hunks, files, the
-patches on the left and the top bar count what is read (`reading 5/11`),
-and each file listed under a patch on the left counts what is left of it
+patches on the left (in a column of their own, after their comments': The
+editor, above) and the top bar count what is read (`reading 5/11`), and
+each file listed under a patch on the left counts what is left of it
 (`7 left`).
 
 A patch's message is read as its code is, its lines lines to review too,
