@@ -187,7 +187,7 @@ wrap aside (History, below), so that a paragraph the work only
 wraps otherwise is no change, nor a line to read again; or the comment
 where it would be, the reply as the last turn of its thread. While the
 right pane shows the stack diff, the cursor on the stack operations or in
-the stack diff, `1` picks the view of its interdiffs, every line or only
+the stack diff, `1` sets the view of its interdiffs, every line or only
 what the patches changed (The editor, above),
 the two versions named `the stack's version` and `the work's version`,
 or of the change of each patch from the one to the other as a patch of

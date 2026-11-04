@@ -26,12 +26,12 @@
 //! view's side by side folds its lines: one of code where the half ends,
 //! one of the message between words. Or the change from the old version
 //! to the new one as a patch of its own, in the views of the code
-//! (`change.rs`). The menu of 1 is in sections, each what it draws under a
-//! heading, then the views it is drawn in: the interdiff, and the change;
-//! then the lines each view draws: every line, or only what the patches
-//! changed (`kept_lines`, `change::changed_rows`), each place lines are
-//! left out a line saying how many (`left_out`). The view picked, and the
-//! lines, hold for every interdiff while the editor is open, the settings'
+//! (`change.rs`). The dialog of 1 (`views_dialog.rs`) sets what is
+//! compared, the two diffs or the code, the view it is drawn in, and the
+//! lines each view draws: every line, or only what the patches changed
+//! (`kept_lines`, `change::changed_rows`), each place lines are left out a
+//! line saying how many (`left_out`). The view set, and the lines, hold for
+//! every interdiff while the editor is open, the settings'
 //! `view.interdiff` and `view.interdiff_lines` those they start with; a
 //! pane narrower than two sides need (`view.split_width`, as the code
 //! view's) draws its interdiffs as interdiffs meanwhile, the change
@@ -43,61 +43,6 @@ use super::*;
 use crate::config::InterLines;
 use crate::ops::{InterLine, Part};
 use crate::rows::FOLDED;
-
-impl InterLayout {
-    /// Each, in the order the menu of 1 lists them: the interdiff's views,
-    /// then the change's.
-    pub const ALL: [InterLayout; 6] = [
-        InterLayout::Interdiff,
-        InterLayout::Columns,
-        InterLayout::Sides,
-        InterLayout::ChangeUnified,
-        InterLayout::ChangeSides,
-        InterLayout::ChangeCompact,
-    ];
-
-    /// As the menu of 1 lists it: how it reads.
-    pub fn item(self) -> &'static str {
-        match self {
-            InterLayout::Interdiff => "Interdiff: a sign for which version has the line, then its own sign",
-            InterLayout::Columns => "A column per version: what each one's patch does with the line",
-            InterLayout::Sides => "Side by side: the old version on the left, the new one on the right",
-            InterLayout::ChangeUnified => "Unified: - for a line only the old version's code has, + for one only the new one's has",
-            InterLayout::ChangeSides => "Side by side: the old version's code on the left, the new one's on the right",
-            InterLayout::ChangeCompact => "Side by side, compact: each side's lines one after another, no gap where the other has more",
-        }
-    }
-}
-
-impl InterLines {
-    /// Each, in the order the menu of 1 lists them.
-    pub const ALL: [InterLines; 2] = [InterLines::Every, InterLines::Changed];
-
-    /// As the menu of 1 lists it: what it draws.
-    pub fn item(self) -> &'static str {
-        match self {
-            InterLines::Every => "Every line: the context, the index lines and what the change of base made too",
-            InterLines::Changed => "Only what the patches changed: no context, no index line, nothing the change of base made",
-        }
-    }
-}
-
-/// What the menu of 1 is called on an interdiff's screen.
-pub(super) const INTER_MENU: &str = "the view of the interdiffs";
-
-/// The heading of the menu of 1's section of what the interdiff draws:
-/// the two versions' diffs, compared, in each of the views of the section
-/// (`InterLayout`).
-pub(super) const INTERDIFF_SECTION: &str = "the interdiff: the two versions' diffs, compared";
-
-/// The heading of the menu of 1's section of the change from the old
-/// version to the new one, a patch of its own, in each of the views of the
-/// code.
-pub(super) const CHANGE_SECTION: &str = "the change: each file from the old version to the new one, as a patch of its own";
-
-/// The heading of the menu of 1's section of the lines each of the views
-/// above draws (`InterLines`).
-pub(super) const LINES_SECTION: &str = "the lines: in each view, every line or only what the patches changed";
 
 /// What the views of an interdiff say once, at the top of its code, while
 /// they draw only what the patches changed: what is left out, and how the
@@ -1163,38 +1108,6 @@ impl App {
         }
     }
 
-    /// The menu of 1 on an interdiff's screen, in sections, each what it
-    /// draws under a heading, then the views it is drawn in, each saying
-    /// how it reads, the one picked marked and picked: the interdiff, in
-    /// each of its views; and the change from the old version to the new
-    /// one as a patch of its own, in each view of the code, which cannot be
-    /// picked where the screen cannot read the versions' bases, the menu
-    /// saying why (`change_why`). Then the lines each of those views draws,
-    /// every line or only what the patches changed, the ones drawn marked
-    /// as the view is.
-    pub(super) fn inter_menu(&self) -> Menu {
-        let why = self.change_why();
-        let item = |v: InterLayout| {
-            let mark = if v == self.inter { "● " } else { "  " };
-            Item::new(format!("{mark}{}", v.item()), Action::InterView(v)).when(!v.change() || why.is_none())
-        };
-        let mut items = vec![Item::heading(INTERDIFF_SECTION)];
-        items.extend(InterLayout::ALL.iter().filter(|v| !v.change()).map(|&v| item(v)));
-        items.push(Item::heading(CHANGE_SECTION));
-        items.extend(InterLayout::ALL.iter().filter(|v| v.change()).map(|&v| item(v)));
-        items.push(Item::heading(LINES_SECTION));
-        items.extend(InterLines::ALL.iter().map(|&l| {
-            let mark = if l == self.inter_lines { "● " } else { "  " };
-            Item::new(format!("{mark}{}", l.item()), Action::InterLines(l))
-        }));
-        let note = why.map(|w| format!("The change cannot be drawn here: {w}."));
-        let mut m = Menu::new(INTER_MENU, items, note);
-        if let Some(at) = m.items.iter().position(|i| i.action == Action::InterView(self.inter) && i.enabled) {
-            m.sel = at;
-        }
-        m
-    }
-
     /// Why the screen cannot draw the change of what it shows, the bases of
     /// its versions not read: the versions of a patch, each on the stack
     /// that first held it; History…'s stack diff, and what an edit changed,
@@ -1240,19 +1153,25 @@ impl App {
         w > 0 && w < self.cfg.view.split_width
     }
 
-    /// View `v`, picked in the menu of 1: every interdiff drawn so from now
+    /// View `v`, set in the dialog of 1: every interdiff drawn so from now
     /// on, while the editor is open, on every screen; this one keeping its
-    /// place (`keep_inter_place`). The status line says how the view reads,
-    /// or, side by side on a pane too narrow for it, that this pane draws
-    /// its interdiffs as interdiffs until it has the room, the change
-    /// unified.
+    /// place (`keep_inter_place`). The status line says how the view reads
+    /// (`inter_status`).
     pub(super) fn pick_inter(&mut self, v: InterLayout) {
         let kept = self.keep_inter_place();
         self.inter = v;
         self.find_inter_place(kept);
+        self.status = self.inter_status(v);
+    }
+
+    /// What the status line says of view `v` as it is set: how it reads,
+    /// or, side by side on a pane too narrow for it, that this pane draws
+    /// its interdiffs as interdiffs until it has the room, the change
+    /// unified.
+    pub(super) fn inter_status(&self, v: InterLayout) -> String {
         let (need, has) = (self.cfg.view.split_width, self.inter_w.get());
         let narrow = self.inter_narrow();
-        self.status = match v {
+        match v {
             InterLayout::Interdiff => "each interdiff is drawn as an interdiff: a sign for which version has each line, then that version's own sign".into(),
             InterLayout::Columns => "each interdiff is drawn in a column per version: what each one's patch does with each line, the old version's first".into(),
             InterLayout::Sides if narrow => format!(
@@ -1268,22 +1187,28 @@ impl App {
                 "the change is drawn side by side and compact where its pane has {need} columns: this pane has {has}, so it is drawn unified until the pane is wider"
             ),
             InterLayout::ChangeCompact => "the change from the old version to the new one is drawn as a patch of its own, side by side and compact: each side's lines one after another, with no gap where the other has more".into(),
-        };
+        }
     }
 
-    /// Lines `l`, picked in the menu of 1: every interdiff drawn with them
+    /// Lines `l`, set in the dialog of 1: every interdiff drawn with them
     /// from now on, every line or only what the patches changed, in every
     /// view, while the editor is open, on every screen; this one keeping its
     /// place (`keep_inter_place`), the line its cursor is on, else the
-    /// nearest line kept (`find`). The status line says what is drawn.
+    /// nearest line kept (`find`). The status line says what is drawn
+    /// (`lines_status`).
     pub(super) fn pick_lines(&mut self, l: InterLines) {
         let kept = self.keep_inter_place();
         self.inter_lines = l;
         self.find_inter_place(kept);
-        self.status = match l {
+        self.status = App::lines_status(l);
+    }
+
+    /// What the status line says of lines `l` as they are set.
+    pub(super) fn lines_status(l: InterLines) -> String {
+        match l {
             InterLines::Every => "every line is drawn: of each interdiff, the lines both versions have alike, the context lines and the index lines too, and of the change, the lines the change of base made, dim".into(),
             InterLines::Changed => "only what the patches changed is drawn: of each interdiff, no line both versions have alike, no context line and no index line, and of the change, no line the change of base made; a line says how many are left out at each place".into(),
-        };
+        }
     }
 
     /// Whether the interdiffs are drawn with only what the patches changed.

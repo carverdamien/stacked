@@ -179,11 +179,14 @@
   in the review of a pull, a commit's
   message against its patch's; and a diff, or a commit, as the middle
   draws a patch; `tui/interdiffs.rs`, the views of an interdiff that `1`
-  picks on every screen that shows one, as an interdiff, in a column per
-  version or side by side, what says how each reads, the menu of them in
-  sections, what of an interdiff they draw with only what the patches
-  changed, and the line saying how many are left out, and where a screen's
-  place is found again in another view;
+  sets on every screen that shows one, as an interdiff, in a column per
+  version or side by side, what says how each reads, what of an interdiff
+  they draw with only what the patches changed, and the line saying how
+  many are left out, and where a screen's place is found again in another
+  view; `tui/views_dialog.rs`, the dialog of them that `1` opens there,
+  laid out as the ask dialog: what is compared, the view and the lines,
+  each set at once, the line under each saying what its value draws, then
+  Done or Cancel;
   `tui/change.rs`, the change from one version to another as a patch of
   its own in the views of the code there, the lines the change of base
   made left out with only what the patches changed, what each screen
@@ -205,7 +208,9 @@
   `tui/finding.rs`, the search of the middle (`/`); `tui/ask_dialog.rs`,
   the dialog every `Ask agent…` item opens, its permission and effort set
   each time, then Ask Now, Ask Later or Cancel; and a review's `Send it
-  back to the agent…`, then Send Now or Cancel.
+  back to the agent…`, then Send Now or Cancel; the lists of a dialog's
+  lines, and its buttons, as the dialog of the views of the interdiffs
+  draws them too.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server and the port it listens on, its wasm and its page, the
   notices it sends the page, which shows them as the system's banners,

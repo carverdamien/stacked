@@ -117,7 +117,7 @@ An edit by hand does not go in the stack at once: it lands, as the agent's
 work does (What the agent brings back waits for your review, below), and
 its review opens as soon as it is saved: the stack operations it makes
 (`modify  1 …`), and beside them what it does to the stack, to accept or
-reject, each new version's interdiff in the view `1` picks there (The
+reject, each new version's interdiff in the view `1` sets there (The
 editor, above). Accepted, it goes in, as the edit of the stack it is (`edit … as …`
 in the history); rejected, nothing changes. Left for later, the banner says
 so (`⟳ 1 edit by hand waits for your review`), and as with the agent's

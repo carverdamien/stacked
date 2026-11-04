@@ -1954,7 +1954,7 @@ fn a_thread_the_agent_opened_written_in_its_review_sends_the_work_back_in_the_br
 }
 
 #[test]
-fn one_picks_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_browser_too() {
+fn one_sets_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_browser_too() {
     let (_tmp, db) = setup();
     stacked::db::Db::edit(&db, |d| {
         let old = d.patch(&d.stack("s")?.patches[0]).clone();
@@ -1973,20 +1973,36 @@ fn one_picks_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_
     let (x, y) = cell_of(seen.last().unwrap(), "Versions of this patch…");
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
     until(&mut events, "the versions", |l| text(l).contains("what changed from the version before"));
-    // 1, then a click on the change unified: the change from v1 to v2 as a
-    // patch of its own, its files read away from the screen.
+    // 1, the dialog of the views of the interdiffs; a click on what is
+    // compared opens its list, and a click on the code there sets it: the
+    // change from v1 to v2 as a patch of its own at once, its files read
+    // away from the screen. Done keeps it.
     ask(port, &host, &input, "k c 31 -\n");
-    until(&mut events, "the change's heading", |l| text(l).contains("the change: each file from the old version to the new one"));
-    let item = "Unified: - for a line only";
-    let seen = until(&mut events, "the change unified in the menu", |l| text(l).contains(item));
-    let (x, y) = cell_of(seen.last().unwrap(), item);
+    let line = "Compare: [ the two diffs ]";
+    let seen = until(&mut events, "what is compared, in the dialog", |l| text(l).contains(line));
+    let (x, y) = cell_of(seen.last().unwrap(), line);
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
-    until(&mut events, "the change said", |l| text(l).contains("The code is the change from v1 to v2"));
-    until(&mut events, "its line", |l| text(l).trim_end().ends_with("+Two") && !text(l).contains("++Two"));
+    let value = "│ the code ";
+    let seen = until(&mut events, "the code in the list", |l| text(l).contains(value));
+    let (x, y) = cell_of(seen.last().unwrap(), value);
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    // What the screen says of the change and its line may come before the
+    // dialog says the code is set, or after Done, once the dialog no longer
+    // hides them.
+    let mut seen = until(&mut events, "the code set", |l| text(l).contains("Compare: [ the code ]"));
+    ask(port, &host, &input, "k End -\nk Enter -\n");
+    let said = |l: &str| text(l).contains("The code is the change from v1 to v2");
+    let line = |l: &str| text(l).trim_end().ends_with("+Two") && !text(l).contains("++Two");
+    if !seen.iter().any(|l| said(l)) {
+        seen.extend(until(&mut events, "the change said", said));
+    }
+    if !seen.iter().any(|l| line(l)) {
+        until(&mut events, "its line", line);
+    }
 }
 
 #[test]
-fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_browser_too() {
+fn one_sets_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_browser_too() {
     let (_tmp, db) = setup();
     reworded(&db, "Bug 1 - shout two, reworded");
     stacked::config::init(stacked::config::Config::default());
@@ -2001,20 +2017,24 @@ fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_browser_too
     let (x, y) = cell_of(seen.last().unwrap(), "Versions of this patch…");
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
     until(&mut events, "the versions", |l| text(l).contains("what changed from the version before"));
-    // 1: the menu of the views of the interdiffs, under the heading of what
-    // they draw; a click on side by side picks it, the version's pane then
-    // side by side, each half under a heading of its version.
+    // 1: the dialog of the views of the interdiffs; a click on the view
+    // opens its list, and a click on side by side there sets it, the
+    // version's pane side by side at once, each half under a heading of its
+    // version.
     ask(port, &host, &input, "k c 31 -\n");
-    until(&mut events, "the menu's heading", |l| text(l).contains("the interdiff: the two versions' diffs, compared"));
-    let item = "Side by side: the old version";
-    let seen = until(&mut events, "side by side in the menu", |l| text(l).contains(item));
-    let (x, y) = cell_of(seen.last().unwrap(), item);
+    let line = "View: [ interdiff ]";
+    let seen = until(&mut events, "the view, in the dialog", |l| text(l).contains(line));
+    let (x, y) = cell_of(seen.last().unwrap(), line);
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    let value = "│ side by side ";
+    let seen = until(&mut events, "side by side in the list", |l| text(l).contains(value));
+    let (x, y) = cell_of(seen.last().unwrap(), value);
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
     until(&mut events, "the versions side by side", |l| text(l).contains("│v2"));
 }
 
 #[test]
-fn one_picks_only_what_the_patches_changed_of_a_patch_s_versions_in_the_browser_too() {
+fn one_sets_only_what_the_patches_changed_of_a_patch_s_versions_in_the_browser_too() {
     let (_tmp, db) = setup();
     stacked::db::Db::edit(&db, |d| {
         let old = d.patch(&d.stack("s")?.patches[0]).clone();
@@ -2033,17 +2053,32 @@ fn one_picks_only_what_the_patches_changed_of_a_patch_s_versions_in_the_browser_
     let (x, y) = cell_of(seen.last().unwrap(), "Versions of this patch…");
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
     until(&mut events, "the versions", |l| text(l).contains("what changed from the version before"));
-    // 1, then a click on only what the patches changed: the version's pane
-    // drawn without the lines the two versions have alike, each place they
-    // were saying how many.
+    // 1, the dialog of the views of the interdiffs; a click on the lines
+    // opens their list, and a click on only what changed there sets it:
+    // the version's pane drawn at once without the lines the two versions
+    // have alike, each place they were saying how many. Done keeps it.
     ask(port, &host, &input, "k c 31 -\n");
-    until(&mut events, "the lines' heading", |l| text(l).contains("the lines: in each view, every line or only what the patches changed"));
-    let item = "Only what the patches changed: no context";
-    let seen = until(&mut events, "only what the patches changed in the menu", |l| text(l).contains(item));
-    let (x, y) = cell_of(seen.last().unwrap(), item);
+    let line = "Lines: [ every line ]";
+    let seen = until(&mut events, "the lines, in the dialog", |l| text(l).contains(line));
+    let (x, y) = cell_of(seen.last().unwrap(), line);
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
-    until(&mut events, "what is left out, said", |l| text(l).contains("lines are left out here."));
-    until(&mut events, "the line each version says", |l| text(l).trim_end().ends_with("++Two"));
+    let value = "│ only what changed ";
+    let seen = until(&mut events, "only what changed in the list", |l| text(l).contains(value));
+    let (x, y) = cell_of(seen.last().unwrap(), value);
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    // What the screen says of what is left out, and the line, may come
+    // before the dialog says the lines are set, or after Done, once the
+    // dialog no longer hides them.
+    let mut seen = until(&mut events, "the lines set", |l| text(l).contains("Lines: [ only what changed ]"));
+    ask(port, &host, &input, "k End -\nk Enter -\n");
+    let said = |l: &str| text(l).contains("lines are left out here.");
+    let line = |l: &str| text(l).trim_end().ends_with("++Two");
+    if !seen.iter().any(|l| said(l)) {
+        seen.extend(until(&mut events, "what is left out, said", said));
+    }
+    if !seen.iter().any(|l| line(l)) {
+        until(&mut events, "the line each version says", line);
+    }
 }
 
 /// On `db`, run `id` of stack `stack`, its ask of kind `way` ("answer",

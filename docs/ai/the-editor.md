@@ -398,7 +398,7 @@ shows what differs on a screen of its own, titled `D12 on Phabricator,
 then patch 2 as it is`: Phabricator's version of the patch, the
 revision's title and summary as a submit compares them over its latest
 diff, then the patch as it is, as an interdiff, the way `Versions of this
-patch…` shows two versions, in the view of the interdiffs that `1` picks
+patch…` shows two versions, in the view of the interdiffs that `1` sets
 there (below), the two versions named `D12 on Phabricator` and `patch 2
 as it is`: the interdiff, or the change from the latest diff, on the
 commit it is on, to the patch as it is, as a patch of its own. The screen first says what it shows: the
@@ -432,7 +432,7 @@ versions are then on two bases (below). When the code is the same, the
 screen shows the
 title and summary alone; both the same, the parent alone differing, it
 shows nothing under what it says. ↑↓ (pgup pgdn home end) scroll it, `1`
-opens the menu of the views of its interdiff (below), and Esc goes back
+opens the dialog of the views of its interdiffs (below), and Esc goes back
 to the line. In sync, Space says so on the bottom line,
 naming the parent (`Phabricator has this exact version of patch 3: the
 latest diff of D12 does what this version does, the title and summary of
@@ -740,40 +740,107 @@ the help then names those:
   (History, below). Made
   shorter than the cursor's line, the screen keeps the cursor's line in
   sight, on its last line, in every view.
-- On a screen that shows interdiffs, `1` opens the menu of their views,
-  titled `the view of the interdiffs`: on the versions of a patch;
+- On a screen that shows interdiffs, `1` opens the dialog of their
+  views, titled `the view of the interdiffs`: on the versions of a patch;
   History…, on its history and on its stack diff; the review of what
   landed, while its right pane shows the stack diff of its change (the
   cursor on its stack operations, or in the stack diff), not on a comment
   nor on a patch looked at closer; and the screens of what an edit
   changed (History, below) and of what differs from Phabricator (above).
-  The menu is in sections, each what it draws under a heading, then the
-  views it is drawn in, the heading no item: Enter, a click and ↑↓ pass it
-  by. Its first section is the interdiff, `the interdiff: the two
-  versions' diffs, compared`, in three views, each item saying how it
-  reads: `Interdiff: a sign for which version has the line, then its own
-  sign`, `A column per version: what each one's patch does with the line`,
-  and `Side by side: the old version on the left, the new one on the
-  right`. Its second is the change, `the change: each file from the old
-  version to the new one, as a patch of its own`, in the code view's own
-  views (below): `Unified: - for a line only the old version's code has, +
-  for one only the new one's has`, `Side by side: the old version's code on
-  the left, the new one's on the right`, and `Side by side, compact: each
-  side's lines one after another, no gap where the other has more`. Its
-  third is the lines each of those views draws, `the lines: in each view,
-  every line or only what the patches changed`: `Every line: the context,
-  the index lines and what the change of base made too`, as stacked always
-  drew them, and `Only what the patches changed: no context, no index
-  line, nothing the change of base made` (below), the ones drawn marked
-  `●` as the view is, Enter or a click picking them as a view.
-  The view the interdiffs are drawn in is marked `●`; Enter or a click
-  picks one, and Esc leaves the view as it is; `?` on an item says what it
-  draws. The view picked holds for every interdiff, on every screen, as
-  long as the editor is open, the status line saying how it reads (`each
-  interdiff is drawn in a column per version: what each one's patch does
-  with each line, the old version's first`); the settings'
-  `view.interdiff` is the one they start in (Settings, below), as an
-  interdiff unless set. The screen keeps its place: the line its cursor is
+  It is laid out as the ask dialog is (Asking the agent, below): a line
+  for each choice, `Label: [ value ]`, and under it one short line saying
+  what the value set draws; then Done and Cancel; in the middle of the
+  screen, as a menu is:
+
+  ```
+  ┌─ the view of the interdiffs ─────────────────────────────────┐
+  │ Compare: [ the two diffs ]                                   │
+  │   each version's diff, compared line by line                 │
+  │                                                              │
+  │ View: [ interdiff ]                                          │
+  │   a sign for which version has the line, then its own        │
+  │                                                              │
+  │ Lines: [ every line ]                                        │
+  │   context, index lines and the base's changes too            │
+  │                                                              │
+  │ < Done >   < Cancel >                                        │
+  └──────────────────────────────────────────────────────────────┘
+  ```
+
+  Compare is what is compared: `the two diffs`, the interdiff, each
+  version's diff compared line by line, or `the code`, the change from the
+  old version to the new one as a patch of its own (below). View is how
+  that is drawn: the two diffs as an `interdiff`, in `columns`, a column
+  per version, or `side by side`; the code `unified`, `side by side` or
+  `compact`, the code view's own views (below). Lines is `every line`, as
+  stacked always drew them, or `only what changed`, what the patches
+  changed (below), in every view. The line under each value: `each
+  version's diff, compared line by line` (the two diffs), `each file from
+  the old version to the new one` (the code), `a sign for which version
+  has the line, then its own` (interdiff), `a column per version: what its
+  patch does with the line` (columns), `the old version on the left, the
+  new one on the right` (side by side, of either), `- for the old
+  version's own lines, + for the new one's` (unified), `side by side, with
+  no gap where one side has more lines` (compact), `context, index lines
+  and the base's changes too` (every line), `no context, no index lines,
+  none of the base's changes` (only what changed); a view the pane is too
+  narrow for says so there instead (below).
+
+  The dialog opens on the choices as they are, never unset, the cursor on
+  Compare. ↑↓ go from line to line and to the buttons, round past either
+  end, and Home and End to Compare and to the buttons. On a line, ← → set
+  the value before or after the one set, never round past either end, and
+  Enter opens the list of the line's values, as the ask dialog's lists
+  open: just under the line, from the column of its value, over the
+  dialog, framed as a menu is, the cursor on the value set:
+
+  ```
+  ┌─ the view of the interdiffs ─────────────────────────────────┐
+  │ Compare: [ the two diffs ]                                   │
+  │   each version's diff, compared line by line                 │
+  │                                                              │
+  │ View: [ interdiff ]                                          │
+  │   a si┌──────────────┐sion has the line, then its own        │
+  │       │ interdiff    │                                       │
+  │ Lines:│ columns      │                                       │
+  │   cont│ side by side │ and the base's changes too            │
+  │       └──────────────┘                                       │
+  │ < Done >   < Cancel >                                        │
+  └──────────────────────────────────────────────────────────────┘
+  ```
+
+  In the list, ↑↓ go from value to value, round past either end, and Home
+  and End to the first and the last; Enter sets the line to the value the
+  cursor is on and closes the list, and Esc closes it, setting nothing. On
+  the buttons, ← → go from one to the other, and Enter presses the one the
+  cursor is on. Each value set, by ← → or in the list, the screen behind
+  follows at once, keeping its place (below), and the status line says how
+  it reads (`each interdiff is drawn in a column per version: what each
+  one's patch does with each line, the old version's first`). Compare
+  set, View keeps its value where the other list has one of the same name
+  (side by side), else takes that list's first (from columns, unified;
+  from compact, interdiff). Done keeps what is set and closes the dialog,
+  the status line saying how the view reads where it changed since the
+  dialog opened, else what lines are drawn where they changed, else
+  nothing; Cancel, Esc and a click out of the dialog put back the view and
+  the lines it opened on, the screen keeping its place, and close it. The
+  mouse is as in the ask dialog: over a line or a button, the cursor goes
+  there; a click on a line opens its list, one on a button presses it, one
+  in the box on nothing does nothing; the list open, over a value its
+  cursor goes there, a click on it sets it, and a click anywhere else
+  closes the list alone. The bottom bar says the keys there (`↑↓ choose · ←→: set the view · enter: open the
+  list · esc: cancel · ?: what it does`; the list open, `↑↓ choose ·
+  enter: set the view · esc: close the list · ?: what it does`). `?` on a
+  line says the value set in whole words (`Columns, a column per version:
+  before each line, what the old version's patch does with it, then what
+  the new one's does, …`), what Enter and ← → do there, and what Done and
+  Cancel do; in the list, what Enter sets, the value its cursor is on in
+  whole words; on a button, what pressing it does.
+
+  What is set holds for every interdiff, on every screen, as long as the
+  editor is open; the settings' `view.interdiff` and `view.interdiff_lines`
+  are what they start with (Settings, below), as an interdiff and every
+  line unless set. The screen keeps its place: the line its cursor is
   on, else its top line, a row showing two lines, the old version's and
   the new one's, being on the line it was on of the two, else on the old
   version's; switching back, it is on the line it was on before. Every
@@ -886,20 +953,23 @@ the help then names those:
   what follows the bullet. Side by side needs a pane of 60 columns, as the
   code view's side by side needs a middle so wide (`view.split_width`): a
   pane narrower than that draws its interdiffs as interdiffs meanwhile,
-  the view picked kept. Picked on such a pane, side by side is the view
-  all the same, of every pane wide enough, and the status line says why
-  this one does not draw it (`each interdiff is drawn side by side where
-  its pane has 60 columns: this pane has 59, so its interdiffs are drawn
-  as interdiffs until it is wider`); `?` on its item says so before it is
-  picked; and while the pane is narrower, the top bar says `· interdiffs
-  side-by-side: too narrow`, and `?` says why the interdiffs are drawn as
-  interdiffs. Such panes are the review's right pane and History…'s stack
+  the view set kept. Set on such a pane, side by side is the view all the
+  same, of every pane wide enough, and the status line says why this one
+  does not draw it (`each interdiff is drawn side by side where its pane
+  has 60 columns: this pane has 59, so its interdiffs are drawn as
+  interdiffs until it is wider`); in the dialog, the line under the view
+  says so in short (`too narrow here, under 60 columns: drawn as an
+  interdiff`), and `?` there in whole (`This pane is under 60 columns, too
+  narrow for side by side: its interdiffs are drawn as interdiffs until it
+  has room.`); and while the pane is narrower, the top bar says `·
+  interdiffs side-by-side: too narrow`, and `?` says why the interdiffs
+  are drawn as interdiffs. Such panes are the review's right pane and History…'s stack
   diff on a screen of 100 columns or fewer (→ again, in the review, gives
   its pane the screen's width), the versions' on one of 80 or fewer, and
   a screen of its own under 60. In the browser (`stacked web`) and in
   StackED, the same.
 
-  The change, the second section: the change from the old version to the
+  The code, which Compare sets: the change from the old version to the
   new one as a patch of its own, each file either version touches as the
   old version leaves it on its own base, then as the new one leaves it on
   its own, as a diff; nothing is made again on another base. It is drawn
@@ -932,10 +1002,13 @@ the help then names those:
   changes at a time, each once while the editor is open. Where a base
   cannot be read (a stack with no base, a commit the repository lacks, a
   version never in a stack, a latest diff whose commit Phabricator did not
-  say, or stacked did not read yet), the section's items cannot be picked,
-  and the menu says why (`The change cannot be drawn here: the commit D12
-  on Phabricator is on is not known: Phabricator said none, or it was
-  fetched before stacked read that.`); the first section keeps working.
+  say, or stacked did not read yet), the code cannot be compared: in the
+  dialog, the code is dim in Compare's list, → and Enter there set
+  nothing, the status line saying why (`the code cannot be compared here:
+  the commit D12 on Phabricator is on is not known: Phabricator said none,
+  or it was fetched before stacked read that`), and the dialog says so
+  under its buttons, as `?` on Compare does (`The code cannot be compared
+  here: …`); the two diffs are compared as ever.
   Where a version does not apply on its base, the change says why, the
   interdiff after it, as an interdiff (`The change cannot be drawn: v2 does
   not apply on its base, 0123456789ab, with the patches below it. Here is
@@ -975,10 +1048,12 @@ the help then names those:
   the bottom bar says `3: whole` (`3: hunks`), `?` says so, and the top bar
   `· whole files`. Side by side and compact need a pane of 60 columns, as
   the code view does (`view.split_width`): a narrower one draws the change
-  unified meanwhile, the status line, `?` on the item, `?` and the top bar
-  saying so as for the interdiff (`the change is drawn side by side where
-  its pane has 60 columns: this pane has 59, so it is drawn unified until
-  the pane is wider`, `· change side-by-side: too narrow`). From the
+  unified meanwhile, the status line, the dialog's line under the view
+  (`too narrow here, under 60 columns: drawn unified`), `?` there, `?` and
+  the top bar saying so as for the interdiff (`the change is drawn side by
+  side where its pane has 60 columns: this pane has 59, so it is drawn
+  unified until the pane is wider`, `· change side-by-side: too
+  narrow`). From the
   interdiff to the change, and back, the screen keeps its place: each line
   of the change has the line of the interdiff nearest it, by its file and
   its line as each version leaves it, a line a version keeps before one it
@@ -990,17 +1065,18 @@ the help then names those:
   for. Enter on a line of the change in the review's stack diff goes to the
   line of its patch the line of the interdiff nearest it goes to.
 
-  The lines, the third section: every line, or only what the patches
-  changed, in every view of both sections, on every screen of interdiffs,
-  as long as the editor is open; the settings' `view.interdiff_lines` is
-  what they start with (Settings, below), every line unless set. Picked,
-  the status line says what is drawn (`only what the patches changed is
+  The lines, which Lines sets: every line, or only what the patches
+  changed, in every view of the two diffs and of the code, on every
+  screen of interdiffs, as long as the editor is open; the settings'
+  `view.interdiff_lines` is what they start with (Settings, below), every
+  line unless set. Set, the status line says what is drawn (`only what the patches changed is
   drawn: of each interdiff, no line both versions have alike, no context
   line and no index line, and of the change, no line the change of base
   made; a line says how many are left out at each place`; `every line is
   drawn: …`), the top bar says `· only what changed`, `?` says what is left
-  out and that `1` draws every line again, and `?` on each item what it
-  draws; the bottom bar names `1: view`, as for the views. In the
+  out and that `1` draws every line again, and `?` on the dialog's Lines
+  what the value set draws; the bottom bar names `1: view`, as for the
+  views. In the
   interdiff's views, as an interdiff, in a column per version and side by
   side, what is drawn is the lines where the two versions' own `+` and `-`
   lines differ; the lines of a file's header that differ, as where a file

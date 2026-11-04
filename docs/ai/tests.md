@@ -439,15 +439,34 @@ pick, ← → from half to half and pane to pane, a click and the mouse taking
 the cursor into a half, a patch clicked taking it into the left one, a
 comment and a read mark made from the cursor's half and shown in both,
 another view keeping the cursor's half, a middle too narrow drawn as one
-and said, and the layout a setting), the views of the interdiffs (the menu
-of 1 on the versions of a patch, History… and its stack diff, the screen
-of what an edit changed, the review's stack diff and, with moz-phab, what
-differs from Phabricator: under the heading of what they draw, the one
-they are drawn in marked and picked, the heading no item, ↑ going round
-past it and a click on it picking nothing, Enter or a click picking one
-and Esc none, `?` saying what an item draws, the bar `1: view`, 1 doing
-nothing on the tree nor on a reply in the review, the code's in the
-middle still, and its key the settings'; as an interdiff, what its two
+and said, and the layout a setting), the views of the interdiffs (the
+dialog of 1 on the versions of a patch, History… and its stack diff, the
+screen of what an edit changed, the review's stack diff and, with
+moz-phab, what differs from Phabricator: Compare, View and Lines as
+drawn, each its value and the line under it, then Done and Cancel,
+opening on the choices as they are, those set elsewhere too, ↑↓ from line
+to line and to the buttons, round past either end, Home and End, ← → from
+button to button, never round; ← → stepping a value, never round past
+either end, the screen following at once, the line under it, the status
+line and the top bar saying so; Compare set, View keeping side by side,
+else taking the other list's first, both ways; Enter opening a line's
+list under it from the column of its value, framed as a menu is, on the
+value set, under the cursor, ↑↓ round past either end, Home and End, ← →
+nothing, Enter setting the value and closing it, the screen following,
+Esc closing it and setting nothing, the bar saying so, on each line;
+Cancel putting back the view and the lines the dialog opened on, the
+cursor on its line, the status line saying nothing; Done keeping them, on
+every screen, the status line saying how the view reads, else what lines
+are drawn, else nothing; Esc, Esc closing the list first, and a click out
+of the box putting back what it opened on, a click in it on nothing doing
+nothing; `?` on each line the value set in whole words, what Enter and ←
+→ do there and what Done and Cancel do, in the list what Enter sets, on a
+button what it does; the mouse as in the ask dialog, over a line or a
+button the cursor there, a click on a line opening its list, over a value
+the list's cursor there, a click on one setting it, one anywhere else
+closing the list alone, a click on Cancel and on Done pressing it; the
+bar `1: view`, 1 doing nothing on the tree nor on a reply in the review,
+the code's in the middle still, and its key the settings'; as an interdiff, what its two
 signs say once over the code, the versions named as the list names them,
 its lines as ever; in a column per version, what each column is, a line
 both remove dim in the colour of a line removed, the line each version
@@ -459,12 +478,13 @@ one from 76, each under a heading of its version, a line both have dim
 in its own colour, the lines that differ in their own colours with no
 sign of the interdiff, what each version's own diff changed in a line in
 the colours for words, the title compared across, the top bar saying so;
-on a pane too narrow, side by side picked all the same, `?` on its item
-saying what that does, the pane drawing its interdiffs as interdiffs, the
-status line, the top bar and `?` saying why, then side by side once the
-pane is wider; the settings' `view.interdiff` starting them side by side,
-and the view picked holding on every screen, from the versions to
-History… and back; the cursor kept on its line through each view, on the
+on a pane too narrow, side by side set all the same, the line under the
+view in the dialog saying so in short and `?` there in whole, the pane
+drawing its interdiffs as interdiffs, the status line, the top bar and
+`?` saying why, then side by side once the pane is wider, the line under
+the view as ever; the settings' `view.interdiff` starting them side by
+side, the dialog opening on it, and the view set holding on every
+screen, from the versions to History… and back; the cursor kept on its line through each view, on the
 new version's line and on the old one's, back as an interdiff on the line
 it was on, `o` side by side opening the link of the new version's line of
 the message beside the old one's, and a text's top line kept through each
@@ -479,10 +499,10 @@ per version the interdiff all the same where the files cannot be read so,
 its hunks' headers that differ in their ranges one line with both ranges,
 a line of each base the other's diff does not show `·` in the other's
 column), the change from one version to another as a patch of its own
-(the menu's second section, under its heading, on the versions of a
-patch, on History…'s history and its stack diff, on the screen of what an
-edit changed, in the review and, with moz-phab, on what differs from
-Phabricator, each of its items can be picked there; from v2 to v3, on one
+(the code, which the dialog's Compare sets, on the versions of a patch,
+on History…'s history and its stack diff, on the screen of what an edit
+changed, in the review and, with moz-phab, on what differs from
+Phabricator, the code can be set there; from v2 to v3, on one
 base, what it is said once, the messages' lines over it, then a.txt as v2
 leaves it, then as v3 leaves it, `-line 39 was`, `+line 39 said`, nothing
 dim, the status line, the bar `1: view · 3: whole` and the top bar saying
@@ -496,34 +516,37 @@ the change of base touches, left out, and as an interdiff as ever; `3`
 each file of it whole, the lines in no hunk dim, the bar `3: hunks` and
 the top bar `· whole files`, then its hunks again, nothing drawing the
 interdiff, and the settings' `whole` key doing it, 3 not; the settings'
-`change-side-by-side` starting it side by side, its item marked, unified
-on the versions' pane at 80 columns and `?` saying why, on History…'s at
-100 the top bar saying so, compact picked there the status line; the
+`change-side-by-side` starting it side by side, the dialog opening on
+it, unified on the versions' pane at 80 columns and `?` saying why, the
+line under the view in the dialog saying so in short and `?` there in
+whole, on History…'s at 100 the top bar saying so, compact set there the
+status line; the
 cursor from the interdiff's `++line 39 said` on the change's `+line 39
 said`, side by side on its row, back on its line as an interdiff, and from
 a line of the change no line of the interdiff is, on the nearest, and back
-on it; in the review, its items there, the cursor from the interdiff's
+on it; in the review, the code can be set there, the cursor from the interdiff's
 `-+TWO` on the change's `-TWO`, ↓ from line to line, Enter going to the
 line of the patch as the work leaves it; with moz-phab, Phabricator saying
-no commit for the latest diff, the change's items grayed and the menu
-saying why, then, a fetch reading the commit, the change from the diff
+no commit for the latest diff, the code not to be compared, the dialog
+saying why under its buttons and `?` on Compare, → setting nothing and
+the status line saying why, the code dim in the list and Enter on it
+setting nothing, then, a fetch reading the commit, the change from the diff
 on it to the patch as it is, on one base, nothing dim), the lines the
-views of the interdiffs draw (the menu's third section under its
-heading, every line marked as the view is, `?` on its other item saying
-what it draws, the bar in the menu as on any item; only what the patches
-changed picked, the view as it was, the status line saying what is
+views of the interdiffs draw (the dialog's Lines, every line set, `?` on
+only what changed in its list saying what it draws, the bar saying what
+Enter sets; only what the patches changed set, the view as it was, the status line saying what is
 drawn; as an interdiff, what it is said after how to read it, the titles
 and the messages as each version says them, the file's name, the line
 each version says its own, `⋯ 5 lines are left out here.` and three times
 `⋯ 1 line is left out here.`, no context line, index line or hunk the two
 have alike; the top bar `· only what changed`, the bottom bar `1: view`,
-`?` saying what is left out and that 1 draws every line again; the menu
-marking it, the view still picked; in a column per version the same,
+`?` saying what is left out and that 1 draws every line again; the
+dialog opening on it, the view as it was; in a column per version the same,
 said after what each column is; side by side said over the heading, a
 pair of lines one row; on History…'s stack diff too; every line again,
 the status line saying so, the context lines back, the top bar and `?`
-as ever; the settings' `view.interdiff_lines` starting them so, the menu
-marking it, and with `view.interdiff` both read from a file; across a
+as ever; the settings' `view.interdiff_lines` starting them so, the
+dialog opening on it, and with `view.interdiff` both read from a file; across a
 change of the patches below, patch 2's interdiff in a column per version
 with every line its context lines and index lines, and with only what the
 patches changed the line it no longer takes out, `-·line 28`, its own
@@ -1223,12 +1246,13 @@ serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, StackED's icon at the two sizes the page links
 for its tab, asked for as the page asks, with the token, and refused
 without it, as `/favicon.ico` is, the rows as they change, a key and a click,
-1 on the versions of a patch opening the menu of the views of the
-interdiffs under its heading, a click picking side by side, the version
-drawn so, and the change from a version to the next, picked so, drawn as
-a patch of its own once its files are read, and only what the patches
-changed, under the heading of the lines, picked so, the lines left out
-said where they were, HEAD's row pressed, dragged
+1 on the versions of a patch opening the dialog of the views of the
+interdiffs, a click on the view opening its list and one on side by side
+there setting it, the version drawn so at once, and the change from a
+version to the next, the code set so on Compare and kept with Done, drawn
+as a patch of its own once its files are read, and only what the patches
+changed, set so on Lines and kept with Done, the lines left out said where
+they were, HEAD's row pressed, dragged
 onto patch 1 and let go there, `stacked web` run in the checkout, HEAD
 put down under patch 1, a line of the review's list marked by the mouse
 over it, underlined in the runs of its row and not reversed, then picked
@@ -1342,12 +1366,13 @@ its body a space, and nothing for one short of a field, or whose run is
 empty or holds a space. With
 the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
 it, with no window: nothing drawn before the window's size, a key, a
-click, 1 on the versions of a patch opening the menu of the views of the
-interdiffs under its heading, a click picking side by side, the version
-drawn so, and the change from a version to the next, under its own
-heading, picked so, drawn as a patch of its own once its files are read,
-and only what the patches changed, under the heading of the lines, picked
-so, the lines left out said where they were,
+click, 1 on the versions of a patch opening the dialog of the views of
+the interdiffs, a click on the view opening its list and one on side by
+side there setting it, the version drawn so at once, and the change from
+a version to the next, the code set so on Compare and kept with Done,
+drawn as a patch of its own once its files are read, and only what the
+patches changed, set so on Lines and kept with Done, the lines left out
+said where they were,
 the screen sent saying HEAD's row is where a press is held for a drag,
 HEAD's row pressed, dragged onto patch 1 and let go there, HEAD put down
 under patch 1, a line of the review's list marked by the mouse over it,
@@ -2186,4 +2211,8 @@ compact, a hunk and a file with nothing else too, its blank line once,
 each place saying how many, dim, a stop that shows no line; a change all
 of whose lines the change of base made saying so; on one base nothing
 left out; and what the views say on other bases, what is left out rather
-than what is dim.
+than what is dim. Those in `tui/views_dialog.rs` show each value of the
+dialog of the views of the interdiffs its short name, side by side among
+the views of the two diffs and of the code alike, the line under each
+short enough for one row of the dialog, and its words for `?` longer than
+that line.

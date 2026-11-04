@@ -71,6 +71,8 @@ pub use reviewing::Reviewing;
 mod revisions;
 pub mod searching;
 pub use searching::Searching;
+pub mod views_dialog;
+pub use views_dialog::ViewsDialog;
 #[cfg(feature = "moz-phab")]
 pub mod submitting;
 #[cfg(feature = "moz-phab")]
@@ -733,6 +735,13 @@ pub enum Spot {
     AskButton(Button),
     /// Option `k` of the list open in the ask dialog, which a click picks.
     AskOption(usize),
+    /// Line `i` of the dialog of the views of the interdiffs, what is
+    /// compared, the view or the lines, where a click opens the list of the
+    /// line's values; button `k` of it, Done or Cancel, which a click
+    /// presses; value `k` of the list open in it, which a click sets.
+    ViewsLine(usize),
+    ViewsButton(usize),
+    ViewsOption(usize),
 }
 
 impl Spot {
@@ -1054,6 +1063,10 @@ pub enum Mode {
     /// the permission and the effort to set, then Ask Now, Ask Later or
     /// Cancel.
     Ask(Box<AskDialog>),
+    /// The dialog of the views of the interdiffs, which 1 opens on a screen
+    /// of them: what is compared, its view and its lines to set, then Done
+    /// or Cancel.
+    Views(Box<ViewsDialog>),
     /// A comment being written, inline.
     Edit(Box<Edit>),
     /// The patch at `from` being moved, now at `to`: ↑↓ to place it.
@@ -1336,9 +1349,6 @@ impl Choices {
 pub enum Action {
     /// A line between groups of items.
     Line,
-    /// The heading of a section of a menu, over the items of the section:
-    /// drawn as a box's title is, never picked.
-    Heading,
     /// A line that says something, to read: nothing to do.
     Said,
     /// The ways to make a new stack, as a menu.
@@ -1568,12 +1578,6 @@ pub enum Action {
     SetShow(Show),
     /// The code drawn as `0` from now on, picked in the menu of 1.
     View(Layout),
-    /// Every interdiff drawn as `0` from now on, picked in the menu of 1 on
-    /// a screen of interdiffs.
-    InterView(InterLayout),
-    /// Every interdiff drawn with lines `0` from now on, in every view of
-    /// them, picked there too: every line, or only what the patches changed.
-    InterLines(InterLines),
     Undo,
     Redo,
     EditList,
@@ -1672,7 +1676,6 @@ fn about(action: &Action) -> String {
     match action {
         Action::Line | Action::Cancel => "change nothing".into(),
         Action::Said => "nothing: it says what it says".into(),
-        Action::Heading => "nothing: it heads the items under it".into(),
         Action::NewStack if cfg!(feature = "moz-phab") => "make a new stack: from the workspace's commits, from Phabricator's revisions, or by the agent".into(),
         Action::NewStack => "make a new stack: from the workspace's commits, or by the agent".into(),
         Action::FromWorkspace => "import a stack from the workspace: its branch, another branch, or a range, its staged and unstaged changes on top if checked".into(),
@@ -1889,30 +1892,6 @@ fn about(action: &Action) -> String {
         Action::View(Layout::Halves) => {
             "draw the patch twice, unified in each half of the middle: each half has its own cursor and scroll, its own search, reading and whole files, and ← → go from one half to the other".into()
         }
-        Action::InterView(InterLayout::Interdiff) => {
-            "draw every interdiff as an interdiff, as long as the editor is open: before each line, a sign for which version has it, a space for both, - for the old version alone, + for the new one alone; then that version's own sign".into()
-        }
-        Action::InterView(InterLayout::Columns) => {
-            "draw every interdiff in a column per version, as long as the editor is open: before each line, what the old version's patch does with it, then what the new one's does, + it adds the line, - it removes it, a space it leaves it as it is, = the version has it as a header or a line of its message, · the version does not have it".into()
-        }
-        Action::InterView(InterLayout::Sides) => {
-            "draw every interdiff side by side, as long as the editor is open: the old version on the left and the new one on the right, each line as its own diff draws it, the lines both have dim".into()
-        }
-        Action::InterView(InterLayout::ChangeUnified) => {
-            "draw, as long as the editor is open, the change from the old version to the new one as a patch of its own, unified: each file as the old version leaves it on its base, then as the new one leaves it on its own, - before a line only the old version's code has, + before one only the new one's has, the lines the change of base made dim".into()
-        }
-        Action::InterView(InterLayout::ChangeSides) => {
-            "draw, as long as the editor is open, the change from the old version to the new one as a patch of its own, side by side: each file as the old version leaves it on its base on the left, as the new one leaves it on its own on the right, the lines the change of base made dim".into()
-        }
-        Action::InterView(InterLayout::ChangeCompact) => {
-            "draw, as long as the editor is open, the change from the old version to the new one as a patch of its own, side by side and compact: the old version's lines on the left and the new one's on the right, each side's one after another, with no gap where the other has more, the lines the change of base made dim".into()
-        }
-        Action::InterLines(InterLines::Every) => {
-            "draw every line, as long as the editor is open, in every view of the interdiffs: of each interdiff, the lines both versions have alike, the context lines of their diffs, their index lines and the hunk headers of both versions too; of the change, the lines the change of base made, dim".into()
-        }
-        Action::InterLines(InterLines::Changed) => {
-            "draw only what the patches changed, as long as the editor is open, in every view of the interdiffs: of each interdiff, the lines both versions have alike, the context lines of their diffs and their index lines left out, and two hunk headers that differ only in their numbers drawn once, as the new version has them; of the change, the lines the change of base made left out, and a hunk or a file with nothing else; where lines are left out, a line says how many".into()
-        }
         Action::Undo => "go back to the stack before this edit".into(),
         Action::Redo => "make that edit again".into(),
         Action::EditList => "edit the stack as `git rebase -i` does, in $EDITOR".into(),
@@ -2026,15 +2005,6 @@ impl Item {
         }
     }
 
-    /// The heading of a section of the menu, `label`, over the items of
-    /// the section: never picked.
-    fn heading(label: impl Into<String>) -> Item {
-        Item {
-            enabled: false,
-            ..Item::new(label, Action::Heading)
-        }
-    }
-
     /// What its row says: its label, then its dropdowns, which start past
     /// `pad` columns (the menu's first dropdowns in one column); and where
     /// a click picks in them: for each choice drawn, its dropdown, which
@@ -2108,7 +2078,7 @@ impl Menu {
         // An item grayed, or a choice of one: the note says why.
         let blocked = out
             .iter()
-            .any(|i| (!i.enabled && !matches!(i.action, Action::Line | Action::Heading)) || i.choices.iter().any(|c| c.list.iter().any(|ch| !ch.enabled)));
+            .any(|i| (!i.enabled && i.action != Action::Line) || i.choices.iter().any(|c| c.list.iter().any(|ch| !ch.enabled)));
         Menu {
             title: title.into(),
             sel: out.iter().position(|i| i.enabled).unwrap_or(0),
@@ -4395,7 +4365,10 @@ impl App {
             | Spot::SearchScope
             | Spot::AskLine(_)
             | Spot::AskButton(_)
-            | Spot::AskOption(_) => false,
+            | Spot::AskOption(_)
+            | Spot::ViewsLine(_)
+            | Spot::ViewsButton(_)
+            | Spot::ViewsOption(_) => false,
         }
     }
 
@@ -4509,6 +4482,35 @@ impl App {
                     }
                     Some(Spot::AskButton(b)) => {
                         (d.line, d.button) = (ask_dialog::BUTTONS_LINE, b);
+                        press(self, KeyCode::Enter)
+                    }
+                    Some(Spot::Box) => Effect::None,
+                    _ => press(self, KeyCode::Esc),
+                };
+            }
+            // The dialog of the views of the interdiffs, as the ask dialog: a
+            // click on a line opens the list of its values, as Enter there
+            // does; on a button, presses it; out of the box, Esc, which puts
+            // back what it opened on. The list open, a click on one of its
+            // values sets it, as Enter there does, and a click anywhere else
+            // closes the list alone, as Esc there does.
+            Mode::Views(d) if d.list.is_some() => {
+                return match spot {
+                    Some(Spot::ViewsOption(k)) => {
+                        d.list = Some(k);
+                        press(self, KeyCode::Enter)
+                    }
+                    _ => press(self, KeyCode::Esc),
+                };
+            }
+            Mode::Views(d) => {
+                return match spot {
+                    Some(Spot::ViewsLine(k)) => {
+                        (d.line, d.list) = (k, None);
+                        press(self, KeyCode::Enter)
+                    }
+                    Some(Spot::ViewsButton(b)) => {
+                        (d.line, d.button) = (views_dialog::BUTTONS_LINE, b);
                         press(self, KeyCode::Enter)
                     }
                     Some(Spot::Box) => Effect::None,
@@ -4648,6 +4650,19 @@ impl App {
                 }
                 _ => {}
             },
+            // The dialog of the views of the interdiffs, as the ask dialog:
+            // over a value of the list open, its cursor there; else over a
+            // line or a button, the cursor there.
+            Mode::Views(d) if d.list.is_some() => {
+                if let Spot::ViewsOption(k) = spot {
+                    d.list = Some(k);
+                }
+            }
+            Mode::Views(d) => match spot {
+                Spot::ViewsLine(k) => d.line = k,
+                Spot::ViewsButton(b) => (d.line, d.button) = (views_dialog::BUTTONS_LINE, b),
+                _ => {}
+            },
             Mode::Moving { to, .. } => {
                 if let Spot::Patch(Some(at)) = spot {
                     *to = at;
@@ -4691,7 +4706,19 @@ impl App {
 
     /// `spot` picked, as the arrows would: whether it is one to pick.
     fn pick_spot(&mut self, spot: Spot) -> bool {
-        if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::AskLine(_) | Spot::AskButton(_) | Spot::AskOption(_)) {
+        if !matches!(
+            spot,
+            Spot::Item(_)
+                | Spot::Choice(..)
+                | Spot::Box
+                | Spot::Editor
+                | Spot::AskLine(_)
+                | Spot::AskButton(_)
+                | Spot::AskOption(_)
+                | Spot::ViewsLine(_)
+                | Spot::ViewsButton(_)
+                | Spot::ViewsOption(_)
+        ) {
             let banner = matches!(spot, Spot::Banner | Spot::BannerLine(_));
             if banner && !self.on_banner {
                 self.open_banner(0);
@@ -4775,7 +4802,16 @@ impl App {
                 self.hist_focus = HistFocus::Diff;
                 self.hist_cursor = i;
             }
-            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::AskLine(_) | Spot::AskButton(_) | Spot::AskOption(_) => return false,
+            Spot::Item(_)
+            | Spot::Choice(..)
+            | Spot::Box
+            | Spot::Editor
+            | Spot::AskLine(_)
+            | Spot::AskButton(_)
+            | Spot::AskOption(_)
+            | Spot::ViewsLine(_)
+            | Spot::ViewsButton(_)
+            | Spot::ViewsOption(_) => return false,
         }
         true
     }
@@ -4839,19 +4875,6 @@ impl App {
                     self.cfg.view.split_width
                 ),
             },
-            // Side by side, on a pane too narrow for it: as interdiffs there
-            // meanwhile, the change unified.
-            Action::InterView(InterLayout::Sides) if self.inter_narrow() => format!(
-                "{}. This pane is under {} columns, too narrow for side by side: picked, its interdiffs are drawn as interdiffs until it has room",
-                about(action),
-                self.cfg.view.split_width
-            ),
-            Action::InterView(v @ (InterLayout::ChangeSides | InterLayout::ChangeCompact)) if self.inter_narrow() => format!(
-                "{}. This pane is under {} columns, too narrow for {}: picked, the change is drawn unified until it has room",
-                about(action),
-                self.cfg.view.split_width,
-                if *v == InterLayout::ChangeSides { "the change side by side" } else { "the change side by side and compact" }
-            ),
             _ => about(action),
         }
     }
@@ -5165,6 +5188,7 @@ impl App {
             Mode::Normal | Mode::Help { .. } => {}
             Mode::Menu(m) => return self.menu_key(m, k),
             Mode::Ask(d) => return self.ask_key(*d, k),
+            Mode::Views(d) => return self.views_key(*d, k),
             Mode::Preview(p) => return self.preview_key(*p, k),
             Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Lines(l) => return self.lines_key(*l, k),
@@ -5229,10 +5253,10 @@ impl App {
                 _ => {}
             }
         }
-        // 1 on the screens of interdiffs, as in the middle: the menu of their
-        // views.
+        // 1 on the screens of interdiffs, as in the middle: the dialog of
+        // their views.
         if k.code == KeyCode::Char('1') && self.inter_screen() {
-            self.mode = Mode::Menu(self.inter_menu());
+            self.open_views();
             return Effect::None;
         }
         // 3 there, drawing the change as a patch of its own, as in the
@@ -6484,6 +6508,7 @@ impl App {
                 return out;
             }
             Mode::Ask(d) => return self.ask_help(d),
+            Mode::Views(d) => return self.views_help(d),
             Mode::Moving { to, .. } => {
                 out.push(format!("Press Enter to put {} there, at {}.", self.patch_title(), to + 1));
                 out.push("Press ↑↓ to place it elsewhere, Esc to leave it where it was.".into());
@@ -8114,7 +8139,7 @@ impl App {
             return Effect::None;
         }
         match action {
-            Action::Line | Action::Heading | Action::Cancel | Action::Said => {}
+            Action::Line | Action::Cancel | Action::Said => {}
             Action::NewStack => {
                 let mut items = Vec::new();
                 self.new_stack_items(&mut items);
@@ -8699,8 +8724,6 @@ impl App {
             Action::WhatChanged(rev) => {
                 let _ = self.open_inter(Inter::Changed(rev));
             }
-            Action::InterView(v) => self.pick_inter(v),
-            Action::InterLines(l) => self.pick_lines(l),
             Action::History => self.open_list(Screen::History),
             Action::Versions => {
                 if let Some(id) = self.patch_id() {
@@ -10827,6 +10850,7 @@ impl App {
         self.draw_bar(buf, area);
         self.draw_menu(buf, body);
         self.draw_ask(buf, body);
+        self.draw_views(buf, body);
         self.draw_help(buf, body);
         self.draw_ref_preview(buf, body);
         let cursor = self.draw_lines(buf, body).or(cursor);
@@ -11171,6 +11195,7 @@ impl App {
                 _ => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
             },
             Mode::Ask(d) => App::ask_hint(d),
+            Mode::Views(d) => App::views_hint(d),
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
             Mode::MovingHead { .. } => "↑↓ to place HEAD · enter: move your checkout there · esc: leave it where it was".into(),
             // What was closed here, taller than its box: ↑↓ scroll it. Whole
@@ -11367,11 +11392,6 @@ impl App {
         for (r, (i, item)) in m.items.iter().enumerate().skip(m.top).take(rows).enumerate() {
             if item.action == Action::Line {
                 put(buf, area, x + 1, y + 1 + r, bw - 2, &"─".repeat(bw - 2), color::meta());
-                continue;
-            }
-            // A section's heading: as a box's title is, no item to click.
-            if item.action == Action::Heading {
-                put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {}", item.label), bw - 2), color::file());
                 continue;
             }
             spot_in(&self.spots, area, (x + 1, y + 1 + r, bw - 2, 1), Spot::Item(i));

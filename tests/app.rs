@@ -380,7 +380,7 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_wind
 }
 
 #[test]
-fn one_picks_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_window_too() {
+fn one_sets_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_window_too() {
     let (tmp, db) = setup();
     stacked::db::Db::edit(&db, |d| {
         let old = d.patch(&d.stack("s")?.patches[0]).clone();
@@ -397,20 +397,29 @@ fn one_picks_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_
     let (x, y) = find(&menu, "Versions of this patch…").unwrap();
     s.send(Input::Click { x, y, right: false });
     screen(&s, "the versions", |b| text(b).contains("what changed from the version before"));
-    // 1, then a click on the change unified: the change from v1 to v2 as a
-    // patch of its own, its files read away from the screen.
+    // 1, the dialog of the views of the interdiffs; a click on what is
+    // compared opens its list, and a click on the code there sets it: the
+    // change from v1 to v2 as a patch of its own at once, its files read
+    // away from the screen. Done keeps it.
     press(&s, KeyCode::Char('1'));
-    let menu = screen(&s, "the menu of 1", |b| find(b, "Unified: - for a line only").is_some());
-    assert!(find(&menu, "the change: each file from the old version to the new one").is_some(), "{}", text(&menu));
-    let (x, y) = find(&menu, "Unified: - for a line only").unwrap();
+    let line = "Compare: [ the two diffs ]";
+    let dialog = screen(&s, "the dialog of 1", |b| find(b, line).is_some());
+    assert!(find(&dialog, "View: [ interdiff ]").is_some(), "{}", text(&dialog));
+    let (x, y) = find(&dialog, line).unwrap();
     s.send(Input::Click { x, y, right: false });
+    let list = screen(&s, "the list of what is compared", |b| find(b, "│ the code ").is_some());
+    let (x, y) = find(&list, "│ the code ").unwrap();
+    s.send(Input::Click { x: x + 2, y, right: false });
+    screen(&s, "the code set", |b| find(b, "Compare: [ the code ]").is_some());
+    press(&s, KeyCode::End);
+    press(&s, KeyCode::Enter);
     screen(&s, "the change", |b| text(b).contains("The code is the change from v1 to v2") && text(b).lines().any(|l| l.trim_end().ends_with("+Two") && !l.contains("++Two")));
     s.send(Input::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
     until(&s, "bye", |o| *o == Output::Bye);
 }
 
 #[test]
-fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_window_too() {
+fn one_sets_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_window_too() {
     let (tmp, db) = setup();
     stacked::db::Db::edit(&db, |d| {
         let old = d.patch(&d.stack("s")?.patches[0]).clone();
@@ -431,21 +440,26 @@ fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_window_too(
     let (x, y) = find(&menu, "Versions of this patch…").unwrap();
     s.send(Input::Click { x, y, right: false });
     screen(&s, "the versions", |b| text(b).contains("what changed from the version before"));
-    // 1: the menu of the views of the interdiffs, under the heading of what
-    // they draw; a click on side by side picks it, the version's pane then
-    // side by side, each half under a heading of its version.
+    // 1: the dialog of the views of the interdiffs; a click on the view
+    // opens its list, and a click on side by side there sets it, the
+    // version's pane side by side at once, each half under a heading of its
+    // version.
     press(&s, KeyCode::Char('1'));
-    let menu = screen(&s, "the menu of 1", |b| find(b, "Side by side: the old version").is_some());
-    assert!(find(&menu, "the interdiff: the two versions' diffs, compared").is_some(), "{}", text(&menu));
-    let (x, y) = find(&menu, "Side by side: the old version").unwrap();
+    let line = "View: [ interdiff ]";
+    let dialog = screen(&s, "the dialog of 1", |b| find(b, line).is_some());
+    assert!(find(&dialog, "Compare: [ the two diffs ]").is_some(), "{}", text(&dialog));
+    let (x, y) = find(&dialog, line).unwrap();
     s.send(Input::Click { x, y, right: false });
+    let list = screen(&s, "the list of the views", |b| find(b, "│ side by side ").is_some());
+    let (x, y) = find(&list, "│ side by side ").unwrap();
+    s.send(Input::Click { x: x + 2, y, right: false });
     screen(&s, "the versions side by side", |b| text(b).contains("│v2"));
     s.send(Input::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
     until(&s, "bye", |o| *o == Output::Bye);
 }
 
 #[test]
-fn one_picks_only_what_the_patches_changed_of_a_patch_s_versions_in_the_window_too() {
+fn one_sets_only_what_the_patches_changed_of_a_patch_s_versions_in_the_window_too() {
     let (tmp, db) = setup();
     stacked::db::Db::edit(&db, |d| {
         let old = d.patch(&d.stack("s")?.patches[0]).clone();
@@ -462,15 +476,21 @@ fn one_picks_only_what_the_patches_changed_of_a_patch_s_versions_in_the_window_t
     let (x, y) = find(&menu, "Versions of this patch…").unwrap();
     s.send(Input::Click { x, y, right: false });
     screen(&s, "the versions", |b| text(b).contains("what changed from the version before"));
-    // 1, then a click on only what the patches changed: the version's pane
-    // drawn without the lines the two versions have alike, each place they
-    // were saying how many.
+    // 1, the dialog of the views of the interdiffs; a click on the lines
+    // opens their list, and a click on only what changed there sets it:
+    // the version's pane drawn at once without the lines the two versions
+    // have alike, each place they were saying how many. Done keeps it.
     press(&s, KeyCode::Char('1'));
-    let item = "Only what the patches changed: no context";
-    let menu = screen(&s, "the menu of 1", |b| find(b, item).is_some());
-    assert!(find(&menu, "the lines: in each view, every line or only what the patches changed").is_some(), "{}", text(&menu));
-    let (x, y) = find(&menu, item).unwrap();
+    let line = "Lines: [ every line ]";
+    let dialog = screen(&s, "the dialog of 1", |b| find(b, line).is_some());
+    let (x, y) = find(&dialog, line).unwrap();
     s.send(Input::Click { x, y, right: false });
+    let list = screen(&s, "the list of the lines", |b| find(b, "│ only what changed ").is_some());
+    let (x, y) = find(&list, "│ only what changed ").unwrap();
+    s.send(Input::Click { x: x + 2, y, right: false });
+    screen(&s, "the lines set", |b| find(b, "Lines: [ only what changed ]").is_some());
+    press(&s, KeyCode::End);
+    press(&s, KeyCode::Enter);
     screen(&s, "only what changed", |b| text(b).contains("lines are left out here.") && text(b).lines().any(|l| l.trim_end().ends_with("++Two")));
     s.send(Input::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
     until(&s, "bye", |o| *o == Output::Bye);

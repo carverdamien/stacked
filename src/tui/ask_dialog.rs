@@ -353,17 +353,29 @@ impl AskDialog {
         let Some(at) = self.list else { return };
         let n = self.options(self.line).len().max(1);
         match code {
-            KeyCode::Down => self.list = Some((at + 1) % n),
-            KeyCode::Up => self.list = Some((at + n - 1) % n),
-            KeyCode::Home => self.list = Some(0),
-            KeyCode::End => self.list = Some(n - 1),
             KeyCode::Enter => {
                 self.set_to(self.line, at);
                 self.list = None;
             }
             KeyCode::Esc => self.list = None,
-            _ => {}
+            code => self.list = Some(list_moved(at, n, code).unwrap_or(at)),
         }
+    }
+}
+
+/// Where the cursor of a dialog's list of `n` options, on the one at `at`,
+/// goes under key `code`, as in a menu: ↑↓ to the one before or after, round
+/// past either end, Home and End to the first and the last. None for any
+/// other key. The ask dialog's lists, and those of the dialog of the views
+/// of the interdiffs, go so.
+pub(super) fn list_moved(at: usize, n: usize, code: KeyCode) -> Option<usize> {
+    let n = n.max(1);
+    match code {
+        KeyCode::Down => Some((at + 1) % n),
+        KeyCode::Up => Some((at + n - 1) % n),
+        KeyCode::Home => Some(0),
+        KeyCode::End => Some(n - 1),
+        _ => None,
     }
 }
 
@@ -379,7 +391,7 @@ fn and_list(labels: &[&str]) -> String {
 
 /// `labels`, one to pick, the last after `or`: `answer only, change patch
 /// or change stack`; one alone, `answer only, the only one here`.
-fn one_of(labels: &[&str]) -> String {
+pub(super) fn one_of(labels: &[&str]) -> String {
     match labels.split_last() {
         None => String::new(),
         Some((last, [])) => format!("{last}, the only one here"),
@@ -1047,20 +1059,9 @@ impl App {
                 // The buttons, each a spot of its own: grayed, dim; the one
                 // the cursor is on, on the buttons' line, under the cursor.
                 None => {
-                    let mut bx = x + 2;
-                    for b in d.buttons().iter().copied() {
-                        let drawn = d.drawn(b);
-                        let len = drawn.chars().count();
-                        let mut st = if on[b.at()] { Style::new() } else { color::dim() };
-                        if d.line == BUTTONS_LINE && d.button == b {
-                            st = on_cursor(st);
-                        }
-                        if bx + len < x + bw - 1 {
-                            put(buf, area, bx, r, len, &drawn, st);
-                            spot_in(&self.spots, area, (bx, r, len, 1), Spot::AskButton(b));
-                        }
-                        bx += len + 3;
-                    }
+                    let list = d.buttons();
+                    let buttons: Vec<(String, bool, bool)> = list.iter().map(|&b| (d.drawn(b), on[b.at()], d.line == BUTTONS_LINE && d.button == b)).collect();
+                    self.draw_buttons(buf, area, (x, r, bw), &buttons, |k| Spot::AskButton(list[k]));
                 }
             }
         }
@@ -1080,16 +1081,67 @@ impl App {
         if k + 2 >= bh {
             return;
         }
-        let options = d.options(d.line);
-        let lw = options.iter().map(|o| o.chars().count()).max().unwrap_or(0) + 4;
+        let options: Vec<(&str, bool)> = d.options(d.line).into_iter().map(|o| (o, true)).collect();
+        self.draw_options(buf, area, (x + 2 + col, area.y + (y + 1 + k) as u16), &options, at, Spot::AskOption);
+    }
+
+    /// A dialog's buttons, on row `r` of `area` in its box at `x`, `bw`
+    /// wide: each as it is drawn (`< Ask Now >`), whether it can be pressed,
+    /// and whether the cursor is on it, from the left, three columns apart;
+    /// one that cannot be pressed dim, the cursor's under the cursor, each a
+    /// spot of its own (`spot`, by its place), those the box has no room for
+    /// left out.
+    pub(super) fn draw_buttons(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        (x, r, bw): (usize, usize, usize),
+        buttons: &[(String, bool, bool)],
+        spot: impl Fn(usize) -> Spot,
+    ) {
+        let mut bx = x + 2;
+        for (k, (drawn, on, cursor)) in buttons.iter().enumerate() {
+            let len = drawn.chars().count();
+            let mut st = if *on { Style::new() } else { color::dim() };
+            if *cursor {
+                st = on_cursor(st);
+            }
+            if bx + len < x + bw - 1 {
+                put(buf, area, bx, r, len, drawn, st);
+                spot_in(&self.spots, area, (bx, r, len, 1), spot(k));
+            }
+            bx += len + 3;
+        }
+    }
+
+    /// The list of the options of a dialog's line, open: just under the
+    /// line, row `line` of the screen, from column `col` of `area`, over
+    /// the dialog and past its edge if need be; above the line where the
+    /// area has no room under it. Framed as a menu is, the option its cursor
+    /// is on, `at`, under the cursor; one that cannot be set dim; each a spot
+    /// of its own (`spot`, by its place), which a click picks.
+    pub(super) fn draw_options(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        (col, line): (usize, u16),
+        options: &[(&str, bool)],
+        at: usize,
+        spot: impl Fn(usize) -> Spot,
+    ) {
+        let (w, h) = (area.width as usize, area.height as usize);
+        let lw = options.iter().map(|(o, _)| o.chars().count()).max().unwrap_or(0) + 4;
         let lh = options.len() + 2;
-        let lx = (x + 2 + col).min(w.saturating_sub(lw));
-        let ly = next_to(area.y + (y + 1 + k) as u16, area.y, lh, h);
+        let lx = col.min(w.saturating_sub(lw));
+        let ly = next_to(line, area.y, lh, h);
         window(buf, area, lx, ly, lw, lh, "", color::meta());
-        for (j, option) in options.iter().enumerate() {
-            let st = if j == at { on_cursor(Style::new()) } else { Style::new() };
+        for (j, (option, on)) in options.iter().enumerate() {
+            let mut st = if *on { Style::new() } else { color::dim() };
+            if j == at {
+                st = on_cursor(st);
+            }
             put(buf, area, lx + 1, ly + 1 + j, lw - 2, &fit(&format!(" {option}"), lw - 2), st);
-            spot_in(&self.spots, area, (lx + 1, ly + 1 + j, lw - 2, 1), Spot::AskOption(j));
+            spot_in(&self.spots, area, (lx + 1, ly + 1 + j, lw - 2, 1), spot(j));
         }
     }
 }

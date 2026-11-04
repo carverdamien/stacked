@@ -7,7 +7,7 @@ every comment and every run; the editor shows them where they belong:
   one being edited marked; enter edits from another. Beside each, its
   patches and what its edit changed; Space, `What this edit changed…` in
   full: its stack diff (below), from the stack it was edited from, on a
-  screen of its own, its interdiffs in the view `1` picks there, every
+  screen of its own, its interdiffs in the view `1` sets there, every
   line or only what the patches changed (The editor, above), or each
   patch's change from the stack it was edited
   from to the one it made, as a patch of its own, the two stacks named
@@ -112,7 +112,7 @@ every comment and every run; the editor shows them where they belong:
   place: what the views of the interdiffs draw (The editor, above).
 - `Versions of this patch…`, on a patch: every version, oldest first, each
   with the edit that first had it; beside it what changed from the version
-  before, in the view of the interdiffs `1` picks there, every line or
+  before, in the view of the interdiffs `1` sets there, every line or
   only what the patches changed (The editor, above), the two versions
   named as the list names them (`v2`, `v3`): the
   interdiff, or the change from the one to the other as a patch of its
