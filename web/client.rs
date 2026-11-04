@@ -12,19 +12,26 @@
 //! banner while it is not what you look at; `b`, the bell, once for what the
 //! editor learned at once, after its notices, or alone when they are not
 //! sent, for the page to ring while it is not what you look at, whether it
-//! shows the banners or not; `e PROGRAM`, `$EDITOR` running
-//! PROGRAM, for the page to say over its screen until the next screen
-//! comes; `v BUILD LAUNCH KEPT`, first each time the page asks for the
-//! lines, which stacked sends them: the build of the page and its wasm
-//! (BUILD), for a page loaded from another build to load this one's, the
-//! launch of stacked (LAUNCH), which the page says again as it asks for the
-//! lines once it lost them, and whether that launch keeps its address for
-//! the next (KEPT, 1, else 0), which the page may come back to. A page of an
-//! older stacked does nothing with a line it does not know, such as a
-//! notice.
+//! shows the banners or not; `e PROGRAM`, `$EDITOR` running PROGRAM where
+//! `stacked web` was started, or in a window of its own, for the page to
+//! say over its screen until the next screen comes; `t`, after a screen's
+//! size, the screen that comes the editor's own, run in the page in a
+//! terminal of stacked web's, until the next screen's size, which says it
+//! is stacked's own again; `v BUILD LAUNCH KEPT`, first each time the page
+//! asks for the lines, which stacked sends them: the build of the page and
+//! its wasm (BUILD), for a page loaded from another build to load this
+//! one's, the launch of stacked (LAUNCH), which the page says again as it
+//! asks for the lines once it lost them, and whether that launch keeps its
+//! address for the next (KEPT, 1, else 0), which the page may come back to.
+//! A page of an older stacked does nothing with a line it does not know,
+//! such as a notice.
 //!
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
-//! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
+//! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`, F1
+//! to F12 and Insert among them while the screen is the editor's own, as
+//! all else the page has but what goes with ⌘, which stays the browser's;
+//! `p HEX`, text pasted while the screen is the editor's, its UTF-8 in hex,
+//! as it is, for the editor (else a paste is the keys that type it);
 //! `m X Y l|r`, a click on a cell, with the left or the right button, said
 //! as the button is pressed; `u X Y`, the left button let go over a cell
 //! (`u` over none); `w X Y N`, the wheel turned N lines over a cell, down,
@@ -68,7 +75,7 @@ const PIXELS: u32 = 0;
 /// the next lines what `notice` makes of it; `editing`, and on the next
 /// lines what to say over the screen (`editing`); `version` and what it
 /// keeps of the stacked serving it (`version`); `bell`, for `b` alone;
-/// else nothing.
+/// `terminal`, for `t` alone; else nothing.
 pub fn screen(msg: &str) -> String {
     if let Some(n) = msg.strip_prefix("n ") {
         return notice(n);
@@ -85,6 +92,7 @@ pub fn screen(msg: &str) -> String {
         (Some("r"), Some(y), runs) => format!("row {y}\n{}", row_html(runs.unwrap_or(""))),
         (Some("bye"), ..) => "bye".into(),
         (Some("b"), None, _) => "bell".into(),
+        (Some("t"), None, _) => "terminal".into(),
         _ => String::new(),
     }
 }
@@ -200,10 +208,17 @@ pub fn row_html(runs: &str) -> String {
 
 /// A key the page was pressed, as the browser names it, made a line for
 /// the server; none for those not the editor's (with ⌘, the browser's own:
-/// copy, paste, its tabs).
-pub fn key(key: &str, ctrl: bool, alt: bool, shift: bool, meta: bool) -> String {
+/// copy, paste, its tabs). While the screen is the editor's own, run in the
+/// page (`terminal`), F1 to F12 and Insert are the editor's too, which are
+/// otherwise the browser's.
+pub fn key(key: &str, ctrl: bool, alt: bool, shift: bool, meta: bool, terminal: bool) -> String {
     if meta {
         return String::new();
+    }
+    let function = key.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=12).contains(&n));
+    if terminal && (function || key == "Insert") {
+        let m: String = [(ctrl, 'c'), (alt, 'a'), (shift, 's')].iter().filter(|(on, _)| *on).map(|(_, m)| *m).collect();
+        return format!("k {key} {}", if m.is_empty() { "-" } else { &m });
     }
     let mods = |shift: bool| -> String {
         let m: String = [(ctrl, 'c'), (alt, 'a'), (shift, 's')].iter().filter(|(on, _)| *on).map(|(_, m)| *m).collect();
@@ -392,6 +407,17 @@ pub fn paste(text: &str) -> String {
         .join("\n")
 }
 
+/// Text pasted while the screen is the editor's own, run in the page, made
+/// the line that gives it the editor as it is, for the server to bracket
+/// it if the editor asks: `p HEX`, its UTF-8 in hex. None for no text.
+pub fn pasted(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let hex: String = text.bytes().map(|b| format!("{b:02x}")).collect();
+    format!("p {hex}")
+}
+
 /// What the page calls: each takes its text where `alloc` made room for it,
 /// and answers with the length of what it made, at `out`.
 #[cfg(target_arch = "wasm32")]
@@ -432,8 +458,8 @@ mod wasm {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn key(p: *mut u8, n: usize, ctrl: u32, alt: u32, shift: u32, meta: u32) -> usize {
-        give(super::key(&text(p, n), ctrl != 0, alt != 0, shift != 0, meta != 0))
+    pub extern "C" fn key(p: *mut u8, n: usize, ctrl: u32, alt: u32, shift: u32, meta: u32, terminal: u32) -> usize {
+        give(super::key(&text(p, n), ctrl != 0, alt != 0, shift != 0, meta != 0, terminal != 0))
     }
 
     #[unsafe(no_mangle)]
@@ -487,6 +513,11 @@ mod wasm {
     pub extern "C" fn paste(p: *mut u8, n: usize) -> usize {
         give(super::paste(&text(p, n)))
     }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn pasted(p: *mut u8, n: usize) -> usize {
+        give(super::pasted(&text(p, n)))
+    }
 }
 
 #[cfg(test)]
@@ -537,6 +568,17 @@ mod tests {
     }
 
     #[test]
+    fn the_editor_s_own_screen_is_said_by_a_line_of_its_own_after_its_size() {
+        // `t` alone: the screen that comes is the editor's, run in the page;
+        // the next size says it is stacked's again.
+        assert_eq!(screen("t"), "terminal");
+        assert_eq!(screen("s 80 24"), "size 80 24");
+        assert_eq!(screen("t 1"), "");
+        assert_eq!(screen("t "), "");
+        assert_eq!(screen("tt"), "");
+    }
+
+    #[test]
     fn the_editor_running_is_said_over_the_screen_by_the_program_it_runs() {
         assert_eq!(
             screen("e vim"),
@@ -567,15 +609,27 @@ mod tests {
 
     #[test]
     fn keys_clicks_wheel_and_pastes_are_lines_for_the_server() {
-        assert_eq!(key("Enter", false, false, false, false), "k Enter -");
-        assert_eq!(key("ArrowDown", false, false, true, false), "k Down s");
-        assert_eq!(key("Tab", false, false, true, false), "k BackTab -");
-        assert_eq!(key("?", false, false, true, false), "k c 3f -", "shifted already");
-        assert_eq!(key("c", true, false, false, false), "k c 63 c");
-        assert_eq!(key(" ", false, false, false, false), "k c 20 -");
-        assert_eq!(key("é", false, true, false, false), "k c e9 a");
-        assert_eq!(key("v", false, false, false, true), "", "⌘V, the browser's");
-        assert_eq!(key("Shift", false, false, true, false), "");
+        assert_eq!(key("Enter", false, false, false, false, false), "k Enter -");
+        assert_eq!(key("ArrowDown", false, false, true, false, false), "k Down s");
+        assert_eq!(key("Tab", false, false, true, false, false), "k BackTab -");
+        assert_eq!(key("?", false, false, true, false, false), "k c 3f -", "shifted already");
+        assert_eq!(key("c", true, false, false, false, false), "k c 63 c");
+        assert_eq!(key(" ", false, false, false, false, false), "k c 20 -");
+        assert_eq!(key("é", false, true, false, false, false), "k c e9 a");
+        assert_eq!(key("v", false, false, false, true, false), "", "⌘V, the browser's");
+        assert_eq!(key("Shift", false, false, true, false, false), "");
+        // F1 to F12 and Insert: the browser's, but while the screen is the
+        // editor's own, run in the page; ⌘ the browser's all the same.
+        assert_eq!(key("F5", false, false, false, false, false), "", "the browser's: it loads the page again");
+        assert_eq!(key("Insert", false, false, false, false, false), "");
+        assert_eq!(key("F5", false, false, false, false, true), "k F5 -");
+        assert_eq!(key("F12", true, false, true, false, true), "k F12 cs");
+        assert_eq!(key("F1", false, true, false, false, true), "k F1 a");
+        assert_eq!(key("Insert", false, false, true, false, true), "k Insert s");
+        assert_eq!(key("F13", false, false, false, false, true), "");
+        assert_eq!(key("F5", false, false, false, true, true), "", "⌘ the browser's");
+        assert_eq!(key("ArrowUp", true, false, false, false, true), "k Up c", "the others as ever");
+        assert_eq!(key("c", true, false, false, false, true), "k c 63 c", "ctrl-c the editor's");
         let mut mouse = Mouse::default();
         assert_eq!(click(&mut mouse, 17.0, 41.0, 8.0, 20.0, false), "m 2 2 l");
         assert_eq!(click(&mut mouse, 0.0, 0.0, 8.0, 20.0, true), "m 0 0 r");
@@ -597,6 +651,11 @@ mod tests {
         assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -39.0, PIXELS), "", "short of a notch again");
         assert_eq!(wheel(&mut turned, 5.0, 5.0, 0.0, 20.0, 119.0, PIXELS), "w 2", "over no cell");
         assert_eq!(paste("a\r\nb\t"), "k c 61 -\nk Enter -\nk c 62 -\nk c 20 -");
+        // While the screen is the editor's own: the text as it is, its
+        // UTF-8 in hex, for the server to bracket it.
+        assert_eq!(pasted("a\r\nb\t"), "p 610d0a6209");
+        assert_eq!(pasted("日"), "p e697a5");
+        assert_eq!(pasted(""), "");
     }
 
     #[test]

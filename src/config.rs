@@ -591,6 +591,40 @@ fn port_of(v: &toml::Value) -> Option<u16> {
 /// What `web.port` is told it is not, when it names no port.
 const NOT_A_PORT: &str = "\"random\", \"fixed-random\" or a port from 1 to 65535";
 
+/// Where `stacked web` runs a terminal editor: in the page itself, in a
+/// terminal of stacked web's own, which the page shows and sends its keys
+/// to (`Page`, unless set); or in the terminal `stacked web` was started
+/// from, the page saying so meanwhile (`Terminal`). An editor with a window
+/// of its own (`own_window`) opens that window either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WebEditor {
+    #[default]
+    Page,
+    Terminal,
+}
+
+impl WebEditor {
+    /// As the file and `stacked config` say it: `page` or `terminal`.
+    pub fn name(self) -> &'static str {
+        match self {
+            WebEditor::Page => "page",
+            WebEditor::Terminal => "terminal",
+        }
+    }
+
+    /// The place `s` names, as the file and `stacked config` say it.
+    fn parse(s: &str) -> Option<WebEditor> {
+        match s {
+            "page" => Some(WebEditor::Page),
+            "terminal" => Some(WebEditor::Terminal),
+            _ => None,
+        }
+    }
+}
+
+/// What `web.editor` is told it is not, when it names no place.
+const NOT_A_WEB_EDITOR: &str = "\"page\" or \"terminal\"";
+
 /// `stacked web`: settings of the settings' file alone, never read from a
 /// checkout's own, as `"fixed-random"` keeps its port there, for every
 /// checkout.
@@ -612,6 +646,9 @@ pub struct Web {
     /// are; false, none rings. With neither this nor `notifications`, the
     /// editor keeps no notice.
     pub bell: bool,
+    /// Where a terminal editor runs: in the page, unless set; or in the
+    /// terminal `stacked web` was started from.
+    pub editor: WebEditor,
 }
 
 impl Default for Web {
@@ -621,6 +658,7 @@ impl Default for Web {
             kept_port: None,
             notifications: true,
             bell: true,
+            editor: WebEditor::default(),
         }
     }
 }
@@ -693,6 +731,7 @@ struct WrittenWeb {
     kept_port: Option<toml::Value>,
     notifications: Option<toml::Value>,
     bell: Option<toml::Value>,
+    editor: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -798,6 +837,18 @@ pub fn expand(p: &str) -> PathBuf {
 /// page name while it runs.
 pub fn program(editor: &str) -> String {
     editor.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()
+}
+
+/// Whether `editor` opens a window of its own, rather than running in a
+/// terminal, by the program its command runs: run as it is, StackED opened
+/// as an app too (`bundle`), and never in `stacked web`'s page.
+pub fn own_window(editor: &str) -> bool {
+    matches!(
+        program(editor).as_str(),
+        "code" | "code-insiders" | "codium" | "cursor" | "zed" | "zeditor" | "subl" | "sublime_text" | "mate" | "bbedit"
+            | "gvim" | "mvim" | "nova" | "idea" | "open" | "gedit" | "gnome-text-editor" | "kate" | "kwrite" | "mousepad"
+            | "pluma" | "xed" | "geany"
+    )
 }
 
 impl Config {
@@ -1013,6 +1064,12 @@ impl Config {
             match v {
                 toml::Value::Boolean(on) => c.web.bell = on,
                 v => wrong.push(format!("web.bell: {v} is not true or false")),
+            }
+        }
+        if let Some(v) = w.web.editor {
+            match v.as_str().and_then(WebEditor::parse) {
+                Some(e) => c.web.editor = e,
+                None => wrong.push(format!("web.editor: {v} is not {NOT_A_WEB_EDITOR}")),
             }
         }
         if let Some(command) = w.lint.command {
@@ -1329,6 +1386,14 @@ impl Config {
                  # only after the page's first click or key: a browser lets a page make sound only then.\n",
             );
             out.push_str(&format!("bell = {}\n", self.web.bell));
+            out.push_str(
+                "# Where a terminal editor runs, the one named at the top of this file, else $VISUAL,\n\
+                 # $EDITOR or vi: \"page\", in the page itself, in a terminal of stacked web's own, which\n\
+                 # the page shows and sends its keys to, but those with ⌘, which stay the browser's; or\n\
+                 # \"terminal\", in the terminal stacked web was started from, the page saying so meanwhile.\n\
+                 # An editor with a window of its own, such as code or zed, opens that window either way.\n",
+            );
+            out.push_str(&format!("editor = {}\n", toml::Value::String(self.web.editor.name().into())));
         }
         // A checkout's own setting alone: said, never written as one, so
         // that this, kept as the settings' file, sets no linter there.
@@ -1404,6 +1469,8 @@ enum Kind {
     Port,
     /// A port, from 1 to 65535.
     PortNumber,
+    /// Where `stacked web` runs a terminal editor: page or terminal.
+    WebEditor,
 }
 
 /// Every setting there is, as the file names it, and what it holds; the
@@ -1450,6 +1517,7 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("web.kept_port", Kind::PortNumber),
     ("web.notifications", Kind::Flag),
     ("web.bell", Kind::Flag),
+    ("web.editor", Kind::WebEditor),
     ("lint.command", Kind::Text),
     ("demo.seen", Kind::Flag),
 ];
@@ -1529,6 +1597,10 @@ fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
             Some(p) => p.to_string(),
             None => return Err(format!("{key} is a port from 1 to 65535, not {:?}", values[0])),
         },
+        Kind::WebEditor => match WebEditor::parse(one()?) {
+            Some(e) => toml::Value::String(e.name().into()).to_string(),
+            None => return Err(format!("{key} is {NOT_A_WEB_EDITOR}, not {:?}", values[0])),
+        },
         Kind::Color => {
             let v = one()?;
             parse_color(v).map_err(|e| format!("{key}: {e}"))?;
@@ -1588,6 +1660,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "web.kept_port" => c.web.kept_port.iter().map(|p| p.to_string()).collect(),
         "web.notifications" => vec![c.web.notifications.to_string()],
         "web.bell" => vec![c.web.bell.to_string()],
+        "web.editor" => vec![c.web.editor.name().into()],
         "lint.command" => opt(&c.lint.command),
         "demo.seen" => vec![c.demo.seen.to_string()],
         k if k.starts_with("colors.") => match Paint::named(&k["colors.".len()..]) {
@@ -2163,6 +2236,11 @@ mod tests {
         assert_eq!(program(" hx "), "hx");
         assert_eq!(program("vim"), "vim");
         assert_eq!(program(""), "");
+        // Those with a window of their own, by that program: run as they
+        // are, never in a terminal, nor in `stacked web`'s page.
+        assert!(own_window("code --wait") && own_window("/opt/homebrew/bin/zed --wait") && own_window("open -W -n -a TextEdit"));
+        assert!(own_window("gedit --wait") && own_window("/usr/bin/kate -b"));
+        assert!(!own_window("hx") && !own_window("/usr/bin/vim -p") && !own_window(""));
     }
 
     #[test]
@@ -2892,6 +2970,50 @@ mod tests {
     }
 
     #[test]
+    fn stacked_web_s_editor_runs_in_the_page_unless_set_to_the_terminal_and_any_other_value_is_said() {
+        // In the page unless set.
+        let d = Config::default();
+        assert_eq!(d.web.editor, WebEditor::Page);
+        assert_eq!(value_of(&d, "web.editor"), Ok(vec!["page".to_string()]));
+        for (written, e) in [("\"page\"", WebEditor::Page), ("\"terminal\"", WebEditor::Terminal)] {
+            let (c, wrong) = Config::parse(&format!("editor = \"vim\"\n[web]\neditor = {written}\n")).unwrap();
+            assert!(wrong.is_empty(), "{written}: {wrong:?}");
+            assert_eq!((c.web.editor, c.editor.as_deref()), (e, Some("vim")), "{written}");
+        }
+        // Any other value, of any kind: said, and in the page all the same,
+        // the rest of the file read.
+        for written in ["\"window\"", "\"Terminal\"", "true", "[\"page\"]"] {
+            let (c, wrong) = Config::parse(&format!("editor = \"hx\"\n[web]\neditor = {written}\n")).unwrap();
+            assert_eq!((c.web.editor, c.editor.as_deref()), (WebEditor::Page, Some("hx")), "{written}");
+            assert_eq!(wrong, [format!("web.editor: {written} is not \"page\" or \"terminal\"")]);
+        }
+        // Written as any setting is, beside the bell, the rest of the file as
+        // it was; any other value refused, the file as it was.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let read = || std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, "# mine\neditor = \"vim\"\n[web]\nbell = false\n").unwrap();
+        set(&path, "web.editor", &["terminal".to_string()]).unwrap();
+        assert_eq!(read(), "# mine\neditor = \"vim\"\n[web]\nbell = false\neditor = \"terminal\"\n");
+        assert_eq!(set(&path, "web.editor", &["window".to_string()]), Err("web.editor is \"page\" or \"terminal\", not \"window\"".to_string()));
+        assert_eq!(read(), "# mine\neditor = \"vim\"\n[web]\nbell = false\neditor = \"terminal\"\n");
+        let (c, wrong) = Config::load(&path);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!((c.web.editor, c.editor.as_deref()), (WebEditor::Terminal, Some("vim")));
+        assert_eq!(value_of(&c, "web.editor"), Ok(vec!["terminal".to_string()]));
+        // Printed with its comment, after the bell's, built with stacked web,
+        // and read back the same.
+        let text = c.render();
+        if cfg!(feature = "web") {
+            let said = "# Where a terminal editor runs, the one named at the top of this file, else $VISUAL,\n";
+            assert!(text.contains(said) && text.contains("opens that window either way.\neditor = \"terminal\"\n"), "{text}");
+            assert!(text.find("\nbell = false\n").unwrap() < text.find(said).unwrap(), "{text}");
+            assert_eq!(Config::parse(&text), Ok((c, vec![])));
+            assert!(Config::default().render().contains("\n[web]\n") && Config::default().render().contains("either way.\neditor = \"page\"\n"));
+        }
+    }
+
+    #[test]
     fn stacked_web_s_settings_are_the_settings_file_s_alone() {
         let tmp = tempfile::tempdir().unwrap();
         let top = tmp.path().canonicalize().unwrap().join("repo");
@@ -2901,10 +3023,14 @@ mod tests {
         // A checkout's own that sets them, even wrong: as the settings' file
         // has them, each said to be passed over, the rest of it read.
         let local = top.join(".stacked/local.toml");
-        std::fs::write(&local, "editor = \"hx\"\n[web]\nport = \"sometimes\"\nkept_port = 8080\nnotifications = false\nbell = false\n").unwrap();
+        std::fs::write(
+            &local,
+            "editor = \"hx\"\n[web]\nport = \"sometimes\"\nkept_port = 8080\nnotifications = false\nbell = false\neditor = \"terminal\"\n",
+        )
+        .unwrap();
         let (c, mut wrong) = with_local(&base, &top);
         assert_eq!((&c.web, c.editor.as_deref()), (&base.web, Some("hx")));
-        assert!(c.web.notifications && c.web.bell);
+        assert!(c.web.notifications && c.web.bell && c.web.editor == WebEditor::Page);
         wrong.sort();
         let at = local.display();
         let passed = "is read only from the settings' file, never from a checkout's own .stacked/local.toml: here it is passed over";
@@ -2912,6 +3038,7 @@ mod tests {
             wrong,
             [
                 format!("{at}: web.bell {passed}"),
+                format!("{at}: web.editor {passed}"),
                 format!("{at}: web.kept_port {passed}"),
                 format!("{at}: web.notifications {passed}"),
                 format!("{at}: web.port {passed}")
@@ -2922,6 +3049,7 @@ mod tests {
         assert_eq!(set_in(&top, "web.port"), None);
         assert_eq!(set_in(&top, "web.notifications"), None);
         assert_eq!(set_in(&top, "web.bell"), None);
+        assert_eq!(set_in(&top, "web.editor"), None);
         // Neither written there, nor read from there; taken out all the same.
         let only = "web.port is read only from the settings' file, never from a checkout's own .stacked/local.toml";
         assert_eq!(set_local(&top, "web.port", &["8080".to_string()]), Err(format!("{only}: `stacked config web.port …` writes it there; nothing written")));
@@ -2934,10 +3062,18 @@ mod tests {
         let only = "web.bell is read only from the settings' file, never from a checkout's own .stacked/local.toml";
         assert_eq!(set_local(&top, "web.bell", &["true".to_string()]), Err(format!("{only}: `stacked config web.bell …` writes it there; nothing written")));
         assert_eq!(local_value(&top, "web.bell"), Err(format!("{only}: `stacked config web.bell` reads it")));
+        let only = "web.editor is read only from the settings' file, never from a checkout's own .stacked/local.toml";
+        assert_eq!(
+            set_local(&top, "web.editor", &["page".to_string()]),
+            Err(format!("{only}: `stacked config web.editor …` writes it there; nothing written"))
+        );
+        assert_eq!(local_value(&top, "web.editor"), Err(format!("{only}: `stacked config web.editor` reads it")));
         unset_local(&top, "web.port").unwrap();
         unset_local(&top, "web.kept_port").unwrap();
         unset_local(&top, "web.notifications").unwrap();
         unset_local(&top, "web.bell").unwrap();
+        unset_local(&top, "web.editor").unwrap();
+        // The editor of the top level, not `[web]`'s, kept.
         assert_eq!(std::fs::read_to_string(&local).unwrap(), "editor = \"hx\"\n[web]\n");
         assert_eq!(with_local(&base, &top).1, Vec::<String>::new());
     }

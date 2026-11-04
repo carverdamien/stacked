@@ -97,9 +97,12 @@ enum Cmd {
     /// a port the settings fix, the next launch gives the tab already open
     /// 2 seconds to come back before it opens a new one. Closing the last
     /// tab quits, unless a tab comes back within 2 seconds, as a reload
-    /// does. `stacked web` is built by default, with the `web` feature:
-    /// `--no-default-features --features app,demo,moz-phab,try-push` builds
-    /// stacked without it.
+    /// does. A terminal `$EDITOR` opens in the page, which sends it every
+    /// key but those with ⌘, unless the settings' web.editor is "terminal":
+    /// then it opens where `stacked web` was started, as an editor with a
+    /// window of its own opens that window. `stacked web` is built by
+    /// default, with the `web` feature: `--no-default-features --features
+    /// app,demo,moz-phab,try-push` builds stacked without it.
     #[cfg(feature = "web")]
     Web {
         /// The port of 127.0.0.1 to listen on this time, 0 for any free

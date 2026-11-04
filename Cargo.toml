@@ -22,8 +22,10 @@ default = ["web", "demo", "moz-phab", "app", "try-push"]
 # `stacked web`: the editor in a browser. Its browser half is built to wasm
 # by build.rs, with Rust's wasm32-unknown-unknown target
 # (`rustup target add wasm32-unknown-unknown`). Without that target, the
-# build stops and says to add it, or to build without `web`.
-web = ["dep:unicode-width"]
+# build stops and says to add it, or to build without `web`. A terminal
+# editor runs in the page, in a pseudo-terminal of stacked's own, whose
+# output vt100 makes a screen, as a terminal shows it.
+web = ["dep:unicode-width", "dep:vt100"]
 # `stacked app`: StackED, the editor in a window of its own, drawn as the
 # terminal draws it, with eframe (egui) on OpenGL, egui's menu bar in each
 # window. Its dialogs are rfd's (AppKit's on macOS; the desktop portal's
@@ -76,6 +78,7 @@ tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
 unicode-width = { version = "0.2.2", optional = true }
+vt100 = { version = "0.18.1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = { version = "0.3.1", optional = true }

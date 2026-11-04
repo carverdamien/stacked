@@ -336,7 +336,11 @@ keys.
   (`web.notifications = false` turns them off), and rings a soft bell,
   once you have clicked or typed in the page (`web.bell = false` turns it
   off).
-  `$EDITOR` opens in the terminal where you started `stacked web`.
+  A terminal `$EDITOR` opens in the page itself, in a terminal of `stacked
+  web`'s own that gets every key you type there but those with ⌘
+  (`web.editor = "terminal"` opens it in the terminal where you started
+  `stacked web` instead); an editor with a window of its own opens that
+  window.
 - **StackED**: `stacked app` opens the editor in a window of its own, with
   no terminal and no browser. Its File menu opens more databases, each in a
   window of its own, and remembers the ones opened last. `$EDITOR` opens in

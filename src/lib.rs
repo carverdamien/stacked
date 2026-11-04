@@ -48,6 +48,8 @@ pub mod panes;
 #[cfg(feature = "moz-phab")]
 pub mod phab;
 pub mod progress;
+#[cfg(feature = "web")]
+pub mod pty;
 pub mod reach;
 pub mod reading;
 pub mod reconcile;

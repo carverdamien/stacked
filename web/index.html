@@ -43,6 +43,10 @@ let w, cw = 8, ch = 16, pending = '', sending = false;
 // address for the next; and whether the editor quit since the last screen.
 let events = null, connected = false, build = '', launch = '', kept = false, quit = false;
 try { launch = sessionStorage.getItem('stacked-launch') || ''; } catch (_) {}
+// Whether the screen is the editor's own, run in the page in a terminal of
+// stacked web's (`t`), until the next screen's size: every key goes to it
+// then, F1 to F12 and Insert too, but those with ⌘, and a paste as it is.
+let terminal = false;
 // What the page says over its screen without the server.
 const said = {
   quit: 'stacked has quit.\nThis tab waits for stacked web to start again on this address, then goes on by itself.',
@@ -191,6 +195,7 @@ const heard = e => {
   // $EDITOR exits, and to a page that comes.
   if (op === 'size') {
     quit = false;
+    terminal = false;
     editing.style.display = 'none';
     gone.style.display = 'none';
     screen.replaceChildren(...Array.from({length: +b}, () => document.createElement('div')));
@@ -207,6 +212,7 @@ const heard = e => {
   }
   else if (op === 'notice') notice(...out.slice(nl + 1).split('\n'));
   else if (op === 'bell') bell();
+  else if (op === 'terminal') terminal = true;
   else if (op === 'editing') { gone.style.display = 'none'; editing.textContent = out.slice(nl + 1); editing.style.display = 'grid'; }
   // Which stacked sends the lines: one whose build is not the page's, newer
   // or older, has its own page loaded, which comes back as this one would;
@@ -255,7 +261,7 @@ WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instan
   w = instance.exports;
   connect();
   addEventListener('keydown', e => {
-    const line = call(w.key, e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+    const line = call(w.key, e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey, terminal);
     if (line) { e.preventDefault(); send(line); }
   });
   screen.addEventListener('mousedown', e => {
@@ -292,7 +298,9 @@ WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instan
     const r = screen.getBoundingClientRect();
     send(read(w.wheel(e.clientX - r.left, e.clientY - r.top, cw, ch, dy, mode)));
   });
-  addEventListener('paste', e => { e.preventDefault(); send(call(w.paste, e.clipboardData.getData('text'))); });
+  // A paste: the keys that type it, but while the screen is the editor's,
+  // its text as it is, for the server to bracket it if the editor asks.
+  addEventListener('paste', e => { e.preventDefault(); send(call(terminal ? w.pasted : w.paste, e.clipboardData.getData('text'))); });
   addEventListener('resize', () => send('s ' + size().join(' ')));
 });
 </script>

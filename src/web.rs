@@ -12,9 +12,14 @@
 //!
 //! Only this machine's pages, holding the token the browser was opened
 //! with, may see it or drive it: a page from elsewhere could otherwise send
-//! it keys. What runs `$EDITOR` runs it where `stacked web` was started; the
-//! pages are told meanwhile, and say so over their screen, and what they do
-//! meanwhile is dropped, as StackED drops what is done in its window.
+//! it keys. A terminal `$EDITOR` runs in the page, unless the settings'
+//! `[web]` say otherwise (`editor`): in a terminal of stacked web's own
+//! (`pty`), whose screen the pages are sent as the editor's own is, and
+//! whose keys, pastes and mouse are what they send (`in_page`). Else, and
+//! for an editor with a window of its own, it runs where `stacked web` was
+//! started; the pages are told meanwhile, and say so over their screen, and
+//! what they do meanwhile is dropped, as StackED drops what is done in its
+//! window.
 //!
 //! It listens on the port `--port` names, else on the one the settings'
 //! `[web]` say (`listen`). The token is new each time, but with a port the
@@ -28,10 +33,13 @@
 //! says so; once the last has, and none came back within `WAIT`, the
 //! editor is left as Quit leaves it (`all_gone`).
 
+use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -44,8 +52,9 @@ use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{Port, Web, program};
+use crate::config::{Port, Web, WebEditor, own_window, program};
 use crate::db::{Error, Result};
+use crate::pty::{Pty, Screen};
 use crate::tui::{App, Effect, Notice};
 
 const PAGE: &str = include_str!("../web/index.html");
@@ -62,17 +71,24 @@ enum Input {
     Join(usize, u16, u16, bool),
     /// A line it sent: a key, a click, its size.
     Line(String),
+    /// What the editor run in the page wrote in its terminal, by the number
+    /// of that terminal, as its reader read it: None once there is no more
+    /// (`in_page`).
+    Output(usize, Option<Vec<u8>>),
 }
 
 /// What the editor's thread shares with the threads that answer the
 /// browsers: the browsers come whose join it has not read yet, each by its
 /// number, with where it is sent the rows; the number of the next; and,
-/// from when the browsers are told that `$EDITOR` runs to when they are
-/// sent the screen after it, the line that tells them. The editor's thread
-/// reads nothing until `$EDITOR` exits: a browser that comes meanwhile is
-/// told at once, and one come just before, which the editor's thread does
-/// not know yet, is told as it starts. And what the browsers send meanwhile
-/// is dropped as it is read, but a new size (`kept_while_editing`).
+/// from when the browsers are told that `$EDITOR` runs where `stacked web`
+/// was started, or in a window of its own, to when they are sent the screen
+/// after it, the line that tells them. The editor's thread reads nothing
+/// until `$EDITOR` exits then: a browser that comes meanwhile is told at
+/// once, and one come just before, which the editor's thread does not know
+/// yet, is told as it starts. And what the browsers send meanwhile is
+/// dropped as it is read, but a new size (`kept_while_editing`). An editor
+/// run in the page is none of that: the editor's thread reads what comes
+/// as ever, for the editor (`in_page`).
 ///
 /// Under the same lock, what the threads answering the browsers learn, for
 /// the launch and the editor's thread to act on: the token a request needs,
@@ -114,8 +130,9 @@ fn lock(coming: &Mutex<Coming>) -> MutexGuard<'_, Coming> {
     coming.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Whether `line`, read from a browser while `$EDITOR` runs, is done all
-/// the same, once it exits: a new size (`s COLS ROWS`), so that the screen
+/// Whether `line`, read from a browser while `$EDITOR` runs where `stacked
+/// web` was started, or in a window of its own, is done all the same, once
+/// it exits: a new size (`s COLS ROWS`), so that the screen
 /// sent after fits the page as it is then. All else is dropped, as StackED
 /// drops what is done in its window meanwhile: keys, clicks, the wheel,
 /// drags, the mouse going over the screen or leaving it, pastes, a notice
@@ -354,6 +371,8 @@ impl Bound {
     /// opening nothing, as the tests' servers do (`start`).
     fn serving(self, path: &Path, launch: Option<bool>) -> Result<()> {
         let (tx, rx) = mpsc::channel();
+        // For the reader of an editor's terminal in the page (`in_page`).
+        let output = tx.clone();
         let Bound { listener, port, token: first, keep, kept } = self;
         let serving = Arc::new(Serving { port, launch: token(), kept: keep.is_some() });
         let waiting = kept && launch.is_some();
@@ -373,7 +392,7 @@ impl Bound {
         if let Some(open) = launch {
             welcome(&coming, port, keep, kept, open);
         }
-        run(path, rx, &coming, &answering)
+        run(path, rx, output, &coming, &answering)
     }
 }
 
@@ -486,11 +505,13 @@ fn token() -> String {
 
 /// Set by SIGINT, ctrl-c where `stacked web` was started: the editor is
 /// left as Quit leaves it, but for a ctrl-c while `$EDITOR` ran there,
-/// which was the editor's.
+/// which was the editor's. An editor run in the page, which hears none of
+/// that terminal's keys, is hung up on first (`in_page`).
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 /// Set by SIGTERM (a kill) and SIGHUP (that terminal closed): the editor is
-/// left as Quit leaves it, once back from what it does.
+/// left as Quit leaves it, once back from what it does; an editor run in
+/// the page hung up on first.
 static TERMINATED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(sig: libc::c_int) {
@@ -508,6 +529,20 @@ pub fn catch_signals() {
     for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         unsafe { libc::signal(sig, handler) };
     }
+}
+
+/// Whether `stacked web` is to go, as a ctrl-c where it was started, a kill
+/// or that terminal closing says.
+fn quitting() -> bool {
+    INTERRUPTED.load(Ordering::SeqCst) || TERMINATED.load(Ordering::SeqCst)
+}
+
+/// Said as `stacked web` quits once its last tab is gone (`all_gone`).
+fn last_tab_closed() {
+    say(&format!(
+        "the last tab of the editor was closed, and no tab came back within {} seconds, so stacked web quits",
+        WAIT.as_secs()
+    ));
 }
 
 /// The editor left, as the terminal's is once quit: the browsers told,
@@ -566,11 +601,16 @@ fn running_again() -> Notice {
 /// The editor, as the terminal runs it: what the browsers send done, its
 /// screen drawn after, the rows that changed sent them, after the notices
 /// of what it learned meanwhile and their bell, as the settings say
-/// (`told`); while `$EDITOR` runs, the browsers told so
-/// first, those `coming` holds too, what they send dropped, and sent the
-/// screen whole after; until it is left, as it is quit, or as its last page
-/// is gone (`all_gone`), once what it is `answering` is answered.
-fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Answering) -> Result<()> {
+/// (`told`); while a terminal `$EDITOR` runs in the page, its screen sent
+/// them instead, what they send its own (`in_page`), the browsers and the
+/// screen's size lent it meanwhile, and the screen sent whole after; while
+/// it runs where `stacked web` was started, or in a window of its own, the
+/// browsers told so first, those `coming` holds too, what they send
+/// dropped, and sent the screen whole after; until it is left, as it is
+/// quit, or as its last page is gone (`all_gone`), once what it is
+/// `answering` is answered. Its terminal's reader in the page writes to
+/// `output`, among what the browsers send.
+fn run(path: &Path, rx: Receiver<Input>, output: Sender<Input>, coming: &Arc<Mutex<Coming>>, answering: &Answering) -> Result<()> {
     let mut app = App::new(path)?;
     // What it learns, told the browsers, for their banners, their bell or
     // both, unless the settings say neither.
@@ -585,6 +625,9 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
     let mut size = (100, 30);
     let mut shown: Vec<String> = Vec::new();
     let mut launched = Instant::now();
+    // What the editor in the page reads and is lent while it runs.
+    let rx = Rc::new(rx);
+    let lent = Rc::new(RefCell::new(Lent::default()));
     loop {
         let first = match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(i) => Some(i),
@@ -595,16 +638,13 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
             }
         };
         // Ctrl-c, a kill, the terminal closed: left as Quit leaves it.
-        if INTERRUPTED.load(Ordering::SeqCst) || TERMINATED.load(Ordering::SeqCst) {
+        if quitting() {
             leave(&app, browsers, coming, answering);
             return Ok(());
         }
         // Its last tab closed, and none come back since: left so too.
         if all_gone(coming) {
-            say(&format!(
-                "the last tab of the editor was closed, and no tab came back within {} seconds, so stacked web quits",
-                WAIT.as_secs()
-            ));
+            last_tab_closed();
             leave(&app, browsers, coming, answering);
             return Ok(());
         }
@@ -642,15 +682,53 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
                             leave(&app, browsers, coming, answering);
                             return Ok(());
                         }
-                        // $EDITOR, where `stacked web` was started: the
-                        // browsers told first, the program it runs named,
-                        // those come whose join is not read yet among them,
-                        // as nothing is read until it exits; from then on,
-                        // what they send is dropped as it is read, until
-                        // they are sent the screen after, whole, changed or
-                        // not, which takes the place of what they say over
-                        // it, whether it ran or not. A ctrl-c there
-                        // meanwhile was the editor's.
+                        // $EDITOR, a terminal's, in the page, unless the
+                        // settings say otherwise: lent the browsers and the
+                        // screen's size while it runs (`in_page`), which it
+                        // gives back once it exited, each time it runs for
+                        // what is edited, and the browsers that came
+                        // meanwhile; those, as browsers that come, told
+                        // none of what the editor learned before. Then the
+                        // screen after, whole, sent all of them, the bottom
+                        // line saying what came of it. `stacked web` gone
+                        // meanwhile, the editor hung up on: left so.
+                        e if web.editor == WebEditor::Page && !own_window(&crate::config::get().editor()) => {
+                            *lent.borrow_mut() = Lent { browsers: std::mem::take(&mut browsers), size, ..Lent::default() };
+                            let terminal: crate::ops::Terminal = {
+                                let (lent, rx, output, coming, web) = (lent.clone(), rx.clone(), output.clone(), coming.clone(), web.clone());
+                                Box::new(move |cmd: &mut Command| in_page(cmd, &lent, &rx, &output, &coming, &web))
+                            };
+                            crate::ops::own_terminal(Some(terminal));
+                            let done = app.effect(e);
+                            crate::ops::own_terminal(None);
+                            let back = std::mem::take(&mut *lent.borrow_mut());
+                            (browsers, size) = (back.browsers, back.size);
+                            if let Err(e) = done {
+                                app.status = e.0;
+                            }
+                            if back.gone {
+                                last_tab_closed();
+                            }
+                            if back.gone || quitting() {
+                                browsers.extend(back.meanwhile);
+                                leave(&app, browsers, coming, answering);
+                                return Ok(());
+                            }
+                            app.refresh();
+                            tell(&mut browsers, &told(&app.take_notices(), &web));
+                            browsers.extend(back.meanwhile);
+                            whole = true;
+                            ran = true;
+                        }
+                        // $EDITOR, where `stacked web` was started, or in a
+                        // window of its own: the browsers told first, the
+                        // program it runs named, those come whose join is
+                        // not read yet among them, as nothing is read until
+                        // it exits; from then on, what they send is dropped
+                        // as it is read, until they are sent the screen
+                        // after, whole, changed or not, which takes the
+                        // place of what they say over it, whether it ran or
+                        // not. A ctrl-c there meanwhile was the editor's.
                         e => {
                             let said = editing(&program(&crate::config::get().editor()));
                             {
@@ -671,6 +749,9 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
                     }
                     whole |= size != was;
                 }
+                // What an editor run in the page wrote once it exited, read
+                // late: nothing to show.
+                Input::Output(..) => {}
             }
         }
         app.refresh();
@@ -716,6 +797,218 @@ fn fitted(cols: u16, rows: u16) -> (u16, u16) {
 /// ended, forgotten.
 fn tell(browsers: &mut Vec<Sender<String>>, lines: &[String]) {
     browsers.retain(|b| lines.iter().all(|m| b.send(m.clone()).is_ok()));
+}
+
+/// What the editor's thread lends the editor run in the page while it runs
+/// (`in_page`), and gets back once it exited: the browsers, and those come
+/// meanwhile, kept apart; the screen's size, the last a page sent, fitted;
+/// and whether its last page went meanwhile (`all_gone`), `stacked web`
+/// then to quit.
+#[derive(Default)]
+struct Lent {
+    browsers: Vec<Sender<String>>,
+    meanwhile: Vec<Sender<String>>,
+    size: (u16, u16),
+    gone: bool,
+}
+
+/// How often at most the editor run in the page has its screen sent the
+/// browsers, the rows that changed since: about 60 times a second.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// How long the editor's thread waits for what comes while the editor runs
+/// in the page, before it looks again whether the editor exited, or
+/// `stacked web` is to go.
+const LOOK: Duration = Duration::from_millis(50);
+
+/// How long it waits at most, while what the editor was written waits for
+/// its terminal to take it, before it writes it again.
+const TAKING: Duration = Duration::from_millis(10);
+
+/// How long the editor run in the page may write nothing before its screen
+/// is sent all the same, blank, so that the page shows whose screen it is.
+const QUIET: Duration = Duration::from_millis(250);
+
+/// The line that says to a browser that the screen sent with it, after its
+/// size, is the editor's own, run in the page: every key the page has goes
+/// to the editor then, F1 to F12 and Insert too, and a paste as it is,
+/// until the next screen's size, which says it is stacked's own again, as
+/// web/client.rs reads it.
+const TERMINAL: &str = "t";
+
+/// The terminals made so far for an editor run in the page, each by its
+/// number: what one wrote, read late, is not taken for what the next one
+/// writes.
+static TERMINALS: AtomicUsize = AtomicUsize::new(0);
+
+/// The editor run in the page: `cmd`, as `ops::run_editor` builds it, run
+/// in a terminal of stacked web's own (`pty::Pty`), of the screen's size,
+/// the last a page sent; its screen sent the browsers it is lent as
+/// stacked's own is (`rows`), the rows that changed, at most every `FRAME`,
+/// the first time whole, after `TERMINAL`, as soon as the editor writes, or
+/// once it wrote nothing for `QUIET`; what they send made the bytes xterm
+/// sends for it (`pty::key`, `pty::paste`, `pty::Screen::mouse`), or a new
+/// size its terminal's; a browser that comes sent its screen whole at once,
+/// after the notice of a tab come back, as the settings' `web` say. How it
+/// exited, once it did. Else an error: the terminal not made, or the editor
+/// not started, said so; or `stacked web` to go (a ctrl-c, a kill, its
+/// terminal closed, its last page gone), the editor hung up on as its
+/// terminal goes. Its terminal's reader writes to `output`, read from `rx`
+/// with what the browsers send; their joins taken from `coming`.
+fn in_page(cmd: &mut Command, lent: &RefCell<Lent>, rx: &Receiver<Input>, output: &Sender<Input>, coming: &Mutex<Coming>, web: &Web) -> std::io::Result<ExitStatus> {
+    // Gone already, as an edit that asks the editor again may after one
+    // hung up on: not started.
+    if quitting() || lent.borrow().gone {
+        return Err(std::io::Error::other("stacked web quits, so it was not started; nothing changed"));
+    }
+    let (cols, height) = lent.borrow().size;
+    let number = TERMINALS.fetch_add(1, Ordering::SeqCst);
+    let mut screen = Screen::new(cols, height);
+    let out = output.clone();
+    let mut pty = Pty::start(cmd, cols, height, move |o| {
+        let _ = out.send(Input::Output(number, o));
+    })?;
+    // The editor's rows as the browsers have them, and their size: none
+    // sent yet.
+    let mut shown: Option<((u16, u16), Vec<String>)> = None;
+    // Whether its screen changed since, and whether it is to be sent whole.
+    let (mut changed, mut whole) = (false, true);
+    let started = Instant::now();
+    let mut sent: Option<Instant> = None;
+    loop {
+        let due = match (changed, sent) {
+            (true, Some(at)) => FRAME.saturating_sub(at.elapsed()),
+            (true, None) => Duration::ZERO,
+            (false, _) if shown.is_none() => QUIET.saturating_sub(started.elapsed()),
+            _ => LOOK,
+        };
+        let first = rx.recv_timeout(due.min(if pty.waiting() { TAKING } else { LOOK })).ok();
+        // All that came meanwhile, a frame's time of it at most, so that an
+        // editor that writes without end holds up nothing else.
+        let batch = Instant::now();
+        let more = std::iter::from_fn(|| if batch.elapsed() < FRAME { rx.try_recv().ok() } else { None });
+        for input in first.into_iter().chain(more) {
+            match input {
+                Input::Output(of, Some(bytes)) if of == number => {
+                    let answers = screen.process(&bytes);
+                    pty.write(&answers);
+                    changed = true;
+                }
+                // The end of what it writes, which its exit says; or what
+                // the terminal of an editor before wrote, read late.
+                Input::Output(..) => {}
+                Input::Join(id, c, r, again) => {
+                    let Some(page) = came(coming, id) else { continue };
+                    if again && web.notifications {
+                        let _ = page.send(notice(&running_again()));
+                    }
+                    // Its screen whole, as the browsers there have it; none
+                    // sent yet, the first goes whole to all.
+                    if let Some((at, drawn)) = &shown {
+                        for line in whole_screen(*at, drawn) {
+                            let _ = page.send(line);
+                        }
+                    }
+                    lent.borrow_mut().meanwhile.push(page);
+                    if sized(fitted(c, r), lent, &mut screen, &pty) {
+                        (changed, whole) = (true, true);
+                    }
+                }
+                Input::Line(line) => {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    match parts.as_slice() {
+                        ["s", c, r] => {
+                            if let (Ok(c), Ok(r)) = (c.parse(), r.parse())
+                                && sized(fitted(c, r), lent, &mut screen, &pty)
+                            {
+                                (changed, whole) = (true, true);
+                            }
+                        }
+                        ["k", rest @ ..] => {
+                            if let Some(bytes) = crate::pty::key(rest, screen.application_cursor()) {
+                                pty.write(&bytes);
+                            }
+                        }
+                        ["p", hex] => {
+                            if let Some(text) = unhex(hex) {
+                                pty.write(&crate::pty::paste(&text, screen.bracketed_paste()));
+                            }
+                        }
+                        ["m" | "u" | "d" | "v" | "w", ..] => {
+                            let bytes = screen.mouse(&parts);
+                            pty.write(&bytes);
+                        }
+                        // The mouse gone from the screen, a notice clicked:
+                        // nothing, while the editor runs.
+                        _ => {}
+                    }
+                }
+            }
+        }
+        pty.flush();
+        // `stacked web` to go: the editor hung up on, as `pty` goes.
+        if quitting() {
+            return Err(std::io::Error::other("stacked web quit, so it was hung up on; nothing changed"));
+        }
+        if all_gone(coming) {
+            lent.borrow_mut().gone = true;
+            return Err(std::io::Error::other("the last tab of the editor was closed, so it was hung up on; nothing changed"));
+        }
+        if let Some(status) = pty.exited()? {
+            return Ok(status);
+        }
+        let first_due = shown.is_none() && started.elapsed() >= QUIET;
+        if (changed && sent.is_none_or(|at| at.elapsed() >= FRAME)) || first_due {
+            let (buf, cursor) = screen.buffer();
+            let now = rows(&buf, cursor);
+            let size = lent.borrow().size;
+            let lines: Vec<String> = match &shown {
+                Some((at, drawn)) if !whole && *at == size && drawn.len() == now.len() => {
+                    now.iter().zip(drawn).filter(|(n, d)| n != d).map(|(n, _)| n.clone()).collect()
+                }
+                _ => whole_screen(size, &now),
+            };
+            let mut l = lent.borrow_mut();
+            let Lent { browsers, meanwhile, .. } = &mut *l;
+            tell(browsers, &lines);
+            tell(meanwhile, &lines);
+            shown = Some((size, now));
+            (changed, whole, sent) = (false, false, Some(Instant::now()));
+        }
+    }
+}
+
+/// The screen of the editor run in the page whole, its rows `drawn`, of
+/// `size`, as a browser is sent it: its size, then `TERMINAL`, then each
+/// row.
+fn whole_screen((cols, height): (u16, u16), drawn: &[String]) -> Vec<String> {
+    let mut lines = vec![format!("s {cols} {height}"), TERMINAL.to_string()];
+    lines.extend(drawn.iter().cloned());
+    lines
+}
+
+/// The screen of the editor run in the page and its terminal made `to`, a
+/// size a page sent, fitted, which the system tells the editor, unless they
+/// are of that size already: whether they were made so.
+fn sized(to: (u16, u16), lent: &RefCell<Lent>, screen: &mut Screen, pty: &Pty) -> bool {
+    let mut l = lent.borrow_mut();
+    if l.size == to {
+        return false;
+    }
+    l.size = to;
+    screen.set_size(to.0, to.1);
+    let _ = pty.resize(to.0, to.1);
+    true
+}
+
+/// The text of a paste's line, `p HEX` (web/client.rs `pasted`): its UTF-8
+/// in hex, two digits a byte. None for what is not that.
+fn unhex(hex: &str) -> Option<String> {
+    if !hex.len().is_multiple_of(2) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let bytes: Vec<u8> = (0..hex.len()).step_by(2).filter_map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok()).collect();
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// `text` with its control characters spaces, as a row's text has them: in
@@ -938,11 +1231,13 @@ fn icons() -> &'static [Vec<u8>; 2] {
 /// waits for the tab of the launch before, a request of a page's with the
 /// token, but its lines, is that tab come back, under the lock the token is
 /// renewed under. A browser's events start among those `coming` holds,
-/// told first which stacked serves them, then if `$EDITOR` runs, and are
-/// counted open until their page closes them (`watch`); once the editor is
-/// left, they are told so at once. A browser's lines are dropped as they
-/// are read while `$EDITOR` runs, but a new size; and its page going is
-/// counted, never read by the editor.
+/// told first which stacked serves them, then if `$EDITOR` runs where
+/// `stacked web` was started, or in a window of its own, and are counted
+/// open until their page closes them (`watch`); once the editor is left,
+/// they are told so at once. A browser's lines are dropped as they are read
+/// while `$EDITOR` runs so, but a new size; and its page going is counted,
+/// never read by the editor. An editor run in the page has them all, as
+/// the editor's thread reads them (`in_page`).
 fn handle(stream: TcpStream, serving: &Serving, tx: &Sender<Input>, coming: &Mutex<Coming>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut out = stream;
@@ -1159,9 +1454,40 @@ mod tests {
         assert_eq!(key(&["F1", "-"]), None);
         assert_eq!(key(&["c", "zz", "-"]), None);
         // As the client makes them.
-        let line = client::key("ArrowUp", false, false, false, false);
+        let line = client::key("ArrowUp", false, false, false, false, false);
         assert_eq!(key(&line.split_whitespace().skip(1).collect::<Vec<_>>()), Some(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
         assert_eq!(fitted(5, 5000), (40, 200));
+    }
+
+    #[test]
+    fn the_editor_in_the_page_is_sent_its_screen_whole_after_its_size_and_t_and_is_given_the_keys_and_pastes_the_client_makes() {
+        // Its screen whole: the size, then `t`, then the rows, as the client
+        // reads them.
+        let mut screen = Screen::new(40, 2);
+        screen.process(b"\x1b[32mvi\x1b[0m");
+        let (buf, cursor) = screen.buffer();
+        let lines = whole_screen((40, 2), &rows(&buf, cursor));
+        let read: Vec<String> = lines.iter().map(|l| client::screen(l)).collect();
+        assert_eq!((read[0].as_str(), read[1].as_str()), ("size 40 2", "terminal"));
+        assert!(read[2].starts_with("row 0\n<span style=\"color:#0dbc79;background:var(--bg)\">vi</span>"), "{read:?}");
+        assert_eq!(read.len(), 4);
+        // The keys the client makes while the screen is the editor's, made
+        // the bytes xterm sends: F5, ↑ in the cursor keys' application mode,
+        // ctrl-c.
+        let bytes = |line: String, application: bool| crate::pty::key(&line.split_whitespace().skip(1).collect::<Vec<_>>(), application);
+        assert_eq!(bytes(client::key("F5", false, false, false, false, true), false), Some(b"\x1b[15~".to_vec()));
+        assert_eq!(bytes(client::key("ArrowUp", false, false, false, false, true), true), Some(b"\x1bOA".to_vec()));
+        assert_eq!(bytes(client::key("c", true, false, false, false, true), false), Some(vec![3]));
+        assert_eq!(bytes(client::key("Tab", false, false, true, false, true), false), Some(b"\x1b[Z".to_vec()));
+        // A paste, its text as the client sends it, back as it was; what is
+        // not hex, none.
+        let text = "one\r\ntwo 日\t";
+        let line = client::pasted(text);
+        assert_eq!(unhex(line.strip_prefix("p ").unwrap()).as_deref(), Some(text));
+        assert_eq!(unhex(""), Some(String::new()));
+        for wrong in ["6", "zz", "+f", "日"] {
+            assert_eq!(unhex(wrong), None, "{wrong}");
+        }
     }
 
     #[test]

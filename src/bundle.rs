@@ -133,21 +133,11 @@ pub fn set_no_terminal() {
     NO_TERMINAL.store(true, Ordering::Relaxed);
 }
 
-/// Whether stacked has no terminal for `$EDITOR`, opened as an app.
+/// Whether stacked has no terminal for `$EDITOR`, opened as an app: it then
+/// runs in a terminal window of its own, unless it opens a window of its
+/// own (`config::own_window`).
 pub fn no_terminal() -> bool {
     NO_TERMINAL.load(Ordering::Relaxed)
-}
-
-/// Whether `editor` opens a window of its own, rather than running in a
-/// terminal: run as it is, opened as an app too.
-pub fn own_window(editor: &str) -> bool {
-    let program = editor.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("");
-    matches!(
-        program,
-        "code" | "code-insiders" | "codium" | "cursor" | "zed" | "zeditor" | "subl" | "sublime_text" | "mate" | "bbedit"
-            | "gvim" | "mvim" | "nova" | "idea" | "open" | "gedit" | "gnome-text-editor" | "kate" | "kwrite" | "mousepad"
-            | "pluma" | "xed" | "geany"
-    )
 }
 
 /// `s` quoted for sh.
@@ -324,10 +314,6 @@ mod tests {
         };
         let e = edit_in_window("exec sleep 30", &file, &dir, &closing).unwrap_err();
         assert!(e.0.contains("window was closed"), "{}", e.0);
-        // A window of its own: the editor run as it is.
-        assert!(own_window("code --wait") && own_window("/opt/homebrew/bin/zed --wait") && own_window("open -W -n -a TextEdit"));
-        assert!(own_window("gedit --wait") && own_window("/usr/bin/kate -b"));
-        assert!(!own_window("hx") && !own_window("/usr/bin/vim -p"));
     }
 
     #[test]

@@ -1323,8 +1323,8 @@ the wheel's ↑ after a key, sent with the cell under the mouse, on a patch,
 listing files, going to the last file of the patch above, whatever is
 under the mouse, and the editor left, the page told, the worktree made ahead
 removed (Quit in the page; `stacked web` itself sent SIGINT, SIGTERM or
-SIGHUP, the first while `$EDITOR` runs left to `$EDITOR`, the second
-waiting for it), and two
+SIGHUP, the first while `$EDITOR` runs in the terminal, as the settings
+say, left to `$EDITOR`, the second waiting for it), and two
 `stacked web` at once, each putting its database, named from where it
 runs, on the list StackED's Open Recent shows, the port `stacked web`
 listens on, a free one found for a test by binding 0 first, as the code
@@ -1446,28 +1446,58 @@ once it knows of it, its look answered by a stand-in for Lando and
 Treeherder (`try_push::web_stand_in`, and `try_push::look_every` with no
 wait between looks), done on Treeherder, one of its two tasks failed, its
 notice saying so (`The try push is done: 1 of its 2 tasks failed. Its
-summary waits for your review.`); `$EDITOR` running, in a `stacked web`
-run for real, its stand-in a script that waits for a file: the first patch
-edited from its menu, the page told first, `e slowedit`, the program it
-runs, a page come while it runs told it at once, after which stacked
-serves it, before any screen, and,
+summary waits for your review.`); `$EDITOR` running elsewhere than in the
+page, in a `stacked web` run for real, its stand-in a script that waits
+for a file, in the terminal `stacked web` was started from, as the
+settings say (`web.editor = "terminal"`), and, the settings unset, one
+named `code`, with a window of its own: the first patch
+edited from its menu, the page told first, `e slowedit` (`e code`), the
+program it runs, a page come while it runs told it at once, after which
+stacked serves it, before any screen, and,
 the editor done, each page sent the screen whole, no row before it, the
-bottom line saying `nothing changed`; and an editor that cannot run told
-all the same, `e noedit`, then the screen whole at once, the bottom line
-saying why (`…/noedit failed; nothing changed`); what the pages send
-while it runs dropped (from the first, the keys that would write a comment
-on the stack and save it, and a click on the second patch; from a second
-page come meanwhile, ↓ and a right click, a menu), but a new size: each
-page sent the screen whole after at that size, the bottom line saying
-`nothing changed`, the first patch still in the middle, no menu, no
-comment, nothing written in the database, then a key sent after done;
+bottom line saying `nothing changed`; in the terminal, an editor that
+cannot run told all the same, `e noedit`, then the screen whole at once,
+the bottom line saying why (`…/noedit failed; nothing changed`); what the
+pages send while it runs, either way, dropped (from the first, the keys
+that would write a comment on the stack and save it, and a click on the
+second patch; from a second page come meanwhile, ↓ and a right click, a
+menu), but a new size: each page sent the screen whole after at that size,
+the bottom line saying `nothing changed`, the first patch still in the
+middle, no menu, no comment, nothing written in the database, then a key
+sent after done; and `$EDITOR`, a terminal one, running in the page, the
+settings unset, its stand-in a script: one that writes a screen (red,
+bold and underlined; 256's 196; on RGB; a wide character), its terminal's
+size, then reads a line and puts it in the first patch's title, its screen
+sent the page whole, no word over it, its size, then `t`, then its rows,
+their runs as it wrote them, the page's size its terminal's (`size 30
+120`), the cursor after what it wrote, then the line typed in the page
+read, and taken as an edit of the patch is, waiting for your review in the
+held work, stacked's screen sent whole after, no `t` after its size; one
+that says its terminal's size each tenth of a second, a size a page sends
+its terminal's, its screen sent whole at that size after `t`, a page come
+meanwhile sent it whole at once, before any other screen, its own size the
+terminal's then, and, the editor done, each page sent stacked's screen
+whole at that size, no `t` after it, the bottom line saying `nothing
+changed`; one that waits with a process it started, hung up on as `stacked
+web` goes, by a ctrl-c where it runs, a kill (the editor deaf to the
+hangup, killed 2 seconds after), or its last tab closed (quitting no
+sooner than 2 seconds after, saying why), the page told `bye` but once
+closed, `stacked web` done, and neither of the two left running; and one
+that cannot run,
+the bottom line saying why (`…/noedit failed; nothing changed`), no word
+said over the screen;
 and
 `web.rs` tests the rows and the lines both ways, the line a page's events
 start with as the client reads it, its build the same each time, the page
 going (`g`) alone, the notices learned at once told as the settings say
 (each notice's line, then one bell; the notices' lines alone without the
 bell; the bell alone without the banners; nothing with neither, nor for
-no notice), as the client reads them, and a token kept for its port alone, in a file of mode
+no notice), as the client reads them, the screen of the editor run in the
+page sent whole, its size, then `t`, then its rows, as the client reads
+them, the keys the client makes while the screen is the editor's made the
+bytes xterm sends (F5, ↑ in the cursor keys' application mode, ctrl-c,
+Shift-Tab), and a paste's text, as the client sends it, read back as it
+was, none for what is not hex, and a token kept for its port alone, in a file of mode
 0600 whatever the umask or a mode opened meanwhile, written whole beside
 it, nothing left there, none read of what is not a token, and nothing kept
 nowhere, nor where a folder is in its place, with the client's own tests
@@ -1490,11 +1520,41 @@ sends the server, each on a line of its own, a new line in its title or
 its body a space, and nothing for one short of a field, or whose run is
 empty or holds a space; the bell's line, `b` alone, the bell, `bye` still
 the editor gone, `b` with more nothing; `$EDITOR` running made the words said over
-the screen, by the program it runs, `the editor` when none is named; and
+the screen, by the program it runs, `the editor` when none is named; `t`
+alone, the screen the editor's own, the next size stacked's again, `t`
+with more nothing; F1 to F12 and Insert the browser's, but while the
+screen is the editor's, with their modifiers, ⌘ the browser's all the
+same, and the other keys as ever, ctrl-c among them; a paste then its
+text, its UTF-8 in hex, none for no text; and
 which stacked serves the page made what the page keeps of it, nothing for
 one short of a field or with one more, an empty field, one the page could
 not say again in its address, or whether the address is kept neither 1
-nor 0. With
+nor 0. `pty.rs` tests the keys made the bytes xterm sends (a character as
+UTF-8, ctrl's control bytes, alt as Esc first, Enter, Tab, Shift-Tab,
+Backspace, with ctrl too, and Esc; the arrows, Home and End as CSI or, in
+the cursor keys' application mode, SS3, with each modifier's parameter as
+CSI either way; Insert, Delete, Page Up and Down, F1 to F12, with a
+modifier too; none for a line that names no key), a paste made the text
+the editor is given (its new lines carriage returns, a tab as it is, Esc
+dropped, so that a paste cannot end its brackets early, bracketed when
+asked), the editor's screen made a buffer (its colours, 16's, 256's and
+RGB; bold, underline, italic, dim and inverse; a wide character over two
+cells, what comes after it in its place; the cursor where the editor put
+it, none while it hides it, on a wide character's first half; the screen
+resized; and a row as `stacked web` sends it), what the editor asks of
+its terminal answered (DA, its version, DSR 5 and 6 and DEC's, OSC 10 and
+11, several at once in order, nothing else) and its modes followed (the
+cursor keys', bracketed pastes), the mouse reported as the editor asks
+(nothing unasked; presses and releases as SGR's, from 1, the right button
+let go at once, the wheel a report for each line, nothing over no cell nor
+off the screen; the mouse moved with the left button down, then anywhere,
+once asked; xterm's first encoding without SGR; presses alone, as X10's;
+nothing once turned off), an editor run in a terminal of its own, a
+stand-in (its size, a session it leads whose controlling terminal the
+terminal is, `TERM`, `LINES` taken away, a key typed and echoed, its size
+changed, how it exited, its terminal then closed and read to its end),
+and an editor hung up on gone with what it started, as soon as it hears
+it, or killed 2 seconds after, deaf to it. With
 the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
 it, with no window: nothing drawn before the window's size, a key, a
 click, 1 on the versions of a patch opening the dialog of the views of
@@ -1643,7 +1703,7 @@ which runs), makes it again, and leaves alone something else of its name.
 `bundle.rs` tests the login shell's environment read (a shell that never
 ends given up, the shell the user's), an edit in a window of its own
 waited for (in its folder, it failing, its window closed before it exits),
-the editors with windows of their own, and the script a terminal is given
+and the script a terminal is given
 to run it (for its owner alone, removing itself as it runs the edit,
 removed if the terminal cannot be opened); `refs.rs`, that what is not a
 web link is never handed to the system's way of opening links;
@@ -2090,7 +2150,8 @@ unmarking the message as on an empty line, the next line to read found
 past the trailer, and the trailer drawn as a line that needs nothing, or
 without moz-phab a line to read; those in `config.rs`, the editor told
 the line it opens at as it takes it, and the program its command runs, as
-StackED and `stacked web` name it, its first word's last path piece, a file of settings over another, a
+StackED and `stacked web` name it, its first word's last path piece, by
+which the editors with windows of their own are told apart, a file of settings over another, a
 checkout's own read and written unless git tracks it, the patches
 pane's `compact`, as versions before the files wrote it, read as them,
 the width messages are wrapped at, one too narrow refused, the Bugzilla a
@@ -2118,9 +2179,15 @@ the notifications false, any other value, of any kind, said and the bell
 rung, the rest of the file read, `false` written beside the
 notifications, the rest of the file as it was, another value refused with
 the file as it was, and printed with its comment after the notifications',
-built with `web`, and read back the same; and `[web]` the
+built with `web`, and read back the same; where its editor runs, in the
+page unless set, `"page"` and `"terminal"` read, the editor of the top
+level as it is, any other value, of any kind, said and the page kept, the
+rest of the file read, `"terminal"` written beside the bell, the rest of
+the file as it was, another value refused with the file as it was, and
+printed with its comment after the bell's, built with `web`, and read back
+the same; and `[web]` the
 settings' file's alone: a checkout's own that sets it, wrong too, its
-notifications and its bell too, as the settings' file has it, each key said to be
+notifications, its bell and its editor too, as the settings' file has it, each key said to be
 passed over, the rest of it read, neither marked as the checkout's nor
 the one in use there, refused to `--local` for writing and for reading,
 and taken out there; those in `tui/notices.rs`, a notice's body made a

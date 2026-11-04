@@ -138,7 +138,8 @@
 - `config.rs`, `keys.rs`: the settings (`~/.stacked/config.toml`, and a
   checkout's own over it, but for `[web]`, the settings' file's alone), the
   program the editor's command runs, as StackED and `stacked web` name it
-  while it runs, and the keys they map, each in its context.
+  while it runs, and whether that program opens a window of its own; and
+  the keys they map, each in its context.
 - `home.rs`: where stacked keeps what is yours, ~/.stacked, as the binary
   works it out as it starts (nowhere, in the tests' own processes), the
   files of before moved into it, and where `stacked web` keeps the token
@@ -227,12 +228,21 @@
   fixed and the tab it waits for, its wasm and its page, the
   notices it sends the page, which shows them as the system's banners,
   and the bell it rings for them, made by the page with the Web Audio API,
-  what the page says over its screen while `$EDITOR` runs, or once stacked
-  is gone, the page asking again until it answers, and `stacked web` quit
-  once its last page is closed,
-  StackED's icon on its tab (`icon.rs`, below); the build script compiles the wasm,
-  or, where Rust lacks the wasm target, stops the build and says what to
-  run.
+  the editor run in the page, its screen sent as stacked's own is, what the
+  pages send made its keys, pastes and mouse, the pages lent it meanwhile
+  (`in_page`), what the page says over its screen while `$EDITOR` runs
+  where `stacked web` was started, or once stacked is gone, the page asking
+  again until it answers, and `stacked web` quit once its last page is
+  closed, StackED's icon on its tab (`icon.rs`, below); the build script
+  compiles the wasm, or, where Rust lacks the wasm target, stops the build
+  and says what to run. `pty.rs`, built with `web`: the editor's terminal
+  in the page, a pseudo-terminal of stacked's own, the editor in a session
+  of its own there, read on a thread of its own, resized, and hung up on as
+  it goes, nothing of it left running; its screen as vt100 makes it of what
+  the editor writes, a buffer for `web.rs` to send, what the editor asks of
+  its terminal answered as xterm answers it; and the bytes xterm sends for
+  a key, a paste and the mouse, as the editor asks for them. The same code
+  on Linux and macOS, whose libc differ.
 - `app.rs`: `stacked app`, StackED: the editor on a thread of its own, and
   the window that paints its screen and sends it what is done there; the
   fonts the system has for it, as fontdb finds them.

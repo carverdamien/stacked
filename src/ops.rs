@@ -2284,6 +2284,24 @@ pub fn stand_in(edit: Option<Editing>) {
     STAND_IN.with(|s| *s.borrow_mut() = edit);
 }
 
+/// What runs the editor in a terminal of its own, rather than in the one
+/// stacked was started from: given the command as `run_editor` builds it,
+/// it runs it there and gives back how it exited, or why it could not.
+pub type Terminal = Box<dyn FnMut(&mut std::process::Command) -> std::io::Result<std::process::ExitStatus>>;
+
+thread_local! {
+    /// What runs the editor this thread starts in a terminal of its own,
+    /// when one is set: `stacked web`'s, for the editor in its page.
+    static OWN_TERMINAL: std::cell::RefCell<Option<Terminal>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs the editor this thread starts with `run`, in a terminal of its own,
+/// as the stand-in of the tests leaves it to (`stand_in`); with none, in the
+/// terminal stacked was started from again.
+pub fn own_terminal(run: Option<Terminal>) {
+    OWN_TERMINAL.with(|t| *t.borrow_mut() = run);
+}
+
 /// Runs the editor on `file`, at `line` if given, in `dir`: an error if it
 /// says it failed.
 fn run_editor(file: &std::path::Path, line: Option<usize>, dir: &std::path::Path) -> Result<()> {
@@ -2296,7 +2314,7 @@ fn run_editor(file: &std::path::Path, line: Option<usize>, dir: &std::path::Path
     // terminal: the editor runs in a terminal window of its own, unless it
     // opens a window of its own.
     #[cfg(feature = "app")]
-    if crate::bundle::no_terminal() && !crate::bundle::own_window(&editor) {
+    if crate::bundle::no_terminal() && !crate::config::own_window(&editor) {
         return crate::bundle::edit_in_window(&cfg.editing(line), file, dir, &crate::launcher::terminal)
             .map_err(|e| Error(format!("{editor} {}", e.0)));
     }
@@ -2307,10 +2325,11 @@ fn run_editor(file: &std::path::Path, line: Option<usize>, dir: &std::path::Path
         cmd.current_dir(dir);
     }
     // One editor at a time in the terminal: StackED's windows share the one
-    // `stacked app` was started from.
+    // `stacked app` was started from. So in a terminal of its own too.
     static TERMINAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _terminal = TERMINAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let status = cmd.status().map_err(|e| Error(format!("{editor}: {e}")))?;
+    let ran = OWN_TERMINAL.with(|t| t.borrow_mut().as_mut().map(|run| run(&mut cmd)));
+    let status = ran.unwrap_or_else(|| cmd.status()).map_err(|e| Error(format!("{editor}: {e}")))?;
     if !status.success() {
         return err(format!("{editor} failed; nothing changed"));
     }

@@ -22,7 +22,9 @@ settings:
 - `file`: the database opened when none is named, nor `$STACKED_FILE`.
 - `editor`: the editor, for comments, patches, the stack as a list and the
   code, with `{file}` and `{line}` where they go (`hx {file}:{line}`); else
-  `$VISUAL`, `$EDITOR`, vi, told the line as each takes it.
+  `$VISUAL`, `$EDITOR`, vi, told the line as each takes it. `stacked web`
+  runs a terminal one in its page, unless `[web]`'s `editor` says otherwise
+  (below).
 - `[agent]`: `command`, the program run as the agent; `args`, added to
   every run, but an `--effort` they give, which the ask's own effort takes
   the place of (Asking the agent, above); `worktree` and
@@ -363,7 +365,16 @@ settings:
   false`), and `true` kept; `stacked config` refuses to write it
   (`web.bell is true or false, not "quiet"`). `true`, the bell rings only
   once a click or a key reached the page, as a browser lets a page make
-  sound only then. Nothing of
+  sound only then. `editor`, where a terminal editor runs (the settings'
+  `editor`, else `$VISUAL`, `$EDITOR`, vi): `"page"` (unless set), in the
+  page itself, in a terminal of `stacked web`'s own that the page shows and
+  sends its keys to, but those with ⌘; or `"terminal"`, in the terminal
+  `stacked web` was started from, the page saying so meanwhile (In a
+  browser, above). An editor with a window of its own (code, zed, gvim and
+  the like) opens that window either way. Any other value, of any kind, is
+  said (`web.editor: "window" is not "page" or "terminal"`), and `"page"`
+  kept; `stacked config` refuses to write it (`web.editor is "page" or
+  "terminal", not "window"`). Nothing of
   it is kept in a database, nor in `state.json`. A checkout's own `.stacked/local.toml`
   that sets them has them passed over, each said (`web.port is read only
   from the settings' file, never from a checkout's own .stacked/local.toml:

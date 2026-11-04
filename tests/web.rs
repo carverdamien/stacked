@@ -154,15 +154,16 @@ impl Drop for Running {
 
 /// `stacked web` on `db`, run in `tmp`, outside the stack's checkout (its
 /// settings read, and said wrong, only as the worktree is made ahead); its
-/// `$EDITOR` sending it `signal` (as `kill` names it) as it runs, as a key
-/// pressed in its terminal would, and changing nothing but `tmp/edited`,
-/// which says it ran. It, what it says on stderr after where it is, and
-/// its events.
+/// `$EDITOR` run in the terminal it was started from, as its settings say,
+/// sending it `signal` (as `kill` names it) as it runs, as a key pressed in
+/// that terminal would, and changing nothing but `tmp/edited`, which says
+/// it ran. It, what it says on stderr after where it is, and its events.
 fn web(tmp: &Path, db: &Path, signal: &str) -> (Running, BufReader<ChildStderr>, BufReader<TcpStream>, u16, String) {
     let (editor, pid, edited) = (tmp.join("editor.sh"), tmp.join("pid"), tmp.join("edited"));
     let script = format!("#!/bin/sh\nkill -{signal} \"$(cat '{}')\"\nsleep 0.2\ntouch '{}'\n", pid.display(), edited.display());
     std::fs::write(&editor, script).unwrap();
     std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+    settings_of(&tmp.join("home"), IN_THE_TERMINAL);
     let mut child = stacked(&tmp.join("home"))
         .args(["-f", db.to_str().unwrap(), "web", "--no-open"])
         .env("VISUAL", &editor)
@@ -2971,42 +2972,58 @@ fn there(path: &Path) -> bool {
     path.exists()
 }
 
+/// The settings of an editor run in the terminal `stacked web` was started
+/// from, rather than in the page.
+const IN_THE_TERMINAL: &str = "[web]\neditor = \"terminal\"\n";
+
+/// Each way an editor runs elsewhere than in the page, its page told so
+/// meanwhile: the settings that say so, and the stand-in's name. In the
+/// terminal `stacked web` was started from, as its settings say; or in a
+/// window of its own, as an editor named `code` has, whatever they say.
+const ELSEWHERE: [(&str, &str); 2] = [(IN_THE_TERMINAL, "slowedit"), ("", "code")];
+
 #[test]
-fn while_the_editor_runs_the_page_says_so_over_its_screen_a_page_come_meanwhile_too_until_the_screen_after() {
-    let (tmp, db) = setup();
-    let editor = waiting_editor(tmp.path(), "slowedit");
-    let s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
-    let mut first = events(s.port, &s.token, 400);
-    until(&mut first, "the patches", |l| text(l).contains("Bug 2 - add b"));
-    // The first patch edited in $EDITOR: the page told first, the program it
-    // runs named.
-    edit_first_patch(s.port, &s.token, &mut first);
-    let said = "data: e slowedit";
-    until(&mut first, "the editor's word", |l| l == said);
-    // A page come while the editor runs: told it at once, after which
-    // stacked serves it, before any screen, as the editor's thread reads
-    // nothing meanwhile.
-    assert!(there(&tmp.path().join("ran")), "the editor never ran");
-    let mut second = events(s.port, &s.token, 400);
-    let seen = until(&mut second, "its word", |l| l.starts_with("data: ") && !l.starts_with("data: v "));
-    assert_eq!(seen.last().map(String::as_str), Some(said), "{seen:#?}");
-    assert_eq!(seen.iter().filter(|l| l.starts_with("data: ")).count(), 2, "{seen:#?}");
-    // The editor done: each page sent the screen whole, which takes the
-    // place of the word, the bottom line saying what came of it.
-    std::fs::write(tmp.path().join("exit"), "").unwrap();
-    for page in [&mut first, &mut second] {
-        let seen = until(page, "the screen after", |l| l.starts_with("data: s "));
-        assert!(!seen.iter().any(|l| l.starts_with("data: r ")), "{seen:#?}");
-        until(page, "what came of it", |l| text(l).contains("nothing changed"));
+fn while_the_editor_runs_elsewhere_than_in_the_page_the_page_says_so_over_its_screen_a_page_come_meanwhile_too_until_the_screen_after() {
+    for (settings, name) in ELSEWHERE {
+        let (tmp, db) = setup();
+        let home = tmp.path().join("home");
+        settings_of(&home, settings);
+        let editor = waiting_editor(tmp.path(), name);
+        let s = served_editing(&home, tmp.path(), &db, &editor);
+        let mut first = events(s.port, &s.token, 400);
+        until(&mut first, "the patches", |l| text(l).contains("Bug 2 - add b"));
+        // The first patch edited in $EDITOR: the page told first, the
+        // program it runs named.
+        edit_first_patch(s.port, &s.token, &mut first);
+        let said = format!("data: e {name}");
+        until(&mut first, "the editor's word", |l| l == said);
+        // A page come while the editor runs: told it at once, after which
+        // stacked serves it, before any screen, as the editor's thread reads
+        // nothing meanwhile.
+        assert!(there(&tmp.path().join("ran")), "{name}: the editor never ran");
+        let mut second = events(s.port, &s.token, 400);
+        let seen = until(&mut second, "its word", |l| l.starts_with("data: ") && !l.starts_with("data: v "));
+        assert_eq!(seen.last(), Some(&said), "{seen:#?}");
+        assert_eq!(seen.iter().filter(|l| l.starts_with("data: ")).count(), 2, "{seen:#?}");
+        // The editor done: each page sent the screen whole, which takes the
+        // place of the word, the bottom line saying what came of it.
+        std::fs::write(tmp.path().join("exit"), "").unwrap();
+        for page in [&mut first, &mut second] {
+            let seen = until(page, "the screen after", |l| l.starts_with("data: s "));
+            assert!(!seen.iter().any(|l| l.starts_with("data: r ")), "{seen:#?}");
+            until(page, "what came of it", |l| text(l).contains("nothing changed"));
+        }
+        s.quit();
     }
-    s.quit();
 }
 
 #[test]
-fn an_editor_that_cannot_run_is_said_over_the_screen_until_the_screen_after_says_why_in_the_browser() {
+fn an_editor_that_cannot_run_in_the_terminal_is_said_over_the_screen_until_the_screen_after_says_why_in_the_browser() {
     let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    settings_of(&home, IN_THE_TERMINAL);
     let editor = tmp.path().join("nowhere").join("noedit");
-    let s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
+    let s = served_editing(&home, tmp.path(), &db, &editor);
     let mut events = events(s.port, &s.token, 400);
     until(&mut events, "the patches", |l| text(l).contains("Bug 2 - add b"));
     edit_first_patch(s.port, &s.token, &mut events);
@@ -3020,51 +3037,237 @@ fn an_editor_that_cannot_run_is_said_over_the_screen_until_the_screen_after_says
 }
 
 #[test]
-fn what_the_pages_send_while_the_editor_runs_is_dropped_but_a_new_size_and_what_they_send_after_is_done_in_the_browser() {
+fn what_the_pages_send_while_the_editor_runs_elsewhere_than_in_the_page_is_dropped_but_a_new_size_and_what_they_send_after_is_done_in_the_browser() {
+    for (settings, name) in ELSEWHERE {
+        let (tmp, db) = setup();
+        let home = tmp.path().join("home");
+        settings_of(&home, settings);
+        let editor = waiting_editor(tmp.path(), name);
+        let s = served_editing(&home, tmp.path(), &db, &editor);
+        let (host, input) = (format!("127.0.0.1:{}", s.port), format!("POST /input?t={}", s.token));
+        let mut first = events(s.port, &s.token, 400);
+        until(&mut first, "the patches", |l| text(l).contains("Bug 2 - add b"));
+        edit_first_patch(s.port, &s.token, &mut first);
+        let said = format!("data: e {name}");
+        until(&mut first, "the editor's word", |l| l == said);
+        assert!(there(&tmp.path().join("ran")), "{name}: the editor never ran");
+        let mut second = events(s.port, &s.token, 400);
+        until(&mut second, "its word", |l| l == said);
+        // While the editor runs: from the first page, keys that would write
+        // a comment on the stack and save it, then a click on the second
+        // patch; from the second page, ↓ and a right click on the first
+        // patch, its menu; then the first page's new size.
+        let before = std::fs::read(&db).unwrap();
+        ask(s.port, &host, &input, "k Home -\nk Enter -\n");
+        typed_in(s.port, &host, &input, "dropped");
+        ask(s.port, &host, &input, "k Esc -\nk Enter -\nm 5 3 l\n");
+        ask(s.port, &host, &input, "k Down -\nm 5 2 r\n");
+        ask(s.port, &host, &input, "s 300 30\n");
+        // The editor done: each page sent the screen whole at that size, the
+        // bottom line saying what came of the edit, nothing else of it done:
+        // the first patch still in the middle, no menu, no comment, nothing
+        // written.
+        std::fs::write(tmp.path().join("exit"), "").unwrap();
+        for page in [&mut first, &mut second] {
+            let seen = until(page, "the screen after", |l| l.starts_with("data: s "));
+            assert_eq!(seen.last().map(String::as_str), Some("data: s 300 30"), "{seen:#?}");
+            let rows = std::cell::RefCell::new(vec![String::new(); 30]);
+            until(page, "the screen's last row", |l| {
+                shown(&mut rows.borrow_mut(), l);
+                l.starts_with("data: r 29 ")
+            });
+            let rows = rows.into_inner();
+            assert!(rows[29].contains("nothing changed") && rows.iter().any(|r| r.contains("+TWO")), "{rows:#?}");
+            for done in ["+bee", "Edit this patch in $EDITOR", "dropped", "┌─ a comment on"] {
+                assert!(!rows.iter().any(|r| r.contains(done)), "{done}: {rows:#?}");
+            }
+        }
+        assert!(std::fs::read(&db).unwrap() == before, "{name}: the database was written");
+        // What is sent after: done.
+        ask(s.port, &host, &input, "k Down -\n");
+        until(&mut first, "the key after", |l| text(l).contains("+bee"));
+        s.quit();
+    }
+}
+
+/// A stand-in for the editor at `dir/NAME`: sh running `body`.
+fn editor_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// Where, in the events `seen`, the last screen sent whole starts, its
+/// size; and whether it is the editor's own, run in the page, `t` after its
+/// size.
+fn last_whole(seen: &[String]) -> (usize, bool) {
+    let at = seen.iter().rposition(|l| l.starts_with("data: s ")).unwrap_or_else(|| panic!("no screen whole: {seen:#?}"));
+    let next = seen[at + 1..].iter().find(|l| l.starts_with("data: "));
+    (at, next.is_some_and(|l| l == "data: t"))
+}
+
+#[test]
+fn a_terminal_editor_runs_in_the_page_its_screen_sent_as_rows_and_the_line_typed_there_is_what_stacked_takes_of_the_edit() {
     let (tmp, db) = setup();
-    let editor = waiting_editor(tmp.path(), "slowedit");
+    // Its screen: red, bold and underlined, then 256's 196, then on RGB, a
+    // wide character; its size; then the line typed in the page, put in the
+    // first patch's title, as an editor would.
+    let editor = editor_script(
+        tmp.path(),
+        "pageedit",
+        "printf '\\033[1;4;31mred\\033[0m \\033[38;5;196mx\\033[0m\\033[48;2;16;32;48my\\033[0m 日\\n'\n\
+         printf 'size %s\\n' \"$(stty size)\"\n\
+         printf 'title: '\n\
+         IFS= read -r line\n\
+         sed \"s/shout two/$line/\" \"$1\" > \"$1.new\" && mv \"$1.new\" \"$1\"",
+    );
     let s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
     let (host, input) = (format!("127.0.0.1:{}", s.port), format!("POST /input?t={}", s.token));
-    let mut first = events(s.port, &s.token, 400);
+    let mut events = events(s.port, &s.token, 120);
+    until(&mut events, "the patches", |l| text(l).contains("Bug 2 - add b"));
+    edit_first_patch(s.port, &s.token, &mut events);
+    // Nothing said over the screen: the editor's own, whole, its size, the
+    // page's, then `t`, then its rows, as the editor drew them, the cursor
+    // where it left it.
+    let seen = until(&mut events, "its screen", |l| text(l).starts_with("title: "));
+    assert!(!seen.iter().any(|l| l.starts_with("data: e ")), "{seen:#?}");
+    let (at, its) = last_whole(&seen);
+    assert!(its && seen[at] == "data: s 120 30", "{seen:#?}");
+    let row = |y: usize| seen[at..].iter().rev().find(|l| l.starts_with(&format!("data: r {y} "))).map(|l| runs(l)).unwrap_or_default();
+    let first = row(0);
+    let styles: Vec<(&str, &str)> = first.iter().map(|(s, t)| (s.as_str(), t.as_str())).take(4).collect();
+    assert_eq!(styles, [("1,,9", "red"), (",,0", " "), ("#ff0000,,0", "x"), (",#102030,0", "y")], "{first:?}");
+    // Then the wide character, and the blanks after it, which `until` trims.
+    assert_eq!(first[4], (",,0".to_string(), " 日".to_string()), "{first:?}");
+    assert_eq!(first.len(), 5, "{first:?}");
+    assert!(row(1).iter().any(|(_, t)| t.starts_with("size 30 120")), "{seen:#?}");
+    assert!(row(2).iter().any(|(s, t)| s == ",,65536" && t == " "), "the cursor after `title: `: {:?}", row(2));
+    // A line typed in the page: the editor's, which writes it in the title.
+    typed_in(s.port, &host, &input, "typed in the page");
+    ask(s.port, &host, &input, "k Enter -\n");
+    // Stacked's screen whole after, the editor exited: the edit taken, as
+    // an edit of the patch is, waiting for your review.
+    let seen = until(&mut events, "the edit taken", |l| text(l).contains("it waits for your review"));
+    assert!(!last_whole(&seen).1, "stacked's own: {seen:#?}");
+    let titled = |l: &str| text(l).contains("Bug 1 - typed in the page");
+    if !seen.iter().any(|l| titled(l)) {
+        until(&mut events, "the title typed", titled);
+    }
+    let d = stacked::db::Db::load(&db).unwrap();
+    let queue = stacked::held::queue(&d, "s");
+    assert!(queue.len() == 1 && stacked::held::by_hand(queue[0]), "{queue:?}");
+    s.quit();
+}
+
+#[test]
+fn a_size_a_page_sends_reaches_the_editor_in_the_page_and_a_page_come_meanwhile_is_sent_its_screen_whole() {
+    let (tmp, db) = setup();
+    let exit = tmp.path().join("exit");
+    // The size of its terminal, said on its first row each tenth of a
+    // second, as the editor reads it, until it is to exit.
+    let editor = editor_script(
+        tmp.path(),
+        "sizes",
+        &format!("while [ ! -e '{}' ]; do printf '\\033[H\\033[Ksize %s' \"$(stty size)\"; sleep 0.1; done", exit.display()),
+    );
+    let s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
+    let (host, input) = (format!("127.0.0.1:{}", s.port), format!("POST /input?t={}", s.token));
+    let mut first = events(s.port, &s.token, 120);
     until(&mut first, "the patches", |l| text(l).contains("Bug 2 - add b"));
     edit_first_patch(s.port, &s.token, &mut first);
-    let said = "data: e slowedit";
-    until(&mut first, "the editor's word", |l| l == said);
-    assert!(there(&tmp.path().join("ran")), "the editor never ran");
-    let mut second = events(s.port, &s.token, 400);
-    until(&mut second, "its word", |l| l == said);
-    // While the editor runs: from the first page, keys that would write a
-    // comment on the stack and save it, then a click on the second patch;
-    // from the second page, ↓ and a right click on the first patch, its
-    // menu; then the first page's new size.
-    let before = std::fs::read(&db).unwrap();
-    ask(s.port, &host, &input, "k Home -\nk Enter -\n");
-    typed_in(s.port, &host, &input, "dropped");
-    ask(s.port, &host, &input, "k Esc -\nk Enter -\nm 5 3 l\n");
-    ask(s.port, &host, &input, "k Down -\nm 5 2 r\n");
-    ask(s.port, &host, &input, "s 300 30\n");
-    // The editor done: each page sent the screen whole at that size, the
-    // bottom line saying what came of the edit, nothing else of it done:
-    // the first patch still in the middle, no menu, no comment, nothing
-    // written.
-    std::fs::write(tmp.path().join("exit"), "").unwrap();
+    until(&mut first, "its size", |l| text(l).starts_with("size 30 120"));
+    // A new size, the page's: its terminal's, which the editor reads, its
+    // screen sent whole at that size.
+    ask(s.port, &host, &input, "s 100 20\n");
+    let seen = until(&mut first, "the size it reads", |l| text(l).starts_with("size 20 100"));
+    assert!(seen.windows(4).any(|w| w[0] == "data: s 100 20" && w[2] == "data: t"), "{seen:#?}");
+    // A page come meanwhile: sent the editor's screen whole at once, as
+    // the first page has it, before any other screen.
+    let mut second = events(s.port, &s.token, 100);
+    let seen = until(&mut second, "the editor's screen", |l| text(l).starts_with("size 20 100"));
+    let data: Vec<&String> = seen.iter().filter(|l| l.starts_with("data: ")).collect();
+    assert!(data[0].starts_with("data: v ") && data[1] == "data: s 100 20" && data[2] == "data: t", "{seen:#?}");
+    // Its own size, 100 by 30, the editor's from then on, as the last size
+    // a page sent.
+    until(&mut second, "its size", |l| text(l).starts_with("size 30 100"));
+    until(&mut first, "the second page's size", |l| text(l).starts_with("size 30 100"));
+    // The editor done: each page sent stacked's screen whole, at that size,
+    // the bottom line saying what came of the edit.
+    std::fs::write(&exit, "").unwrap();
     for page in [&mut first, &mut second] {
-        let seen = until(page, "the screen after", |l| l.starts_with("data: s "));
-        assert_eq!(seen.last().map(String::as_str), Some("data: s 300 30"), "{seen:#?}");
-        let rows = std::cell::RefCell::new(vec![String::new(); 30]);
-        until(page, "the screen's last row", |l| {
-            shown(&mut rows.borrow_mut(), l);
-            l.starts_with("data: r 29 ")
-        });
-        let rows = rows.into_inner();
-        assert!(rows[29].contains("nothing changed") && rows.iter().any(|r| r.contains("+TWO")), "{rows:#?}");
-        for done in ["+bee", "Edit this patch in $EDITOR", "dropped", "┌─ a comment on"] {
-            assert!(!rows.iter().any(|r| r.contains(done)), "{done}: {rows:#?}");
-        }
+        let seen = until(page, "what came of it", |l| text(l).contains("nothing changed"));
+        let (at, its) = last_whole(&seen);
+        assert!(!its && seen[at] == "data: s 100 30", "{seen:#?}");
     }
-    assert!(std::fs::read(&db).unwrap() == before, "the database was written");
-    // What is sent after: done.
-    ask(s.port, &host, &input, "k Down -\n");
-    until(&mut first, "the key after", |l| text(l).contains("+bee"));
+    s.quit();
+}
+
+/// Waits for each process `pids` names to be gone, and reaped: whether they
+/// are.
+fn ended(pids: &[libc::pid_t]) -> bool {
+    let left = || pids.iter().any(|p| unsafe { libc::kill(*p, 0) } == 0);
+    let started = Instant::now();
+    while left() && started.elapsed() < PATIENCE {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    !left()
+}
+
+#[test]
+fn stacked_web_going_while_the_editor_runs_in_the_page_hangs_it_up_and_leaves_nothing_of_it_running() {
+    // A ctrl-c where it runs; a kill, the editor deaf to the hangup; its
+    // last tab closed.
+    for (how, deaf) in [("INT", false), ("TERM", true), ("closed", false)] {
+        let (tmp, db) = setup();
+        let pids = tmp.path().join("pids");
+        // It, and a process it started, both waiting.
+        let trap = if deaf { "trap '' HUP\n" } else { "" };
+        let editor = editor_script(tmp.path(), "stays", &format!("{trap}sleep 300 &\necho \"$$ $!\" > '{}'\nwait", pids.display()));
+        let mut s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
+        let mut page = events(s.port, &s.token, 120);
+        until(&mut page, "the patches", |l| text(l).contains("Bug 2 - add b"));
+        edit_first_patch(s.port, &s.token, &mut page);
+        let started = Instant::now();
+        let running: Vec<libc::pid_t> = loop {
+            let read: Vec<libc::pid_t> = std::fs::read_to_string(&pids).unwrap_or_default().split_whitespace().filter_map(|w| w.parse().ok()).collect();
+            if read.len() == 2 {
+                break read;
+            }
+            assert!(started.elapsed() < PATIENCE, "{how}: the editor never ran");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        if how == "closed" {
+            // Quit as Quit does once no tab came back, the editor hung up on.
+            let closed = Instant::now();
+            s.close(page);
+            s.quits(closed);
+        } else {
+            // Quit as Quit does: the page told, then stacked web done.
+            send(&s.child, how);
+            until(&mut page, "bye", |l| l == "data: bye");
+            let status = exit_of(&mut s.child);
+            let mut rest = String::new();
+            s.said.read_to_string(&mut rest).unwrap();
+            assert!(status.success(), "{how}: {status}: {rest}");
+        }
+        assert!(ended(&running), "{how}: left running: {running:?}");
+    }
+}
+
+#[test]
+fn an_editor_that_cannot_run_in_the_page_says_why_in_the_bottom_line_and_nothing_over_the_screen() {
+    let (tmp, db) = setup();
+    let editor = tmp.path().join("nowhere").join("noedit");
+    let s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
+    let mut events = events(s.port, &s.token, 400);
+    until(&mut events, "the patches", |l| text(l).contains("Bug 2 - add b"));
+    edit_first_patch(s.port, &s.token, &mut events);
+    // The screen whole, stacked's, the bottom line saying why; no word said
+    // over it.
+    let why = format!("{} failed; nothing changed", editor.display());
+    let seen = until(&mut events, "why", |l| text(l).contains(&why));
+    assert!(!seen.iter().any(|l| l.starts_with("data: e ")), "{seen:#?}");
+    assert!(!last_whole(&seen).1, "stacked's own: {seen:#?}");
     s.quit();
 }

@@ -106,37 +106,109 @@ tab shows StackED's icon
 screen of high density, each size drawn once and written as a PNG by
 stacked itself, with no eframe (`icon.rs`); the page asks for it with the
 token, as for all else, and `/favicon.ico`, which a browser may ask for on
-its own, without the token, is refused. The editor runs where `stacked web`
-was started: `$EDITOR`, for what is edited in it, opens there. Meanwhile
-the page says so over its screen, darkened, as StackED's window does:
-`The text is open in vim, in the terminal `stacked web` was started from
-if vim runs in one.`, then on a line of its own `stacked goes on once vim
-exits.`, vim being the program the editor's command runs, as StackED
-names it (the settings' `editor`, else `$VISUAL`, else `$EDITOR`, else
-vi: the last path piece of its first word), `the editor` when there is
-none. The server says it to every page before it runs the editor, and at
-once to a page that comes while it runs, which says it over a screen still
-empty, as nothing else is read until the editor exits. Then, whether the
-editor ran or could not run, the server sends each page the screen whole,
-which takes the place of what was said over it; the bottom line says
-what came of it (`nothing changed`), or why the editor failed
-(`/path/to/noedit failed; nothing changed`). What the pages do meanwhile is
-dropped, as StackED drops what is done in its window, and nothing says so:
-keys, clicks, the wheel, drags, the mouse going over the screen or leaving
-it, pastes, a notice clicked; but a new size, so that the screen sent after
-fits the page as it is then. The server drops it, for every page, one of
-an older stacked too: what it reads from a page from when it tells the
-pages that the editor runs to when it sends them the screen after is
-dropped; what it read before, or reads after, is done. The page sends
-nothing meanwhile but its size, and the mouse is over what is said, not
-over the screen. Quit is
-quit, and the page says so. A ctrl-c there, a kill, or that terminal
-closing quits too, and so does closing the editor's last tab (below).
-Either way, as when the editor in a terminal is left,
+its own, without the token, is refused.
+
+A terminal editor runs in the page itself, unless the settings say
+otherwise (`web.editor`, Settings, below): `$EDITOR`, for what is edited
+in it (the settings' `editor`, else `$VISUAL`, else `$EDITOR`, else vi),
+runs as the terminal runs it, the same command on the same file in the
+same folder, but in a terminal of `stacked web`'s own, a pseudo-terminal,
+in a session of its own whose controlling terminal it is, told
+`TERM=xterm-256color`, and neither `COLUMNS` nor `LINES`, which would say
+another size, its size the screen's, the last a page sent (`pty.rs`). Its
+screen takes the place of stacked's in every page, nothing said over it:
+what it writes is read on a thread of its own and made a screen by
+vt100, as a terminal shows it, each cell's character, a wide one over two
+cells, its colours (the page's own, one of 16, of 256, or RGB), its bold,
+dim, italic, underline and inverse, and the cursor where the editor puts
+it, none while it hides it; and that screen is sent the pages as
+stacked's own is, the rows that changed, about 60 times a second at most,
+the first time whole: its size, then `t`, which tells the page that the
+screen is the editor's until the next size, then its rows. A page that
+comes meanwhile is sent it whole at once. An editor that writes nothing has
+its blank screen shown after a quarter of a second, so that the page shows
+where its keys go. What the editor asks of its terminal is answered as
+xterm answers it: what terminal it is, a VT100 with advanced video (DA, as
+libvterm answers it), and, asked for its version, libvterm's (`>0;100;0`),
+by which vim reports the mouse as SGR does; whether it is well and where
+its cursor is (DSR); and its colours, the page's own (OSC 10 and 11), by
+which an editor tells that the page is dark. Nothing else is answered.
+
+What the pages send meanwhile goes to the editor, made the bytes xterm
+sends: a character as UTF-8, ctrl with a letter its control byte (and
+with `@ [ \ ] ^ _ / ?`, space and 2 to 8 the one xterm gives), alt as Esc
+first; Enter a carriage return, Tab a tab, Shift-Tab `ESC [ Z`, Backspace
+DEL (BS with ctrl), Esc ESC; the arrows, Home and End as `ESC [ A`, or as
+`ESC O A` once the editor asks for the cursor keys' application mode,
+Insert, Delete, Page Up and Down and F5 to F12 as `ESC [ 2 ~`, F1 to F4 as
+`ESC O P`, each, with a modifier, as CSI with xterm's parameter for it
+(`ESC [ 1 ; 5 A` ctrl-↑, `ESC [ 15 ; 2 ~` shift-F5). While the screen is
+the editor's, the page sends every key it has, ctrl ones included (ctrl-c
+is the editor's then, not Quit), and F1 to F12 and Insert too, which are
+the browser's otherwise; those with ⌘ stay the browser's, for copy and
+paste. A paste is its text, sent as it is (`p HEX`, its UTF-8): each of its
+new lines a carriage return, as xterm pastes them, every control character
+but a tab dropped, Esc among them, and bracketed (`ESC [ 200 ~`, then `ESC
+[ 201 ~`) when the editor asks for it. A new size resizes the editor's
+terminal, which the system tells the editor, and its screen. The mouse is
+the editor's only once it asks for it (`:set mouse=a` in vim), and only
+what it asks for, presses, releases, the mouse moved with a button down or
+anywhere: a click pressed, then let go, the right button let go at once,
+as the page does not say when it is, the wheel a press of its button for
+each line it turned, the mouse moved with the left button down, and the
+mouse going by; reported as SGR's (`ESC [ < 0 ; X ; Y M`), else in xterm's
+first encoding, as the editor asks. Else the mouse does nothing there.
+
+When the editor exits, its terminal is closed, and the server sends each
+page the screen whole, stacked's own again; the bottom line says what
+came of it (`nothing changed`), or why the editor failed (`/path/to/noedit
+failed; nothing changed`), as for an editor that cannot start or a
+terminal that cannot be made for it (`vim: no terminal could be made for
+it in the page (…); nothing changed`), nothing changed either way. An
+edit that asks the editor again, a patch that no longer applies with why
+at its top, opens it in the page again. A page that comes while it runs is
+told none of what the editor learned before it came, as ever. When
+`stacked web` goes while the editor runs, by a ctrl-c where it was started
+(which the editor does not hear), a kill, that terminal closing, or its
+last tab closed (below), the editor is hung up on as its terminal goes:
+SIGHUP, then SIGCONT, sent to its process group and to the one its
+terminal has in the foreground, its terminal closed, which the system says
+to it too; and what is left of them 2 seconds after is killed, so that
+nothing of it is left running.
+
+With `web.editor = "terminal"`, the editor runs where `stacked web` was
+started: `$EDITOR`, for what is edited in it, opens there. So does an
+editor with a window of its own (code, zed, gvim and the like, by the
+program its command runs), which opens that window, whatever the
+settings say. Meanwhile the page says so over its screen, darkened, as
+StackED's window does: `The text is open in vim, in the terminal `stacked
+web` was started from if vim runs in one.`, then on a line of its own
+`stacked goes on once vim exits.`, vim being the program the editor's
+command runs, as StackED names it (the last path piece of its first word),
+`the editor` when there is none. The server says it to every page before
+it runs the editor, and at once to a page that comes while it runs, which
+says it over a screen still empty, as nothing else is read until the
+editor exits. Then, whether the editor ran or could not run, the server
+sends each page the screen whole, which takes the place of what was said
+over it; the bottom line says what came of it (`nothing changed`), or why
+the editor failed (`/path/to/noedit failed; nothing changed`). What the
+pages do meanwhile is dropped, as StackED drops what is done in its window,
+and nothing says so: keys, clicks, the wheel, drags, the mouse going over
+the screen or leaving it, pastes, a notice clicked; but a new size, so that
+the screen sent after fits the page as it is then. The server drops it,
+for every page, one of an older stacked too: what it reads from a page
+from when it tells the pages that the editor runs to when it sends them
+the screen after is dropped; what it read before, or reads after, is done.
+The page sends nothing meanwhile but its size, and the mouse is over what
+is said, not over the screen.
+
+Quit is quit, and the page says so. A ctrl-c where `stacked web` was
+started, a kill, or that terminal closing quits too, and so does closing
+the editor's last tab (below). Either way, as when the editor in a terminal is left,
 the agents' worktrees made ahead are removed, and the asks still running
 are listed there; and `stacked web` ends once each page is told (a few
 seconds at most, for a page that reads nothing). A ctrl-c while `$EDITOR`
-runs there goes to `$EDITOR` alone.
+runs in that terminal goes to `$EDITOR` alone.
 
 With a port the settings fix, `"fixed-random"` or a number, the address is
 kept for the next launch: `stacked web` keeps its token, for that port
@@ -165,9 +237,9 @@ token cannot be kept in is said (`the token of this address cannot be kept
 in …, so the next launch opens a new tab: …`), and the launch goes on.
 
 When stacked quits, or the page's events are lost, the page says so over
-its screen, darkened, as while `$EDITOR` runs: `stacked has quit.`, then on
-a line of its own `This tab waits for stacked web to start again on this
-address, then goes on by itself.`; or, its events lost with no word from
+its screen, darkened, as while `$EDITOR` runs in the terminal: `stacked has
+quit.`, then on a line of its own `This tab waits for stacked web to start
+again on this address, then goes on by itself.`; or, its events lost with no word from
 the editor, `stacked cannot be reached.`, then `This tab waits for stacked
 web to answer again on this address, then goes on by itself.`. The browser
 asks for the events again each second, at the same address with the same
@@ -291,14 +363,22 @@ notices' lines unless `web.notifications` is false, the bell unless
 true. The server decides, and the page does as told. A page
 that comes is sent none of what the editor learns as it comes, the
 database read first, its notices sent to the pages there before. While
-`$EDITOR` runs, the editor's thread reads nothing: the threads that answer
-the pages' events share with it, under one lock, the pages that came and
-that it has not read yet, and what says that the editor runs, so that a
-page that comes then is told at once, and one come just before the editor
-starts, which the editor's thread does not know yet, is told as it starts.
-The threads that read the pages' lines read them under that lock too,
-which the pages are told under that the editor runs and sent the screen
-after under: a line read once a page could have that screen is done.
+`$EDITOR` runs in the page, the editor's thread runs the editor's
+terminal, lent the pages and the screen's size (`web.rs` `in_page`): it
+reads what the pages send, and what the terminal's reader read of the
+editor, from the one queue it reads the pages from, a terminal's by its
+number, so that what one wrote, read late, is not taken for the next's;
+the pages' lines are read as ever, and nothing more is shared under the
+lock below. While `$EDITOR` runs where `stacked web` was started, or in a
+window of its own, the editor's thread reads nothing: the threads that
+answer the pages' events share with it, under one lock, the pages that
+came and that it has not read yet, and what says that the editor runs, so
+that a page that comes then is told at once, and one come just before the
+editor starts, which the editor's thread does not know yet, is told as it
+starts. The threads that read the pages' lines read them under that lock
+too, which the pages are told under that the editor runs and sent the
+screen after under: a line read once a page could have that screen is
+done.
 Under that lock too: the token a request needs, which the launch renews
 under it while it waits for the tab of the launch before, so that a page
 of that tab either came back before or is refused after; the pages'
@@ -312,13 +392,14 @@ launch keeps its address; and with how long the browser waits before it
 asks for them again, once lost (a second), and the launch as their id,
 which the browser says as it asks again.
 A page of an older stacked does nothing with a notice, nor with the bell,
-nor with what says that the editor runs, as with any line it does not
-know; the notices' lines are as they were, so that it shows the banners
-as ever. The page sends
+nor with what says that the editor runs, nor with `t`, as with any line it
+does not know; the notices' lines are as they were, so that it shows the
+banners as ever. The page sends
 its keys, its clicks and its wheel back, the wheel
 with the cell under the mouse and the lines it turned, and with the left
 button down, each cell the mouse goes over, then the cell where the button
-is let go; and a notice clicked, by its run. Keys that come together are drawn
+is let go; a notice clicked, by its run; and, while the screen is the
+editor's own, its pastes as text. Keys that come together are drawn
 once, after the last, and each is done on the screen as the keys before it
 left it, as in a terminal, which draws the screen after each key: Home,
 then Space at once, opens the stack's menu with the stack's comments to
@@ -326,8 +407,10 @@ ask about, as a right click on the stack's header does. What the page does
 is wasm
 (`web/client.rs`: the rows made HTML, the notices what the page shows of
 them, the bell's line the bell, `$EDITOR` running the words said over the
-screen, which stacked sends the lines what the page keeps of it, the keys,
-the clicks and the wheel made lines for the server, the
+screen, `t` what says that the screen is the editor's own, which stacked
+sends the lines what the page keeps of it, the keys, F1 to F12 and Insert
+among them while the screen is the editor's, a paste the keys that type it
+or then its text, the clicks and the wheel made lines for the server, the
 wheel's small turns in pixels kept until they make a notch, 40 pixels, and
 each turn in lines or in pages a notch, whatever its size), carried by a
 hundred and ninety lines of JS (`web/index.html`), which reads the
