@@ -784,6 +784,14 @@ pub fn expand(p: &str) -> PathBuf {
     }
 }
 
+/// The program an editor's command runs, its first word's last path piece:
+/// `code` for `/usr/local/bin/code --wait`. What tells it the line it opens
+/// at (`Config::editing`), and what StackED's window and `stacked web`'s
+/// page name while it runs.
+pub fn program(editor: &str) -> String {
+    editor.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()
+}
+
 impl Config {
     /// The settings `text` says, and what it got wrong: settings it got
     /// wrong keep their defaults. Unreadable as a whole, an error.
@@ -1050,14 +1058,7 @@ impl Config {
         let Some(line) = line else {
             return format!("{editor} \"$1\"");
         };
-        let program = editor
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .rsplit('/')
-            .next()
-            .unwrap_or("");
-        match program {
+        match program(&editor).as_str() {
             "vi" | "vim" | "nvim" | "view" | "gvim" | "mvim" | "nano" | "pico" | "emacs" | "emacsclient" | "kak"
             | "joe" | "jed" | "mg" | "ne" => format!("{editor} +{line} \"$1\""),
             "hx" | "helix" | "subl" | "sublime_text" | "zed" | "zeditor" => format!("{editor} \"$1\":{line}"),
@@ -2133,6 +2134,12 @@ mod tests {
         assert_eq!(with("ed").editing(Some(7)), "ed \"$1\"", "one not known is given the file alone");
         assert_eq!(with("vim").editing(None), "vim \"$1\"");
         assert_eq!(with("kak +{line}").editing(Some(3)), "kak +3 \"$1\"");
+        // The program each runs, as StackED and `stacked web` name it while
+        // it does: its first word's last path piece.
+        assert_eq!(program("/usr/local/bin/code --wait"), "code");
+        assert_eq!(program(" hx "), "hx");
+        assert_eq!(program("vim"), "vim");
+        assert_eq!(program(""), "");
     }
 
     #[test]

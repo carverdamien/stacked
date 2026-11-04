@@ -132,8 +132,9 @@
 - `todo.rs`: the `git rebase -i` style list.
 - `search.rs`: searching what stacked holds, in a thread of its own.
 - `config.rs`, `keys.rs`: the settings (`~/.stacked/config.toml`, and a
-  checkout's own over it, but for `[web]`, the settings' file's alone), and
-  the keys they map, each in its context.
+  checkout's own over it, but for `[web]`, the settings' file's alone), the
+  program the editor's command runs, as StackED and `stacked web` name it
+  while it runs, and the keys they map, each in its context.
 - `home.rs`: where stacked keeps what is yours, ~/.stacked, as the binary
   works it out as it starts (nowhere, in the tests' own processes), and
   the files of before moved into it.
@@ -214,6 +215,7 @@
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server and the port it listens on, its wasm and its page, the
   notices it sends the page, which shows them as the system's banners,
+  what the page says over its screen while `$EDITOR` runs,
   StackED's icon on its tab (`icon.rs`, below); the build script compiles the wasm,
   or, where Rust lacks the wasm target, stops the build and says what to
   run.

@@ -10,7 +10,8 @@
 //!
 //! Only this machine's pages, holding the token the browser was opened
 //! with, may see it or drive it: a page from elsewhere could otherwise send
-//! it keys. What runs `$EDITOR` runs it where `stacked web` was started.
+//! it keys. What runs `$EDITOR` runs it where `stacked web` was started; the
+//! pages are told meanwhile, and say so over their screen.
 //!
 //! It listens on the port `--port` names, else on the one the settings'
 //! `[web]` say (`listen`); the token is new each time, whatever the port.
@@ -18,8 +19,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -29,7 +30,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::{Port, Web};
+use crate::config::{Port, Web, program};
 use crate::db::{Error, Result};
 use crate::tui::{App, Effect, Notice};
 
@@ -41,10 +42,39 @@ const CURSOR: u32 = 1 << 16;
 
 /// What comes to the editor from the browsers.
 enum Input {
-    /// A browser's screen, `cols` by `rows`, and where it is sent the rows.
-    Join(Sender<String>, u16, u16),
+    /// A browser come, by its number among those `Coming` holds until this
+    /// is read, and its screen, `cols` by `rows`.
+    Join(usize, u16, u16),
     /// A line it sent: a key, a click, its size.
     Line(String),
+}
+
+/// What the editor's thread shares with the threads that answer the
+/// browsers' events: the browsers come whose join it has not read yet, each
+/// by its number, with where it is sent the rows; the number of the next;
+/// and, while `$EDITOR` runs, the line that says so. The editor's thread
+/// reads nothing until `$EDITOR` exits: a browser that comes meanwhile is
+/// told at once, and one come just before, which the editor's thread does
+/// not know yet, is told as it starts.
+#[derive(Default)]
+struct Coming {
+    browsers: Vec<(usize, Sender<String>)>,
+    next: usize,
+    editing: Option<String>,
+}
+
+/// `coming`, locked: as it was left, should a thread holding it have
+/// panicked.
+fn lock(coming: &Mutex<Coming>) -> MutexGuard<'_, Coming> {
+    coming.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Browser `id`, come, taken out of those `coming` holds: where it is sent
+/// the rows, the editor's alone from now on.
+fn came(coming: &Mutex<Coming>, id: usize) -> Option<Sender<String>> {
+    let mut c = lock(coming);
+    let at = c.browsers.iter().position(|(i, _)| *i == id)?;
+    Some(c.browsers.remove(at).1)
 }
 
 /// How many requests the server is answering, the browsers' events among
@@ -139,16 +169,18 @@ impl Bound {
         let Bound { listener, port, token } = self;
         let answering = Answering::default();
         let counting = answering.clone();
+        let coming = Arc::new(Mutex::new(Coming::default()));
+        let shared = coming.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (token, tx, answered) = (token.clone(), tx.clone(), counting.one());
+                let (token, tx, coming, answered) = (token.clone(), tx.clone(), shared.clone(), counting.one());
                 std::thread::spawn(move || {
-                    let _ = handle(stream, &token, port, &tx);
+                    let _ = handle(stream, &token, port, &tx, &coming);
                     drop(answered);
                 });
             }
         });
-        run(path, rx, &answering)
+        run(path, rx, &coming, &answering)
     }
 }
 
@@ -203,15 +235,17 @@ pub fn catch_signals() {
     }
 }
 
-/// The editor left, as the terminal's is once quit: the browsers told, the
-/// agents' worktrees it made ahead removed, the asks still running said.
-/// Then what is `answering` is waited for, for each browser to be told and
-/// the request that quit to be answered: `stacked web` ends with this, and
-/// what is not written by then never is. A page not told, its events cut,
-/// would try them again and again, never saying that the editor is gone.
-fn leave(app: &App, browsers: Vec<Sender<String>>, answering: &Answering) {
+/// The editor left, as the terminal's is once quit: the browsers told,
+/// those `coming` holds too, the agents' worktrees it made ahead removed,
+/// the asks still running said. Then what is `answering` is waited for, for
+/// each browser to be told and the request that quit to be answered:
+/// `stacked web` ends with this, and what is not written by then never is.
+/// A page not told, its events cut, would try them again and again, never
+/// saying that the editor is gone.
+fn leave(app: &App, browsers: Vec<Sender<String>>, coming: &Mutex<Coming>, answering: &Answering) {
     // Each sent its last, then nothing more: its events end once written.
-    for b in browsers {
+    let came = std::mem::take(&mut lock(coming).browsers);
+    for b in browsers.into_iter().chain(came.into_iter().map(|(_, b)| b)) {
         let _ = b.send("bye".into());
     }
     app.leave();
@@ -221,9 +255,10 @@ fn leave(app: &App, browsers: Vec<Sender<String>>, answering: &Answering) {
 
 /// The editor, as the terminal runs it: what the browsers send done, its
 /// screen drawn after, the rows that changed sent them, after the notices
-/// of what it learned meanwhile; until it is left, once what it is
-/// `answering` is answered.
-fn run(path: &Path, rx: Receiver<Input>, answering: &Answering) -> Result<()> {
+/// of what it learned meanwhile; while `$EDITOR` runs, the browsers told so
+/// first, those `coming` holds too, and sent the screen whole after; until
+/// it is left, once what it is `answering` is answered.
+fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Answering) -> Result<()> {
     let mut app = App::new(path)?;
     // What it learns, told the browsers, unless the settings say not to.
     if app.cfg.web.notifications {
@@ -241,20 +276,21 @@ fn run(path: &Path, rx: Receiver<Input>, answering: &Answering) -> Result<()> {
             Ok(i) => Some(i),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => {
-                leave(&app, browsers, answering);
+                leave(&app, browsers, coming, answering);
                 return Ok(());
             }
         };
         // Ctrl-c, a kill, the terminal closed: left as Quit leaves it.
         if INTERRUPTED.load(Ordering::SeqCst) || TERMINATED.load(Ordering::SeqCst) {
-            leave(&app, browsers, answering);
+            leave(&app, browsers, coming, answering);
             return Ok(());
         }
         // All that came meanwhile, before it is drawn: a paste is many keys.
         let mut whole = false;
         for input in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
             match input {
-                Input::Join(tx, cols, rows) => {
+                Input::Join(id, cols, rows) => {
+                    let Some(tx) = came(coming, id) else { continue };
                     // What the editor learns of the database as the browser
                     // comes was there before it: read first, and its notices
                     // told the browsers there before alone, so that a page
@@ -271,16 +307,32 @@ fn run(path: &Path, rx: Receiver<Input>, answering: &Answering) -> Result<()> {
                     match act(&mut app, &line, &mut size) {
                         Effect::None => {}
                         Effect::Quit => {
-                            leave(&app, browsers, answering);
+                            leave(&app, browsers, coming, answering);
                             return Ok(());
                         }
-                        // $EDITOR, where `stacked web` was started: a ctrl-c
-                        // there meanwhile was the editor's.
+                        // $EDITOR, where `stacked web` was started: the
+                        // browsers told first, the program it runs named,
+                        // those come whose join is not read yet among them,
+                        // as nothing is read until it exits; then sent the
+                        // screen after, whole, changed or not, which takes
+                        // the place of what they say over it, whether it ran
+                        // or not. A ctrl-c there meanwhile was the editor's.
                         e => {
+                            let said = editing(&program(&crate::config::get().editor()));
+                            {
+                                let mut c = lock(coming);
+                                for (_, b) in &c.browsers {
+                                    let _ = b.send(said.clone());
+                                }
+                                c.editing = Some(said.clone());
+                            }
+                            tell(&mut browsers, &[said]);
                             if let Err(e) = app.effect(e) {
                                 app.status = e.0;
                             }
+                            lock(coming).editing = None;
                             INTERRUPTED.store(false, Ordering::SeqCst);
+                            whole = true;
                         }
                     }
                     whole |= size != was;
@@ -323,12 +375,22 @@ fn tell(browsers: &mut Vec<Sender<String>>, lines: &[String]) {
     browsers.retain(|b| lines.iter().all(|m| b.send(m.clone()).is_ok()));
 }
 
+/// `text` with its control characters spaces, as a row's text has them: in
+/// a line for a browser, no new line, nor US.
+fn plain(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
 /// Notice `n` as web/client.rs reads it: `n RUN US TITLE US BODY`, the run
-/// it is of, its title and its body, each with its control characters
-/// spaces, US among them, as a row's text has them.
+/// it is of, its title and its body, each `plain`.
 fn notice(n: &Notice) -> String {
-    let plain = |s: &str| s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
     format!("n {}\u{1f}{}\u{1f}{}", plain(&n.run), plain(&n.title), plain(&n.body))
+}
+
+/// The line that tells a browser `$EDITOR` runs `program`, as web/client.rs
+/// reads it: `e PROGRAM`, the program `plain`.
+fn editing(program: &str) -> String {
+    format!("e {}", plain(program))
 }
 
 /// What a line a browser sent does: a key pressed (`k NAME MODS`, `k c HEX
@@ -513,8 +575,9 @@ fn icons() -> &'static [Vec<u8>; 2] {
 /// rows as they change (server-sent events), or a browser's lines. Only
 /// from a page of this machine's, holding the token, the icon too: the page
 /// links it with the token, and `/favicon.ico`, which a browser may ask for
-/// on its own, without it, is refused as all else is.
-fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>) -> std::io::Result<()> {
+/// on its own, without it, is refused as all else is. A browser's events
+/// start among those `coming` holds, told first if `$EDITOR` runs.
+fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>, coming: &Mutex<Coming>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut out = stream;
     let mut first = String::new();
@@ -553,7 +616,20 @@ fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>) -> std:
         ("GET", "/events") => {
             let n = |k: &str| param(k).and_then(|v| v.parse().ok()).unwrap_or(0);
             let (rows_tx, rows) = mpsc::channel();
-            let _ = tx.send(Input::Join(rows_tx, n("cols"), n("rows")));
+            // Come, under the lock that `$EDITOR` starts under: told first
+            // if it runs, else told by the editor's thread if it starts
+            // before it reads this join.
+            let id = {
+                let mut c = lock(coming);
+                if let Some(said) = &c.editing {
+                    let _ = rows_tx.send(said.clone());
+                }
+                let id = c.next;
+                c.next += 1;
+                c.browsers.push((id, rows_tx));
+                id
+            };
+            let _ = tx.send(Input::Join(id, n("cols"), n("rows")));
             out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n\r\n")?;
             out.flush()?;
             loop {

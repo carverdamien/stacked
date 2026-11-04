@@ -36,6 +36,7 @@ use ratatui::style::{Color, Modifier};
 use unicode_width::UnicodeWidthStr;
 
 use self::menu::{Bar, Menu};
+use crate::config::program;
 use crate::db::{Error, Result};
 use crate::tui::{App, Effect, Turned};
 
@@ -1508,12 +1509,6 @@ fn paint(painter: &egui::Painter, grid: &Grid, p: &Painted, real: &[bool; 4]) {
         over.add_colored_rect(snap(egui::Rect::from_min_size(at.min, vec2(2.0 * thick, at.height()))), FG);
     }
     painter.add(egui::Shape::mesh(over));
-}
-
-/// The program an editor's command runs: `code` for `/usr/local/bin/code
-/// --wait`.
-fn program(editor: &str) -> String {
-    editor.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string()
 }
 
 /// Over the screen while `$EDITOR` runs `program`, in `area`: what the

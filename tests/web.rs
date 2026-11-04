@@ -955,7 +955,13 @@ struct Served {
 /// `home`, as it says where it is; or, if it ends first, all it said, a
 /// line each.
 fn try_served(home: &Path, dir: &Path, db: &Path, args: &[&str]) -> Result<Served, Vec<String>> {
-    let mut child = web_in(home, dir, db, args).spawn().unwrap();
+    started(web_in(home, dir, db, args))
+}
+
+/// `stacked web`, as `cmd` runs it (`web_in`), as it says where it is; or,
+/// if it ends first, all it said, a line each.
+fn started(mut cmd: Command) -> Result<Served, Vec<String>> {
+    let mut child = cmd.spawn().unwrap();
     let mut said = BufReader::new(child.stderr.take().unwrap());
     let child = Running(child);
     let mut before = Vec::new();
@@ -2323,4 +2329,81 @@ fn a_try_push_followed_done_on_treeherder_is_a_notice_saying_how_many_of_its_tas
     pushed_to_try(&db);
     let seen = until(&mut events, "the push's notice", is_notice);
     assert_eq!(notices(&seen), [notice("run-push", "stacked: s", "The try push is done: 1 of its 2 tasks failed. Its summary waits for your review.")]);
+}
+
+/// A stand-in for the editor at `dir/NAME`, which writes `ran` beside it as
+/// it starts, then waits for `exit` to be there, as an editor waits for you
+/// to be done, and exits, what it was given to edit as it was.
+fn waiting_editor(dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    let script = format!("#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n", dir.join("ran").display(), dir.join("exit").display());
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// As `served`, its editor the program at `editor`, as `$VISUAL` and
+/// `$EDITOR` name it.
+fn served_editing(home: &Path, dir: &Path, db: &Path, editor: &Path) -> Served {
+    let mut cmd = web_in(home, dir, db, &[]);
+    cmd.env("VISUAL", editor).env("EDITOR", editor);
+    started(cmd).unwrap_or_else(|said| panic!("it never said where it is: {said:#?}"))
+}
+
+/// Waits for `path` to be there: whether it is.
+fn there(path: &Path) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < PATIENCE {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    path.exists()
+}
+
+#[test]
+fn while_the_editor_runs_the_page_says_so_over_its_screen_a_page_come_meanwhile_too_until_the_screen_after() {
+    let (tmp, db) = setup();
+    let editor = waiting_editor(tmp.path(), "slowedit");
+    let s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
+    let mut first = events(s.port, &s.token, 400);
+    until(&mut first, "the patches", |l| text(l).contains("Bug 2 - add b"));
+    // The first patch edited in $EDITOR: the page told first, the program it
+    // runs named.
+    edit_first_patch(s.port, &s.token, &mut first);
+    let said = "data: e slowedit";
+    until(&mut first, "the editor's word", |l| l == said);
+    // A page come while the editor runs: told it at once, before any screen,
+    // as the editor's thread reads nothing meanwhile.
+    assert!(there(&tmp.path().join("ran")), "the editor never ran");
+    let mut second = events(s.port, &s.token, 400);
+    let seen = until(&mut second, "its word", |l| l.starts_with("data: "));
+    assert_eq!(seen.last().map(String::as_str), Some(said), "{seen:#?}");
+    // The editor done: each page sent the screen whole, which takes the
+    // place of the word, the bottom line saying what came of it.
+    std::fs::write(tmp.path().join("exit"), "").unwrap();
+    for page in [&mut first, &mut second] {
+        let seen = until(page, "the screen after", |l| l.starts_with("data: s "));
+        assert!(!seen.iter().any(|l| l.starts_with("data: r ")), "{seen:#?}");
+        until(page, "what came of it", |l| text(l).contains("nothing changed"));
+    }
+    s.quit();
+}
+
+#[test]
+fn an_editor_that_cannot_run_is_said_over_the_screen_until_the_screen_after_says_why_in_the_browser() {
+    let (tmp, db) = setup();
+    let editor = tmp.path().join("nowhere").join("noedit");
+    let s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
+    let mut events = events(s.port, &s.token, 400);
+    until(&mut events, "the patches", |l| text(l).contains("Bug 2 - add b"));
+    edit_first_patch(s.port, &s.token, &mut events);
+    until(&mut events, "the editor's word", |l| l == "data: e noedit");
+    // Over at once: the screen whole, the bottom line saying why.
+    let seen = until(&mut events, "the screen after", |l| l.starts_with("data: s "));
+    assert!(!seen.iter().any(|l| l.starts_with("data: r ")), "{seen:#?}");
+    let why = format!("{} failed; nothing changed", editor.display());
+    until(&mut events, "why", |l| text(l).contains(&why));
+    s.quit();
 }

@@ -1344,7 +1344,14 @@ once it knows of it, its look answered by a stand-in for Lando and
 Treeherder (`try_push::web_stand_in`, and `try_push::look_every` with no
 wait between looks), done on Treeherder, one of its two tasks failed, its
 notice saying so (`The try push is done: 1 of its 2 tasks failed. Its
-summary waits for your review.`); and
+summary waits for your review.`); `$EDITOR` running, in a `stacked web`
+run for real, its stand-in a script that waits for a file: the first patch
+edited from its menu, the page told first, `e slowedit`, the program it
+runs, a page come while it runs told it at once, before any screen, and,
+the editor done, each page sent the screen whole, no row before it, the
+bottom line saying `nothing changed`; and an editor that cannot run told
+all the same, `e noedit`, then the screen whole at once, the bottom line
+saying why (`…/noedit failed; nothing changed`); and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the wheel said once it turned a notch, with the cell under the mouse
@@ -1363,7 +1370,8 @@ browser sends the click before the focus or after; and a notice made what
 the page shows of it, its tag, its title, its body and the line its click
 sends the server, each on a line of its own, a new line in its title or
 its body a space, and nothing for one short of a field, or whose run is
-empty or holds a space. With
+empty or holds a space; and `$EDITOR` running made the words said over
+the screen, by the program it runs, `the editor` when none is named. With
 the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
 it, with no window: nothing drawn before the window's size, a key, a
 click, 1 on the versions of a patch opening the dialog of the views of
@@ -1924,7 +1932,9 @@ changes, and a mark that holds no section's key holding its lines alone;
 those in `reading.rs`, Space and Delete on that trailer marking and
 unmarking the message as on an empty line, the next line to read found
 past the trailer, and the trailer drawn as a line that needs nothing, or
-without moz-phab a line to read; those in `config.rs`, a file of settings over another, a
+without moz-phab a line to read; those in `config.rs`, the editor told
+the line it opens at as it takes it, and the program its command runs, as
+StackED and `stacked web` name it, its first word's last path piece, a file of settings over another, a
 checkout's own read and written unless git tracks it, the patches
 pane's `compact`, as versions before the files wrote it, read as them,
 the width messages are wrapped at, one too narrow refused, the Bugzilla a

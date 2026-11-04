@@ -106,7 +106,23 @@ screen of high density, each size drawn once and written as a PNG by
 stacked itself, with no eframe (`icon.rs`); the page asks for it with the
 token, as for all else, and `/favicon.ico`, which a browser may ask for on
 its own, without the token, is refused. The editor runs where `stacked web`
-was started: `$EDITOR`, for what is edited in it, opens there. Quit is
+was started: `$EDITOR`, for what is edited in it, opens there. Meanwhile
+the page says so over its screen, darkened, as StackED's window does:
+`The text is open in vim, in the terminal `stacked web` was started from
+if vim runs in one.`, then on a line of its own `stacked goes on once vim
+exits.`, vim being the program the editor's command runs, as StackED
+names it (the settings' `editor`, else `$VISUAL`, else `$EDITOR`, else
+vi: the last path piece of its first word), `the editor` when there is
+none. The server says it to every page before it runs the editor, and at
+once to a page that comes while it runs, which says it over a screen still
+empty, as nothing else is read until the editor exits. Then, whether the
+editor ran or could not run, the server sends each page the screen whole,
+which takes the place of what was said over it; the bottom line says
+what came of it (`nothing changed`), or why the editor failed
+(`/path/to/noedit failed; nothing changed`). Keys, clicks and the wheel
+the page sends meanwhile wait, and are done once the editor exits, on the
+screen as it is then: what is said over the screen lets the mouse through
+to it, as before. Quit is
 quit, and the page says so. A ctrl-c there, a kill, or that terminal
 closing quits too. Either way, as when the editor in a terminal is left,
 the agents' worktrees made ahead are removed, and the asks still running
@@ -168,9 +184,15 @@ page's size, and sends the page the rows that changed (server-sent events),
 after the notices of what it learned meanwhile (`tui/notices.rs`), so that
 a page sent the screen that says what landed was sent its notice; a page
 that comes is sent none of what the editor learns as it comes, the
-database read first, its notices sent to the pages there before. A page of
-an older stacked does nothing with a notice, as with any line it does not
-know. The page sends its keys, its clicks and its wheel back, the wheel
+database read first, its notices sent to the pages there before. While
+`$EDITOR` runs, the editor's thread reads nothing: the threads that answer
+the pages' events share with it, under one lock, the pages that came and
+that it has not read yet, and what says that the editor runs, so that a
+page that comes then is told at once, and one come just before the editor
+starts, which the editor's thread does not know yet, is told as it starts.
+A page of an older stacked does nothing with a notice, nor with what says
+that the editor runs, as with any line it does not know. The page sends
+its keys, its clicks and its wheel back, the wheel
 with the cell under the mouse and the lines it turned, and with the left
 button down, each cell the mouse goes over, then the cell where the button
 is let go; and a notice clicked, by its run. Keys that come together are drawn
@@ -180,7 +202,8 @@ then Space at once, opens the stack's menu with the stack's comments to
 ask about, as a right click on the stack's header does. What the page does
 is wasm
 (`web/client.rs`: the rows made HTML, the notices what the page shows of
-them, the keys, the clicks and the wheel made lines for the server, the
+them, `$EDITOR` running the words said over the screen, the keys, the
+clicks and the wheel made lines for the server, the
 wheel's small turns in pixels kept until they make a notch, 40 pixels, and
 each turn in lines or in pages a notch, whatever its size), carried by a
 hundred lines of JS (`web/index.html`), which reads the wheel's mode

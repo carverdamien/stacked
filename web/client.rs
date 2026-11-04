@@ -9,8 +9,10 @@
 //! 0 to 15, or #rrggbb; MODS ratatui's modifiers, and CURSOR where the
 //! cursor is); `bye`, the editor gone; `n RUN US TITLE US BODY`, a notice of
 //! what the editor learned of run RUN, for the page to show as the system's
-//! banner while it is not what you look at. A page of an older stacked
-//! does nothing with a line it does not know, such as a notice.
+//! banner while it is not what you look at; `e PROGRAM`, `$EDITOR` running
+//! PROGRAM, for the page to say over its screen until the next screen
+//! comes. A page of an older stacked does nothing with a line it does not
+//! know, such as a notice.
 //!
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
 //! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
@@ -51,10 +53,14 @@ const PIXELS: u32 = 0;
 
 /// What the page does with one of the server's lines: `size COLS ROWS`;
 /// `row Y`, and on the next line the row's HTML; `bye`; `notice`, and on
-/// the next lines what `notice` makes of it; else nothing.
+/// the next lines what `notice` makes of it; `editing`, and on the next
+/// lines what to say over the screen (`editing`); else nothing.
 pub fn screen(msg: &str) -> String {
     if let Some(n) = msg.strip_prefix("n ") {
         return notice(n);
+    }
+    if let Some(program) = msg.strip_prefix("e ") {
+        return format!("editing\n{}", editing(program));
     }
     let mut parts = msg.splitn(3, ' ');
     match (parts.next(), parts.next(), parts.next()) {
@@ -79,6 +85,14 @@ fn notice(n: &str) -> String {
     }
     let line = |s: &str| s.replace(['\n', '\r'], " ");
     format!("notice\n{run}\n{}\n{}\nn {run}", line(title), line(body))
+}
+
+/// What the page says over its screen while `$EDITOR` runs `program`, in
+/// StackED's words over its window (src/app.rs `waiting`): where it runs,
+/// and that stacked waits for it.
+fn editing(program: &str) -> String {
+    let program = if program.trim().is_empty() { "the editor" } else { program };
+    format!("The text is open in {program}, in the terminal `stacked web` was started from if {program} runs in one.\nstacked goes on once {program} exits.")
 }
 
 /// A colour of the server's: the page's own (none), one of the sixteen, or
@@ -474,6 +488,20 @@ mod tests {
         assert_eq!(screen("n run-1\u{1f}stacked: s"), "");
         assert_eq!(screen("n \u{1f}stacked: s\u{1f}Done."), "");
         assert_eq!(screen("n a run\u{1f}stacked: s\u{1f}Done."), "");
+    }
+
+    #[test]
+    fn the_editor_running_is_said_over_the_screen_by_the_program_it_runs() {
+        assert_eq!(
+            screen("e vim"),
+            "editing\nThe text is open in vim, in the terminal `stacked web` was started from if vim runs in one.\nstacked goes on once vim exits."
+        );
+        // No program named: the editor.
+        assert_eq!(
+            screen("e "),
+            "editing\nThe text is open in the editor, in the terminal `stacked web` was started from if the editor runs in one.\nstacked goes on once the editor exits."
+        );
+        assert_eq!(screen("e"), "");
     }
 
     #[test]
