@@ -411,9 +411,19 @@ pub fn rows(buf: &Buffer, cursor: Option<(u16, u16)>) -> Vec<String> {
         .collect()
 }
 
-/// One request: the page, the wasm, the rows as they change (server-sent
-/// events), or a browser's lines. Only from a page of this machine's,
-/// holding the token.
+/// StackED's icon for the page's tab, as web/index.html links it: PNGs of
+/// 32 pixels square, and of 64 for a screen of high density. Both drawn
+/// once, the first time a page asks for either.
+fn icons() -> &'static [Vec<u8>; 2] {
+    static DRAWN: std::sync::OnceLock<[Vec<u8>; 2]> = std::sync::OnceLock::new();
+    DRAWN.get_or_init(|| [32, 64].map(crate::icon::png))
+}
+
+/// One request: the page, the wasm, StackED's icon for the page's tab, the
+/// rows as they change (server-sent events), or a browser's lines. Only
+/// from a page of this machine's, holding the token, the icon too: the page
+/// links it with the token, and `/favicon.ico`, which a browser may ask for
+/// on its own, without it, is refused as all else is.
 fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut out = stream;
@@ -448,6 +458,8 @@ fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>) -> std:
     match (method, path) {
         ("GET", "/") => reply(&mut out, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),
         ("GET", "/client.wasm") => reply(&mut out, "200 OK", "application/wasm", CLIENT),
+        ("GET", "/icon-32.png") => reply(&mut out, "200 OK", "image/png", &icons()[0]),
+        ("GET", "/icon-64.png") => reply(&mut out, "200 OK", "image/png", &icons()[1]),
         ("GET", "/events") => {
             let n = |k: &str| param(k).and_then(|v| v.parse().ok()).unwrap_or(0);
             let (rows_tx, rows) = mpsc::channel();

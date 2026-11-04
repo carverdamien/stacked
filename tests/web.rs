@@ -68,13 +68,18 @@ fn setup_with(first: &str) -> (tempfile::TempDir, PathBuf) {
 /// A request to the server on `port`, from host `host`: its status line and
 /// its body.
 fn ask(port: u16, host: &str, request: &str, body: &str) -> (String, Vec<u8>) {
+    let (head, body) = answered(port, host, request, body);
+    (head.lines().next().unwrap().to_string(), body)
+}
+
+/// As `ask`, the answer's whole head: its status line, then its headers.
+fn answered(port: u16, host: &str, request: &str, body: &str) -> (String, Vec<u8>) {
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     write!(s, "{request} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
     let mut all = Vec::new();
     s.read_to_end(&mut all).unwrap();
     let at = all.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-    let head = String::from_utf8_lossy(&all[..at]).to_string();
-    (head.lines().next().unwrap().to_string(), all[at + 4..].to_vec())
+    (String::from_utf8_lossy(&all[..at]).to_string(), all[at + 4..].to_vec())
 }
 
 /// How long a test waits for what it waits for before it fails: long, as
@@ -269,6 +274,34 @@ fn a_browser_sees_the_editor_and_drives_it() {
     // The mouse gone from the page: nothing underlined.
     ask(port, &host, &format!("POST /input?t={token}"), "o\n");
     until(&mut events, "the mouse gone", |l| l.starts_with("data: r 3 ") && l.contains(",#444444,0\u{1f}  2 Bug 2 - add b"));
+}
+
+#[test]
+fn the_page_s_tab_has_stacked_s_icon_asked_for_with_the_token_as_all_else_is() {
+    let (_tmp, db) = setup();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let host = format!("127.0.0.1:{port}");
+    // The page links the icon at two sizes, and asks for each where its
+    // link says, with the query of the page's own address: the token.
+    let (status, page) = ask(port, &host, &format!("GET /?t={token}"), "");
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    let page = String::from_utf8(page).unwrap();
+    assert!(page.contains("icon.href = icon.dataset.path + location.search"), "{page}");
+    for size in [32, 64] {
+        let path = format!("/icon-{size}.png");
+        let link = format!(r#"<link rel="icon" type="image/png" sizes="{size}x{size}" data-path="{path}">"#);
+        assert!(page.contains(&link), "{link}: {page}");
+        // Asked so, the icon drawn at that size, as a PNG.
+        let (head, png) = answered(port, &host, &format!("GET {path}?t={token}"), "");
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n") && head.contains("\r\nContent-Type: image/png\r\n"), "{head}");
+        assert!(png == stacked::icon::png(size), "{size}: not the icon");
+        // Without the token, or from another name, nothing.
+        assert_eq!(ask(port, &host, &format!("GET {path}"), "").0, "HTTP/1.1 403 Forbidden");
+        assert_eq!(ask(port, "evil.example:80", &format!("GET {path}?t={token}"), "").0, "HTTP/1.1 403 Forbidden");
+    }
+    // The icon a browser may ask for on its own, never with the token: nothing.
+    assert_eq!(ask(port, &host, "GET /favicon.ico", "").0, "HTTP/1.1 403 Forbidden");
 }
 
 #[cfg(feature = "moz-phab")]

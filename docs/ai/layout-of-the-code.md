@@ -190,7 +190,8 @@
   each time, then Ask Now, Ask Later or Cancel; and a review's `Send it
   back to the agent…`, then Send Now or Cancel.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
-  its server, its wasm and its page; the build script compiles the wasm,
+  its server, its wasm and its page, StackED's icon on its tab (`icon.rs`,
+  below); the build script compiles the wasm,
   or, where Rust lacks the wasm target, stops the build and says what to
   run.
 - `app.rs`: `stacked app`, StackED: the editor on a thread of its own, and
@@ -201,7 +202,9 @@
   items do; `app/menu.rs`, the menu bar at the top of each window (egui's),
   its one menu, File, used with the mouse; `app/dialogs.rs`, the
   system's Open and Save dialogs and its alerts (rfd's), asked on a thread
-  of their own. `icon.rs`: StackED's icon, drawn at any size.
+  of their own. `icon.rs`: StackED's icon, drawn at any size, and written
+  as a PNG of stacked's own for `stacked web`'s page, which is why `web`
+  builds it too.
   `launcher.rs`: what StackED is to each system, made by `stacked app
   --bundle` and read when the system opens it: StackED.app on macOS, its
   launcher and icon on the desktops that follow freedesktop.org, the

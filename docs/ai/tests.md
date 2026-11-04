@@ -1073,7 +1073,9 @@ after the submit, the diff alone differing, the update grayed, the menu
 saying why), and the comments pane's states (expanded,
 compact, hidden) and the compact view of the code as they were. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
-needed, the page, the wasm, the rows as they change, a key and a click,
+needed, the page, the wasm, StackED's icon at the two sizes the page links
+for its tab, asked for as the page asks, with the token, and refused
+without it, as `/favicon.ico` is, the rows as they change, a key and a click,
 1 on the versions of a patch opening the menu of the views of the
 interdiffs under its heading, a click picking side by side, the version
 drawn so, and the change from a version to the next, picked so, drawn as
@@ -1266,8 +1268,14 @@ the editors with windows of their own, and the script a terminal is given
 to run it (for its owner alone, removing itself as it runs the edit,
 removed if the terminal cannot be opened); `refs.rs`, that what is not a
 web link is never handed to the system's way of opening links;
-`icon.rs`, what the icon shows where, at its largest (the sheets' edges)
-and at its smallest (a plain white S), and that it is grey all over. With
+`icon.rs`, with `web` too, what the icon shows where, at its largest (the
+sheets' edges) and at its smallest (a plain white S), and that it is grey
+all over; and the PNG stacked writes of it, at the page's two sizes and at
+one that takes three of deflate's stored blocks: its signature, the size
+and kind its IHDR says, each chunk's CRC-32, the zlib stream's header and
+Adler-32 (each check first giving its definition's own example), its
+blocks, and its rows read back, unfiltered, as the icon's pixels, as
+eframe's reader reads them too, with `app`. With
 the `demo` feature, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
 stand-in's fix, the board at its end, nothing made on disk; the answer

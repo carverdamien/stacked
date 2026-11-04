@@ -2,9 +2,14 @@
 //! of paper, stacked along the letter's path, each a little further along
 //! than the one under it so that their edges show, fanned where the S turns;
 //! on a black rounded square, as macOS draws an app's. Drawn at any size: for
-//! the window and the Dock while StackED runs, and for StackED.app's icon.
-//! Small, the sheets' edges are left out, and the S is plain white.
+//! the window and the Dock while StackED runs, and for StackED.app's icon;
+//! and for the tab of `stacked web`'s page, as a PNG this module writes
+//! itself (`png`): `web` is built without `app` too, with no eframe to
+//! write one. Small, the sheets' edges are left out, and the S is plain
+//! white. Built with either feature; what takes eframe's `IconData`
+//! (`data`), with `app` alone.
 
+#[cfg(feature = "app")]
 use eframe::egui::IconData;
 
 /// A colour: red, green, blue and alpha, each from 0 to 1.
@@ -336,12 +341,93 @@ pub fn rgba(size: u32) -> Vec<u8> {
 }
 
 /// The icon, `size` pixels square, as a window takes it.
+#[cfg(feature = "app")]
 pub fn data(size: u32) -> IconData {
     IconData {
         rgba: rgba(size),
         width: size,
         height: size,
     }
+}
+
+/// The icon, `size` pixels square, as a PNG file: its signature, then its
+/// chunks, IHDR (its size, and its kind: 8 bits for each of red, green,
+/// blue and alpha, not premultiplied), IDAT (its pixels) and IEND. The
+/// pixels are `rgba`'s, row by row from the top, each row after the byte
+/// that names its filter, 0 for none; all in a zlib stream of deflate's
+/// stored blocks, which compress nothing, and which every reader reads.
+pub fn png(size: u32) -> Vec<u8> {
+    let rgba = rgba(size);
+    let mut rows = Vec::with_capacity(rgba.len() + size as usize);
+    for row in rgba.chunks(size as usize * 4) {
+        rows.push(0);
+        rows.extend_from_slice(row);
+    }
+    // zlib's header: deflate, a window of 32K, no dictionary. Then the
+    // blocks, of 65535 bytes at most, each after a byte saying that it is
+    // stored and whether it is the last, then its length and the length's
+    // complement. Then the Adler-32 of what they hold.
+    let mut stream = vec![0x78, 0x01];
+    let mut rest = &rows[..];
+    loop {
+        let (block, after) = rest.split_at(rest.len().min(0xffff));
+        let len = block.len() as u16;
+        stream.push(u8::from(after.is_empty()));
+        stream.extend_from_slice(&len.to_le_bytes());
+        stream.extend_from_slice(&(!len).to_le_bytes());
+        stream.extend_from_slice(block);
+        rest = after;
+        if rest.is_empty() {
+            break;
+        }
+    }
+    stream.extend_from_slice(&adler32(&rows).to_be_bytes());
+    // Its width and height; 8 bits a channel; red, green, blue and alpha
+    // (6); deflate, PNG's filters, no interlacing.
+    let mut header = [size.to_be_bytes(), size.to_be_bytes()].concat();
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut png, b"IHDR", &header);
+    chunk(&mut png, b"IDAT", &stream);
+    chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+/// A chunk of a PNG file put after those of `png`: the length of `data`,
+/// `kind`, `data`, then the CRC-32 of `kind` and `data`.
+fn chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    let from = png.len();
+    png.extend_from_slice(kind);
+    png.extend_from_slice(data);
+    let crc = crc32(&png[from..]);
+    png.extend_from_slice(&crc.to_be_bytes());
+}
+
+/// The CRC-32 of `bytes`, as PNG checks each chunk (and zip each file): of
+/// the polynomial 0xedb88320, each byte taken from its lowest bit, started
+/// at all ones, its bits flipped at the end.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// The Adler-32 of `bytes`, as a zlib stream checks what it holds: in its
+/// low half, 1 and the sum of the bytes; in its high half, the sum of what
+/// the low half was after each byte; both modulo 65521.
+fn adler32(bytes: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in bytes {
+        a = (a + u32::from(x)) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
 }
 
 #[cfg(test)]
@@ -352,14 +438,14 @@ mod tests {
     fn the_icon_is_an_s_of_stacked_sheets_on_a_rounded_square() {
         // At the largest size and at the smallest.
         for size in [1024, 16] {
-            let icon = data(size);
-            assert_eq!((icon.width, icon.height, icon.rgba.len()), (size, size, (size * size * 4) as usize));
+            let icon = rgba(size);
+            assert_eq!(icon.len(), (size * size * 4) as usize);
             // Grey all over: black, white and the greys between, no colour.
-            assert!(icon.rgba.chunks(4).all(|p| p[0] == p[1] && p[1] == p[2]), "{size}: a colour");
+            assert!(icon.chunks(4).all(|p| p[0] == p[1] && p[1] == p[2]), "{size}: a colour");
             // The pixel at (x, y) on the square of 1024 units.
             let at = |x: u32, y: u32| {
                 let i = ((y * size / 1024 * size + x * size / 1024) * 4) as usize;
-                <[u8; 4]>::try_from(&icon.rgba[i..i + 4]).unwrap()
+                <[u8; 4]>::try_from(&icon[i..i + 4]).unwrap()
             };
             let is = |[v, _, _, a]: [u8; 4], what: &str| match what {
                 "nothing" => a == 0,
@@ -399,6 +485,71 @@ mod tests {
                 1024 => assert!(middle.windows(2).filter(|w| w[0].saturating_sub(w[1]) > 30).count() >= 6, "{middle:?}"),
                 _ => assert!(middle.iter().all(|&v| v > 235), "{middle:?}"),
             }
+        }
+    }
+
+    /// A big-endian number of four bytes, at the start of `bytes`.
+    fn be(bytes: &[u8]) -> u32 {
+        u32::from_be_bytes(bytes[..4].try_into().unwrap())
+    }
+
+    #[test]
+    fn the_icon_s_png_reads_back_as_its_pixels() {
+        // Each check as its definition gives it: CRC-32's check value, of
+        // "123456789", and the Adler-32 of "Wikipedia" that Wikipedia works
+        // out.
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+        assert_eq!(adler32(b"Wikipedia"), 0x11e6_0398);
+        // The page's two sizes, and one whose pixels take three blocks.
+        for size in [32, 64, 200] {
+            let png = png(size);
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "{size}");
+            // Its chunks, IHDR, IDAT and IEND, nothing after, each its CRC
+            // of its kind and its data.
+            let (mut chunks, mut rest) = (vec![], &png[8..]);
+            while !rest.is_empty() {
+                let len = be(rest) as usize;
+                let (kind, data) = (&rest[4..8], &rest[8..8 + len]);
+                assert_eq!(be(&rest[8 + len..]), crc32(&rest[4..8 + len]), "{size}: {}", String::from_utf8_lossy(kind));
+                chunks.push((kind, data));
+                rest = &rest[12 + len..];
+            }
+            let [(b"IHDR", header), (b"IDAT", stream), (b"IEND", [])] = chunks[..] else {
+                panic!("{size}: {:?}", chunks.iter().map(|(k, _)| String::from_utf8_lossy(k)).collect::<Vec<_>>());
+            };
+            // Its size, and its kind: 8 bits for each of red, green, blue
+            // and alpha; deflate, PNG's filters, no interlacing.
+            assert_eq!((be(header), be(&header[4..]), &header[8..]), (size, size, &[8, 6, 0, 0, 0][..]));
+            // The zlib stream: deflate, with no dictionary, its header's
+            // check right; its blocks, each stored, as long as it says, the
+            // last marked so; then the Adler-32 of what they hold, nothing
+            // after.
+            assert_eq!((stream[0] & 0x0f, stream[1] & 0x20, u16::from_be_bytes([stream[0], stream[1]]) % 31), (8, 0, 0), "{size}");
+            let (mut rows, mut at, mut blocks) = (vec![], 2, 0);
+            loop {
+                let (head, len) = (stream[at], u16::from_le_bytes([stream[at + 1], stream[at + 2]]));
+                assert_eq!((head >> 1, u16::from_le_bytes([stream[at + 3], stream[at + 4]])), (0, !len), "{size}: block {blocks}");
+                rows.extend_from_slice(&stream[at + 5..at + 5 + len as usize]);
+                (at, blocks) = (at + 5 + len as usize, blocks + 1);
+                if head & 1 == 1 {
+                    break;
+                }
+            }
+            assert_eq!(stream[at..], adler32(&rows).to_be_bytes(), "{size}");
+            // As few blocks as hold the rows: one at the page's sizes, three
+            // at the largest.
+            assert_eq!(blocks, rows.len().div_ceil(0xffff), "{size}");
+            // Its rows, from the top, each after its filter's byte, 0 for
+            // none: the pixels `rgba` gives.
+            let row = 1 + 4 * size as usize;
+            assert_eq!(rows.len(), row * size as usize, "{size}");
+            assert!(rows.chunks(row).all(|r| r[0] == 0), "{size}: a row filtered");
+            let pixels: Vec<u8> = rows.chunks(row).flat_map(|r| &r[1..]).copied().collect();
+            assert!(pixels == rgba(size), "{size}: other pixels than the icon's");
+            // And the reader eframe has, another than this test's, reads the
+            // same: the icon as StackED's window takes it.
+            #[cfg(feature = "app")]
+            assert!(eframe::icon_data::from_png_bytes(&png).unwrap() == data(size), "{size}: eframe reads another icon");
         }
     }
 }

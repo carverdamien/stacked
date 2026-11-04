@@ -28,7 +28,7 @@ pub mod head;
 pub mod held;
 pub mod history;
 pub mod home;
-#[cfg(feature = "app")]
+#[cfg(any(feature = "app", feature = "web"))]
 pub mod icon;
 pub mod import;
 pub mod keys;

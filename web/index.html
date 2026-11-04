@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <title>stacked</title>
+<link rel="icon" type="image/png" sizes="32x32" data-path="/icon-32.png">
+<link rel="icon" type="image/png" sizes="64x64" data-path="/icon-64.png">
+<script>
+// StackED's icon for the tab, each size at its path: asked for with the
+// page's own query, its token, as all the page asks for is.
+for (const icon of document.querySelectorAll('link[rel=icon]')) icon.href = icon.dataset.path + location.search;
+</script>
 <style>
 :root { --fg: #cccccc; --bg: #1e1e1e; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); }

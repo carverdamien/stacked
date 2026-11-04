@@ -42,7 +42,12 @@ listens on port N (else any free one), `--no-open` only says where it is.
 
 It listens on 127.0.0.1 only, and only a page holding the token in the
 address it opened (a new one each time) may see it or drive it: a page from
-elsewhere could otherwise send it keys. The editor runs where `stacked web`
+elsewhere could otherwise send it keys. The page's tab shows StackED's icon
+(In a window of its own: StackED, below), 32 pixels square, or 64 on a
+screen of high density, each size drawn once and written as a PNG by
+stacked itself, with no eframe (`icon.rs`); the page asks for it with the
+token, as for all else, and `/favicon.ico`, which a browser may ask for on
+its own, without the token, is refused. The editor runs where `stacked web`
 was started: `$EDITOR`, for what is edited in it, opens there. Quit is
 quit, and the page says so. A ctrl-c there, a kill, or that terminal
 closing quits too. Either way, as when the editor in a terminal is left,
