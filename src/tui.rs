@@ -733,6 +733,19 @@ pub enum Spot {
     AskOption(usize),
 }
 
+impl Spot {
+    /// Whether the mouse going over this line only marks it, underlined
+    /// where it is drawn (`App::hovered`), and picks nothing, so that what
+    /// is picked, and what is shown of it beside, stays so: a click picks
+    /// it, and a second click on it is Enter; the wheel over it scrolls its
+    /// pane, which keeps its pick. The side panes' lines, the patches' and
+    /// the comments', their headers too, and the review's list. Another
+    /// list goes so by its spot here.
+    fn marked(&self) -> bool {
+        matches!(self, Spot::Patch(_) | Spot::File(_) | Spot::HeadRow | Spot::NotesHead | Spot::Note(_) | Spot::ReviewLine(_))
+    }
+}
+
 /// That `spot` is drawn at `(x, y)` of `area`, `w` by `h`: what a click
 /// there is on.
 fn spot_in(spots: &std::cell::RefCell<Vec<(Rect, Spot)>>, area: Rect, (x, y, w, h): (usize, usize, usize, usize), spot: Spot) {
@@ -2404,9 +2417,11 @@ pub struct App {
     /// written again in the editor, which the middle does not show
     /// meanwhile: the cursor goes back there once it is written.
     hidden: Option<crate::rows::Place>,
-    /// The line of a side pane the mouse is over, in the browser: a patch
-    /// of the list or its header, a comment of the comments pane or its
-    /// header. Drawn underlined, and not picked: a click picks it.
+    /// The line the mouse is over and only marks, in the browser and in
+    /// StackED (`Spot::marked`): a patch of the list or its header, a
+    /// comment of the comments pane or its header, a line of the review's
+    /// list. Drawn underlined (`underline_hovered`), and not picked: a
+    /// click picks it.
     pub hovered: Option<Spot>,
     /// The selected line of a list screen, and its top.
     pub pick: usize,
@@ -4572,20 +4587,19 @@ impl App {
         Effect::None
     }
 
-    /// The mouse over `(x, y)` of the screen. Over a line of a side pane,
-    /// the patches' or the comments': that line marked as under it, and
-    /// not picked, the line picked staying so until a click. Elsewhere,
-    /// what is there picked, as the arrows would, so that a click does on
-    /// it what Enter does: in a menu, its item; a patch being moved goes
-    /// there, and HEAD being moved under the patch. Not the search's
-    /// scope, which a pick steps, nor while a comment is written, nor over
-    /// what `?` says. The mouse is in use from then on, until the next key
-    /// (`wheel`).
+    /// The mouse over `(x, y)` of the screen. Over a line the mouse only
+    /// marks (`Spot::marked`: a side pane's, the patches' or the comments',
+    /// and the review's list's): that line marked as under it, and not
+    /// picked, the line picked staying so until a click. Elsewhere, what is
+    /// there picked, as the arrows would, so that a click does on it what
+    /// Enter does: in a menu, its item; a patch being moved goes there, and
+    /// HEAD being moved under the patch. Not the search's scope, which a
+    /// pick steps, nor while a comment is written, nor over what `?` says.
+    /// The mouse is in use from then on, until the next key (`wheel`).
     pub fn hover(&mut self, x: u16, y: u16) {
         self.mouse = true;
         let spot = self.spot_at(x, y);
-        let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::File(_) | Spot::HeadRow | Spot::NotesHead | Spot::Note(_));
-        self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
+        self.hovered = spot.filter(|s| s.marked() && matches!(self.mode, Mode::Normal));
         let Some(spot) = spot else { return };
         let low = self.head_here().map_or(0, crate::head::Head::locked);
         // The ask dialog's buttons that can be pressed: the mouse picks
@@ -4631,7 +4645,7 @@ impl App {
             // key or a click, not under the mouse going by, which would move
             // what is under the mouse. Nor the search's scope, which a pick
             // steps, as → does: a click steps it, the mouse going by does not.
-            Mode::Normal if !side(&spot) && spot != Spot::SearchScope && matches!(spot, Spot::Banner | Spot::BannerLine(_)) == self.on_banner => {
+            Mode::Normal if !spot.marked() && spot != Spot::SearchScope && matches!(spot, Spot::Banner | Spot::BannerLine(_)) == self.on_banner => {
                 self.pick_spot(spot);
             }
             _ => {}
@@ -4643,10 +4657,19 @@ impl App {
         self.hovered = None;
     }
 
-    /// `st`, underlined while the mouse is over `spot`, a line of a side
-    /// pane.
-    fn hovered_style(&self, spot: Spot, st: Style) -> Style {
-        if self.hovered == Some(spot) { st.add_modifier(Modifier::UNDERLINED) } else { st }
+    /// The line the mouse is over and only marks (`hovered`), underlined
+    /// where it was drawn, each cell of it: once the panes are drawn, under
+    /// what is drawn over them.
+    fn underline_hovered(&self, buf: &mut Buffer) {
+        let Some(spot) = self.hovered else { return };
+        let area = buf.area;
+        for (r, _) in self.spots.borrow().iter().filter(|(_, s)| *s == spot) {
+            for (x, y) in (r.top()..r.bottom()).flat_map(|y| (r.left()..r.right()).map(move |x| (x, y))) {
+                if area.contains(ratatui::layout::Position::new(x, y)) {
+                    buf[(x, y)].modifier.insert(Modifier::UNDERLINED);
+                }
+            }
+        }
     }
 
     /// `spot` picked, as the arrows would: whether it is one to pick.
@@ -10766,6 +10789,8 @@ impl App {
                 }
             }
         }
+        // The line the mouse marks, underlined, under the boxes over it.
+        self.underline_hovered(buf);
         self.draw_bar(buf, area);
         self.draw_menu(buf, body);
         self.draw_ask(buf, body);
@@ -11497,7 +11522,6 @@ impl App {
                 st.patch(color::picked())
             };
         }
-        let st = self.hovered_style(Spot::Patch(None), st);
         put(buf, area, 0, 0, w, &fit(&header, w), st);
         self.spot(area, (0, 0, w), Spot::Patch(None));
         let Some(s) = self.current().cloned() else {
@@ -11743,13 +11767,13 @@ impl App {
         let here = (self.focus == Focus::List && !self.on_banner) || moving;
         let pick = |st: Style| if here { on_cursor(st) } else { st.patch(color::picked()) };
         // A patch's lines: the patch picked, unless one of its files is the
-        // pick, or HEAD's row; underlined under the mouse.
+        // pick, or HEAD's row.
         let patch_st = |at: usize| {
             let mut st = Style::new();
             if at == on && !self.on_stack && !moving_head && !on_head && file_pick.is_none() {
                 st = pick(st);
             }
-            self.hovered_style(Spot::Patch(Some(at)), st)
+            st
         };
         // Pinned, the patch's lines are drawn as in their place, and a click
         // on them goes to the patch.
@@ -11776,7 +11800,7 @@ impl App {
                 Listed::Patch(at, i) => (at, i),
                 Listed::File(k) => {
                     let st = if file_pick == Some(k) { pick(Style::new()) } else { Style::new() };
-                    put(buf, area, 0, y, w, &its[0], self.hovered_style(Spot::File(k), st));
+                    put(buf, area, 0, y, w, &its[0], st);
                     self.spot(area, (0, y, w), Spot::File(k));
                     y += 1;
                     continue;
@@ -11793,7 +11817,7 @@ impl App {
                         if y >= bottom {
                             break;
                         }
-                        put(buf, area, 0, y, w, &fit(line, w), self.hovered_style(Spot::HeadRow, st));
+                        put(buf, area, 0, y, w, &fit(line, w), st);
                         self.spot(area, (0, y, w), Spot::HeadRow);
                         y += 1;
                     }
@@ -12457,7 +12481,6 @@ impl App {
         if self.focus == Focus::Notes && self.notes_head && !self.on_banner {
             st = on_cursor(st);
         }
-        let st = self.hovered_style(Spot::NotesHead, st);
         put(buf, area, 0, 0, w, &fit(&header, w), st);
         self.spot(area, (0, 0, w), Spot::NotesHead);
         // Nothing listed: why, under the header, as the pane is wide.
@@ -12522,7 +12545,6 @@ impl App {
                     (head.patch(color::picked()), color::picked())
                 };
             }
-            let (head, tail) = (self.hovered_style(Spot::Note(i), head), self.hovered_style(Spot::Note(i), tail));
             put(buf, area, 0, y, tw, &fit(&said, tw), head);
             if per == 2 {
                 put(buf, area, 0, y + 1, tw, &fit(&last, tw), tail);

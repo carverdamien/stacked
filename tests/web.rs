@@ -1835,6 +1835,30 @@ fn each_stack_operation_is_marked_on_its_own_in_the_browser_too() {
 }
 
 #[test]
+fn the_mouse_over_the_review_s_list_marks_a_line_and_a_click_picks_it_in_the_browser_too() {
+    let (tmp, db) = setup();
+    work_on_two(tmp.path(), &db, "why so loud?", true, false);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the banner", |l| text(l).contains("1 landed ask waits for your review"));
+    ask(port, &host, &input, "k Esc -\nk Enter -\n");
+    let add = "add     2 Bug 1 - a c too";
+    let seen = until(&mut events, "the review", |l| text(l).contains(add));
+    let (x, y) = cell_of(seen.last().unwrap(), add);
+    let row = format!("data: r {y} ");
+    // The modifiers of the line's run that names the patch.
+    let mods = |l: &str| runs(l).into_iter().find(|(_, t)| t.contains("Bug 1 - a c too")).and_then(|(s, _)| s.rsplit(',').next()?.parse::<u32>().ok());
+    // The mouse over it: underlined (8), and not picked, not reversed (64).
+    ask(port, &host, &input, &format!("v {x} {y}\n"));
+    until(&mut events, "the line marked", |l| l.starts_with(&row) && mods(l).is_some_and(|m| m & 8 != 0 && m & 64 == 0));
+    // A click: picked, under the cursor.
+    ask(port, &host, &input, &format!("m {x} {y} l\nu {x} {y}\n"));
+    until(&mut events, "the line picked", |l| l.starts_with(&row) && mods(l).is_some_and(|m| m & 64 != 0));
+}
+
+#[test]
 fn a_review_closed_in_part_closes_once_its_check_away_from_the_screen_is_done_in_the_browser_too() {
     let (tmp, db) = setup();
     work_on_two(tmp.path(), &db, "why so loud?", true, false);

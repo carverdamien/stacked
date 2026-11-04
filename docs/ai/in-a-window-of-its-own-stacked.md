@@ -18,9 +18,9 @@ slanted. ⌘+ and ⌘− (ctrl elsewhere) make the text larger and smaller, ⌘0
 brings it back, and the window holds as many cells as fit in it, under its
 menu bar.
 
-The mouse works as in the browser (above): over the patches and the
-comments it marks the line under it, and a click picks the line, a second
-click on it being Enter; elsewhere the cursor follows it, so that a click
+The mouse works as in the browser (above): over the patches, the
+comments and the review's list it marks the line under it, and a click
+picks the line, a second click on it being Enter; elsewhere the cursor follows it, so that a click
 is Enter on what is under it. A right click is Space, its menu, and so is
 ctrl-click on macOS. A menu opened with a click opens next to the click,
 as in the browser, and stays whole in the window; a menu opened with a key

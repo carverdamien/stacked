@@ -1494,6 +1494,29 @@ fn added_work(tmp: &Path, db: &Path) {
 }
 
 #[test]
+fn the_mouse_over_the_review_s_list_marks_a_line_and_a_click_picks_it_in_the_window_too() {
+    let (tmp, db) = setup();
+    added_work(tmp.path(), &db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    screen(&s, "the banner", |b| text(b).contains("1 landed ask waits for your review"));
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    let add = "add     2 Bug 1 - a c too";
+    let b = screen(&s, "the review", |b| find(b, add).is_some());
+    let (x, y) = find(&b, add).unwrap();
+    // The mouse over it: underlined, and not picked, not reversed.
+    s.send(Input::Hover(x, y));
+    screen(&s, "the line marked", |b| {
+        let c = &b[(x + 4, y)];
+        c.modifier.contains(Modifier::UNDERLINED) && !c.modifier.contains(Modifier::REVERSED)
+    });
+    // A click: picked, under the cursor.
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the line picked", |b| b[(x + 4, y)].modifier.contains(Modifier::REVERSED));
+}
+
+#[test]
 fn each_stack_operation_is_marked_on_its_own_in_the_window_too() {
     use stacked::paint::color;
     let (tmp, db) = setup();

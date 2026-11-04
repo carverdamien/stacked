@@ -1052,6 +1052,84 @@ fn the_wheel_scrolls_the_review_s_pane_on_the_right_the_cursor_staying_on_its_li
     assert_eq!(right(&draw_sized(&mut app, 120, 10)), before);
 }
 
+/// Where `text` is in the review's list, its 48 columns of a screen drawn
+/// 120 wide: its first cell.
+fn in_review_list(screen: &str, text: &str) -> (u16, u16) {
+    for (y, line) in screen.lines().enumerate() {
+        let list: String = line.chars().take(48).collect();
+        if let Some(b) = list.find(text) {
+            return (list[..b].chars().count() as u16, y as u16);
+        }
+    }
+    panic!("no {text:?} in the review's list:\n{screen}");
+}
+
+#[test]
+fn the_mouse_over_the_review_s_list_marks_a_line_and_picks_nothing_as_over_the_patches() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_added(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // The list on the left, 48 columns; on the right, from column 49, what
+    // the line picked would be.
+    let right = |screen: &str| (1..29).map(|y| line_at(screen, 49, 71, y)).collect::<Vec<_>>();
+    let sel = |app: &App| app.reviewing.as_ref().map(|r| (r.sel, r.in_main)).unwrap();
+    let screen = draw(&mut app);
+    let (picked, shown) = (sel(&app), right(&screen));
+    let add = in_review_list(&screen, "add     2 Bug 1 - a c too");
+    // The mouse over the line of the patch the work adds: marked, underlined,
+    // and nothing picked, the right pane as it was.
+    app.hover(add.0, add.1);
+    let Some(Spot::ReviewLine(k)) = app.hovered else { panic!("{:?}", app.hovered) };
+    let buf = drawn(&mut app, 30);
+    let cell = &buf[(add.0, add.1)];
+    assert!(cell.modifier.contains(Modifier::UNDERLINED) && !cell.modifier.contains(Modifier::REVERSED), "{cell:?}");
+    assert_eq!((sel(&app), right(&text_of(&buf))), (picked, shown.clone()));
+    // A click picks it, and the right pane follows; a second click on it is
+    // Enter: the operation accepted.
+    assert_eq!(app.click(add.0, add.1, false), Effect::None);
+    assert_eq!(sel(&app), (k, false));
+    let screen = draw(&mut app);
+    assert_ne!(right(&screen), shown, "{screen}");
+    app.click(add.0, add.1, false);
+    assert!(selected_line(&mut app).is_some_and(|l| l.contains("✓ add     2 Bug 1 - a c too")), "{:?}", selected_line(&mut app));
+    // A right click: its menu, as Space opens it.
+    app.click(add.0, add.1, true);
+    assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    // On a screen of 8 lines, 5 lines of the list under its title: the wheel
+    // two lines down over it scrolls it, keeping what is picked, out of
+    // sight now, and the line now under the mouse marked; a key brings what
+    // is picked back into sight.
+    keys(&mut app, &[KeyCode::Home]);
+    let small = |app: &mut App| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 8));
+        app.draw(&mut buf);
+        buf
+    };
+    let picked_at = |buf: &Buffer| (2..7).find(|&y| (0..40).all(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED)));
+    let list = |buf: &Buffer| (2..7).map(|y| (0..48).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>();
+    let buf = small(&mut app);
+    let (before, picked) = (list(&buf), sel(&app));
+    assert!(picked_at(&buf).is_some_and(|y| y < 4), "{:?}", list(&buf));
+    app.hover(5, 4);
+    wheel(&mut app, (5, 4), 2);
+    let buf = small(&mut app);
+    assert_eq!(list(&buf)[..3], before[2..]);
+    assert_eq!((sel(&app), picked_at(&buf)), (picked, None), "kept, out of sight");
+    assert!(matches!(app.hovered, Some(Spot::ReviewLine(_))) && buf[(5, 4)].modifier.contains(Modifier::UNDERLINED));
+    key(&mut app, KeyCode::Char('x'));
+    assert!(picked_at(&small(&mut app)).is_some());
+}
+
 #[test]
 fn the_wheel_scrolls_the_patches_while_a_patch_is_moved_the_patch_going_under_the_mouse() {
     let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);

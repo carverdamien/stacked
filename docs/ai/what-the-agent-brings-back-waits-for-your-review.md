@@ -173,7 +173,13 @@ any of them mark the change as a whole. The line of each operation starts with
 its mark, and the operation after it keeps the colour of its kind: `add`
 green, `modify`, `reword` and the base magenta, `remove` red, `noop` dim,
 and `move` as any text. Under the cursor, a marked line is in the
-cursor's colours, its mark too, as every line of the list is. On the right
+cursor's colours, its mark too, as every line of the list is. In the
+browser and in StackED, the mouse over a line of the list marks it,
+underlined, as over the patches, and picks nothing, so that the right
+pane goes on showing the part picked: a click picks the line, the right
+pane following, a second click on it is Enter, and a right click opens
+its menu; the wheel over the list scrolls it, the part picked staying
+picked, in sight or not, until a key. On the right
 is the part the cursor is on, as it would be:
 the stack diff of the change, from the stack as it is, each new version's
 interdiff under it, its message compared word by word, where its lines

@@ -700,7 +700,13 @@ view of why opened, as `Move HEAD…` opens it; with moz-phab, let go below
 its last commit marked `!`, said why as a click there says it, HEAD
 being moved still; and a press on a patch's row a click at once, a drag
 from there the mouse going by), the mouse going over the search's scope
-turning nothing, and a click on it turning it, the scroll bar (only in the
+turning nothing, and a click on it turning it, the review's list under
+the mouse as the patches are (a line marked, underlined, nothing picked,
+the right pane as it was; a click picking it, the right pane following, a
+second click Enter, the operation accepted, a right click its menu; the
+wheel over the list scrolling it, what is picked kept out of sight, the
+line under the mouse marked, a key bringing what is picked back into
+sight), the scroll bar (only in the
 place the cursor is in, and only while it holds more than it shows: the
 patches pane longer than it is high, its bar in the line on its right
 beside its rows under the header, the header's row keeping the line, a
@@ -1197,7 +1203,9 @@ a patch of its own once its files are read, and only what the patches
 changed, under the heading of the lines, picked so, the lines left out
 said where they were, HEAD's row pressed, dragged
 onto patch 1 and let go there, `stacked web` run in the checkout, HEAD
-put down under patch 1,
+put down under patch 1, a line of the review's list marked by the mouse
+over it, underlined in the runs of its row and not reversed, then picked
+by a click, reversed,
 the wheel's ↑ after a key, sent with the cell under the mouse, on a patch,
 listing files, going to the last file of the patch above, whatever is
 under the mouse, and the editor left, the page told, the worktree made ahead
@@ -1291,7 +1299,9 @@ and only what the patches changed, under the heading of the lines, picked
 so, the lines left out said where they were,
 the screen sent saying HEAD's row is where a press is held for a drag,
 HEAD's row pressed, dragged onto patch 1 and let go there, HEAD put down
-under patch 1,
+under patch 1, a line of the review's list marked by the mouse over it,
+underlined and not reversed on the screen the window paints, then picked
+by a click, reversed,
 the wheel's ↑ after a key, sent with the cell under the mouse, on a
 patch, listing files, going to the last file of the patch above, whatever
 is under the mouse, the mouse over a patch then gone, a window

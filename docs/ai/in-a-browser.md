@@ -5,10 +5,11 @@
 stacked without it) serves the editor on this machine and opens the
 browser on it: the
 same editor, the same keys, drawn in the page as in a terminal. Over the
-side panes, the patches and the comments, the mouse marks the line under
-it, underlined, and picks nothing: what is picked stays so (reversed in
-the pane the cursor is in, grey in the other) until a click picks the
-line, and a second click on it is Enter. Elsewhere the cursor follows the
+side panes, the patches and the comments, and over the review's list, the
+mouse marks the line under it, underlined, and picks nothing: what is
+picked stays so (reversed in the pane the cursor is in, grey in the
+other), and so does what the pane beside shows of the line picked, until
+a click picks the line, and a second click on it is Enter. Elsewhere the cursor follows the
 mouse: what is under it is picked, as the arrows would (a line of the
 patch, an item of a list or of a menu; a patch being moved goes there), so
 a click is Enter on it. A right click is Space, its menu. A menu opened
@@ -53,11 +54,11 @@ mouse moves by the lines the wheel turned, a line for each notch, and
 stops at its first and its last lines, where the arrows stop it. Where the
 cursor follows the mouse (the middle, the half of the middle split in two
 under the mouse, the banner, a menu longer than its box, the lists of the
-screens of their own, History…'s stack diff, the review's list, what the
-search found, the list of the view of why Move HEAD does not move HEAD),
-the cursor goes on the line then under the mouse. A side pane, the patches
-or the comments, keeps what it picked, in sight or not, and the line then
-under the mouse is marked. So does a pane whose cursor the mouse does not
+screens of their own, History…'s stack diff, what the search found, the
+list of the view of why Move HEAD does not move HEAD), the cursor goes on
+the line then under the mouse. A side pane, the patches or the comments,
+and the review's list keep what they picked, in sight or not, and the
+line then under the mouse is marked. So does a pane whose cursor the mouse does not
 move: the review's pane on the right, and what a submit sends. A text, a
 transcript, a reference's preview, and what `?` says when it is taller
 than its box, have no cursor: they only scroll. Each place stays where the
