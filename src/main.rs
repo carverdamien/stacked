@@ -914,7 +914,11 @@ fn work_of(db: &Db, name: &str, run: Option<&str>) -> Result<Option<String>> {
 fn edited(path: &Path, name: &str, done: ops::Edited, accept: bool) -> Result<()> {
     match done {
         ops::Edited::Landed { said, run } if accept => {
-            let reviewed = Db::edit(path, |db| stacked::held::close(db, &run, &Default::default(), Some(true)))?;
+            // Not taken, as it changes a patch that should not change: the
+            // edit waits for your review all the same.
+            let reviewed = edit_asking(path, |db| stacked::held::close(db, &run, &Default::default(), Some(true))).map_err(|e| {
+                Error(format!("{}; your edit waits for your review, as run {run}: `stacked review {name} {run} --accept-all` takes it", e.0))
+            })?;
             // What waited on the review may go.
             ask::launch(path)?;
             eprintln!("stacked: {said}: {reviewed}");
@@ -926,6 +930,44 @@ fn edited(path: &Path, name: &str, done: ops::Edited, accept: bool) -> Result<()
         ops::Edited::Refused { why, .. } => return err(why),
     }
     Ok(())
+}
+
+/// Runs `edit` on the database at `path`, as `Db::edit` does. A write of a
+/// stack it makes refused, as it would change patches that should not
+/// change (`stacked::protected`): on a terminal, what the editor's dialog
+/// says is said there and asked, and once `accept` is typed, to the letter,
+/// `edit` runs again with those patches confirmed, for the one operation it
+/// makes; anything else typed, or with no terminal to ask on, the refusal
+/// is what went wrong, nothing changed, which says why and which patches.
+fn edit_asking<T>(path: &Path, mut edit: impl FnMut(&mut Db) -> Result<T>) -> Result<T> {
+    let mut confirmed: Vec<String> = Vec::new();
+    loop {
+        let r = match Db::edit_confirmed(path, &confirmed, &mut edit) {
+            Ok(out) => return Ok(out),
+            Err(stacked::db::Failed::Error(e)) => return Err(e),
+            Err(stacked::db::Failed::Protected(r)) => r,
+        };
+        if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+            return err(r.said_off_terminal());
+        }
+        eprintln!("stacked: {}.", r.title(false));
+        for l in r.lines() {
+            eprintln!("{l}");
+        }
+        let fetched = r.fetched(stacked::db::now());
+        if !fetched.is_empty() {
+            eprintln!("{fetched}");
+        }
+        eprint!("{}: ", r.type_said().trim_end_matches('.'));
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).map_err(|e| Error(format!("stdin: {e}")))?;
+        if answer.trim_end_matches(['\n', '\r']) != "accept" {
+            return err(r.not_typed(false));
+        }
+        // Asked again, should another write refuse others now: those typed
+        // for go on being confirmed.
+        confirmed.extend(r.ids());
+    }
 }
 
 fn run(path: &Path, cmd: Cmd) -> Result<()> {
@@ -1011,21 +1053,21 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 Some(b) => Some((b, git::toplevel(&here())?)),
                 None => None,
             };
-            Db::edit(path, |db| {
+            edit_asking(path, |db| {
                 if db.head(&name).is_some() {
                     ops::by_hand(db, &name)?;
                 }
-                ops::import(db, &name, drafts, replace, on)
+                ops::import(db, &name, drafts.clone(), replace, on.clone())
             })?;
         }
         Cmd::Base { name, rev } => {
             let base = git::rev_parse(&here(), &rev)?;
             let repo = git::toplevel(&here())?;
-            Db::edit(path, |db| {
+            edit_asking(path, |db| {
                 ops::by_hand(db, &name)?;
                 let s = db.stack(&name)?.clone();
                 let op = format!("base {}", &base[..12]);
-                db.set_stack_on(&name, s.patches, Some(base), Some(repo), &op)
+                db.set_stack_on(&name, s.patches, Some(base.clone()), Some(repo.clone()), &op)
             })?;
         }
         Cmd::Add { name, message, at, base } => {
@@ -1042,14 +1084,14 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 Some(_) => None,
                 None => Some(commit_here(base.as_deref())?),
             };
-            Db::edit(path, |db| {
+            edit_asking(path, |db| {
                 if let Some((base, repo)) = &new
                     && db.head(&name).is_none()
                 {
                     db.new_stack(&name, base, repo)?;
                 }
                 ops::by_hand(db, &name)?;
-                ops::add(db, &name, draft, at.map(|n| n.saturating_sub(1)))
+                ops::add(db, &name, draft.clone(), at.map(|n| n.saturating_sub(1)))
             })?;
         }
         Cmd::Show { name, patch: None, rev, work, .. } => {
@@ -1150,12 +1192,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Move { name, patch, to } => Db::edit(path, |db| {
+        Cmd::Move { name, patch, to } => edit_asking(path, |db| {
             ops::by_hand(db, &name)?;
             let from = db.resolve(db.stack(&name)?, &patch)?;
             ops::move_patch(db, &name, from, to.saturating_sub(1)).map(|_| ())
         })?,
-        Cmd::Drop { name, patches } => Db::edit(path, |db| {
+        Cmd::Drop { name, patches } => edit_asking(path, |db| {
             ops::by_hand(db, &name)?;
             let s = db.stack(&name)?;
             let at = patches.iter().map(|p| db.resolve(s, p)).collect::<Result<Vec<_>>>()?;
@@ -1200,27 +1242,27 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Undo { name } => {
-            Db::edit(path, |db| {
+            edit_asking(path, |db| {
                 ops::by_hand(db, &name)?;
                 db.undo(&name)
             })?;
         }
         Cmd::Redo { name } => {
-            Db::edit(path, |db| {
+            edit_asking(path, |db| {
                 ops::by_hand(db, &name)?;
                 db.redo(&name)
             })?;
         }
         Cmd::Select { rev } => {
             let rev = parse_rev(&rev)?;
-            Db::edit(path, |db| {
+            edit_asking(path, |db| {
                 let name = db.node(rev)?.name.clone();
                 ops::by_hand(db, &name)?;
                 db.select(rev)
             })?;
         }
         Cmd::Delete { name } => {
-            Db::edit(path, |db| {
+            edit_asking(path, |db| {
                 ops::by_hand(db, &name)?;
                 db.delete_stack(&name)
             })?;
@@ -1594,7 +1636,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     if accept {
                         let landed: Vec<String> = stacked::held::queue(&db, &name).into_iter().filter(|r| ours(r)).map(|r| r.id.clone()).collect();
                         for id in &landed {
-                            Db::edit(path, |db| stacked::held::close(db, id, &Default::default(), Some(true)))?;
+                            edit_asking(path, |db| stacked::held::close(db, id, &Default::default(), Some(true)))?;
                         }
                         if !landed.is_empty() {
                             ask::launch(path)?;
@@ -1773,7 +1815,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     return err(refused);
                 }
             }
-            let said = Db::edit(path, |db| {
+            let said = edit_asking(path, |db| {
                 let id = queued(db)?;
                 // A pull's: every part accepted, none rejected.
                 let marks = db.run(&id).map(|r| stacked::held::marks(db, r)).unwrap_or_default();

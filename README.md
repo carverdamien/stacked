@@ -376,6 +376,15 @@ Phabricator: D123456 · Needs Review · the diff differs · 2 new comments to pu
 
 Space on that line shows what differs, and Enter opens its menu.
 
+A patch whose revision is Accepted or Landed, as last fetched, should not
+change: whatever would give it another version (an undo or a redo, a
+version put back, a review closed, an edit by hand, asked about before
+`$EDITOR` opens) opens a dialog first, which names each such patch and its
+status, and changes them only once you type `accept` there; on the command
+line, stacked asks on the terminal, and with no terminal it refuses. Moving
+or dropping such a patch asks nothing, and nor does a pull that brings it
+to Phabricator's own latest diff.
+
 - **Pulling.** `Pull from Phabricator`, on the stack's menu, or `stacked
   moz-phab pull NAME`, brings in what changed there: each revision's
   latest diff, title and summary that are no version of its patch stacked

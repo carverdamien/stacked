@@ -13,6 +13,11 @@
 //! - A head moves a name to another stack of its tree: an undo, a redo, a
 //!   stack picked from the tree, or (to none) a delete. An edit made from
 //!   there starts a new branch, and the old one stays.
+//! - No stack goes in, nor does a head move, that would change a patch
+//!   that should not change, its revision Accepted or Landed on Phabricator
+//!   (`protected`), unless the edit was confirmed for that patch
+//!   (`Db::confirm`): refused, as an error of its own kind
+//!   (`Db::edit_confirmed`), nothing written.
 //! - A comment is on a line of a change, kept as the change gets new
 //!   versions; the latest record for a line is the comment.
 //! - What a read of Phabricator learnt of a revision, its state and its
@@ -340,6 +345,25 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(Error(msg.into()))
+}
+
+/// Why an edit of the database did not go (`Db::edit_confirmed`): what
+/// went wrong, said; or, an error of its own kind, a write of a stack
+/// refused as it would change patches that should not change, none of them
+/// confirmed for it (`protected::Refused`), which names them.
+#[derive(Debug)]
+pub enum Failed {
+    Error(Error),
+    Protected(Box<crate::protected::Refused>),
+}
+
+impl From<Failed> for Error {
+    fn from(f: Failed) -> Error {
+        match f {
+            Failed::Error(e) => e,
+            Failed::Protected(r) => Error(r.said()),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1126,6 +1150,15 @@ pub struct Db {
     mended: bool,
     /// The lines passed over, and why.
     pub warnings: Vec<String>,
+    /// The patches that should not change that the edit made of it may
+    /// change all the same, by the versions the stack holds: confirmed for
+    /// the one operation it makes (`confirm`). Never read from the file, and
+    /// kept as the whole history is taken in.
+    confirmed: BTreeSet<String>,
+    /// The write of a stack that edit refused last, as it would change
+    /// patches that should not change, none of them confirmed: what
+    /// `edit_confirmed` gives back, as the error of its own kind it is.
+    refused: Option<Box<crate::protected::Refused>>,
 }
 
 /// The database's lock, held until dropped.
@@ -1677,6 +1710,8 @@ impl Db {
             last_cp: None,
             mended: false,
             warnings: Vec::new(),
+            confirmed: BTreeSet::new(),
+            refused: None,
         }
     }
 
@@ -2084,12 +2119,34 @@ impl Db {
     }
 
     /// Runs `edit` on the database as it is on disk, under its lock, and
-    /// appends the records it added.
+    /// appends the records it added. A write of a stack it refused for
+    /// patches that should not change is what went wrong, said
+    /// (`protected::Refused::said`).
     pub fn edit<T>(path: &Path, edit: impl FnOnce(&mut Db) -> Result<T>) -> Result<T> {
         let (mut db, mut lock) = Db::lock(path)?;
         let out = edit(&mut db)?;
         db.save(&mut lock)?;
         Ok(out)
+    }
+
+    /// As `edit`, the patches `confirmed`, which should not change,
+    /// confirmed for the one operation it makes (`confirm`): a write of a
+    /// stack refused as it would change others comes back as the error of
+    /// its own kind (`Failed::Protected`), nothing written, for the
+    /// operation to be asked about, then made again with them confirmed.
+    pub fn edit_confirmed<T>(path: &Path, confirmed: &[String], edit: impl FnOnce(&mut Db) -> Result<T>) -> std::result::Result<T, Failed> {
+        let (mut db, mut lock) = Db::lock(path).map_err(Failed::Error)?;
+        db.confirm(confirmed.iter().cloned());
+        match edit(&mut db) {
+            Ok(out) => {
+                db.save(&mut lock).map_err(Failed::Error)?;
+                Ok(out)
+            }
+            Err(e) => Err(match db.refused.take() {
+                Some(r) => Failed::Protected(r),
+                None => Failed::Error(e),
+            }),
+        }
     }
 
     /// Appends the records added since the database was read.
@@ -2471,11 +2528,14 @@ impl Db {
     }
 
     /// The whole history taken in, if it was read: before anything changes.
+    /// What the edit made of it was confirmed for, and the write it refused,
+    /// are kept.
     fn promote(&mut self) {
         if let Some(whole) = self.shadow.take() {
             let (src, ino) = (self.src.take(), self.ino);
+            let (confirmed, refused) = (std::mem::take(&mut self.confirmed), self.refused.take());
             *self = *whole;
-            (self.src, self.ino) = (src, ino);
+            (self.src, self.ino, self.confirmed, self.refused) = (src, ino, confirmed, refused);
         }
     }
 
@@ -2609,7 +2669,9 @@ impl Db {
 
     /// Makes `name` hold `patches`, on `base`, edited from the stack it is
     /// on. Nothing is written if that is what it holds already; the rev of
-    /// the stack it is on either way.
+    /// the stack it is on either way. Refused, as every write of a stack,
+    /// when it changes a patch that should not change that this edit was
+    /// not confirmed for (`guard`).
     pub fn set_stack_on(
         &mut self,
         name: &str,
@@ -2653,10 +2715,40 @@ impl Db {
         crate::check::can_check(self.stack(name)?).map(|_| ())
     }
 
-    /// Appends `s`, once it is seen to apply.
+    /// Appends `s`, once it is seen to apply, and to change no patch that
+    /// should not change, but those confirmed (`guard`).
     fn push_stack(&mut self, s: Stack) -> Result<usize> {
         self.verify(&s)?;
+        self.guard(&s.name, &s.patches)?;
         self.push(Record::Stack(s))
+    }
+
+    /// Confirms `ids`, patches that should not change, by their versions,
+    /// for the one operation this edit makes: a write of a stack that
+    /// changes them is not refused for them (`guard`). As you typed
+    /// `accept` for them; and as a pull takes what Phabricator has.
+    pub fn confirm(&mut self, ids: impl IntoIterator<Item = String>) {
+        self.confirmed.extend(ids);
+    }
+
+    /// That the stack `name` is on may become one holding `patches`, as
+    /// every write of a stack checks once it is seen to apply: refused when
+    /// that changes patches that should not change (`protected::changes`),
+    /// but those confirmed for this edit (`confirm`). The refusal is kept,
+    /// the error of its own kind that `edit_confirmed` gives back, and its
+    /// message names the patches. Nothing is looked at but the patches the
+    /// write replaces.
+    fn guard(&mut self, name: &str, patches: &[String]) -> Result<()> {
+        let Some((_, s)) = self.head(name) else { return Ok(()) };
+        let changed: Vec<crate::protected::Changed> =
+            crate::protected::changes(self, &s.patches, patches).into_iter().filter(|c| !self.confirmed.contains(&c.id)).collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        let refused = crate::protected::Refused { stack: name.into(), patches: changed };
+        let said = refused.said();
+        self.refused = Some(Box::new(refused));
+        err(said)
     }
 
     /// As `set_stack_on`, the base kept.
@@ -2686,7 +2778,10 @@ impl Db {
     }
 
     /// Moves `name` to the stack at `rev`, once it is seen to apply; or, to
-    /// delete it, to none.
+    /// delete it, to none. Refused, as every write of a stack, when it
+    /// changes a patch that should not change that this edit was not
+    /// confirmed for (`push_head`): an undo, a redo and a stack picked from
+    /// the tree as any.
     fn move_head(&mut self, name: &str, rev: Option<usize>, op: String) -> Result<usize> {
         match rev {
             Some(r) => self.verify(self.node(r)?)?,
@@ -2695,7 +2790,15 @@ impl Db {
         self.push_head(name, rev, op)
     }
 
+    /// Moves `name` to the stack at `rev`, or to none, once it is seen to
+    /// change no patch that should not change, but those confirmed
+    /// (`guard`): to none, deleted, it drops them all, which changes none.
     fn push_head(&mut self, name: &str, rev: Option<usize>, op: String) -> Result<usize> {
+        let patches = match rev {
+            Some(r) => self.node(r)?.patches.clone(),
+            None => vec![],
+        };
+        self.guard(name, &patches)?;
         self.push(Record::Head(Head {
             name: name.into(),
             rev,
@@ -3343,7 +3446,8 @@ impl Db {
     }
 
     /// Puts `name` back on `rev` (or none), where it was before `add_node`
-    /// moved it: no check, as nothing new is chosen.
+    /// moved it: no check that it applies, as nothing new is chosen; the
+    /// patches that should not change are guarded as by every write.
     pub fn restore_head(&mut self, name: &str, rev: Option<usize>, op: String) -> Result<usize> {
         self.push_head(name, rev, op)
     }
@@ -4304,5 +4408,279 @@ mod tests {
         .unwrap();
         assert_eq!(read, (Some("all".to_string()), true));
         assert_eq!(Db::load(&path).unwrap().view("s"), Some("none"));
+    }
+
+    /// The trailer naming revision `D{n}` on the tests' Phabricator, and its
+    /// link.
+    #[cfg(feature = "moz-phab")]
+    fn named(n: u64) -> String {
+        format!("Differential Revision: {}", link(n))
+    }
+
+    #[cfg(feature = "moz-phab")]
+    fn link(n: u64) -> String {
+        format!("https://phabricator.example.com/D{n}")
+    }
+
+    /// A checkout, and a database holding stack `s` of three of its commits,
+    /// with messages `messages`: a.txt's line 2 changed; b.txt added; a.txt's
+    /// line 20 changed.
+    #[cfg(feature = "moz-phab")]
+    fn protected_stack(messages: [&str; 3]) -> (tempfile::TempDir, PathBuf) {
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "a")
+                .env("GIT_AUTHOR_EMAIL", "a@b")
+                .env("GIT_COMMITTER_NAME", "a")
+                .env("GIT_COMMITTER_EMAIL", "a@b")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path().join("src");
+        std::fs::create_dir(&r).unwrap();
+        git(&r, &["init", "-q", "-b", "main"]);
+        git(&r, &["config", "commit.gpgsign", "false"]);
+        let lines: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(r.join("a.txt"), &lines).unwrap();
+        git(&r, &["add", "."]);
+        git(&r, &["commit", "-qm", "base"]);
+        std::fs::write(r.join("a.txt"), lines.replace("line 2\n", "LINE 2\n")).unwrap();
+        git(&r, &["commit", "-qam", messages[0]]);
+        std::fs::write(r.join("b.txt"), "bee\n").unwrap();
+        git(&r, &["add", "."]);
+        git(&r, &["commit", "-qm", messages[1]]);
+        std::fs::write(r.join("a.txt"), lines.replace("line 2\n", "LINE 2\n").replace("line 20\n", "LINE 20\n")).unwrap();
+        git(&r, &["commit", "-qam", messages[2]]);
+        let path = tmp.path().join("db.jsonl");
+        let read = crate::import::read_range(&r, "HEAD~3..HEAD", false, false).unwrap();
+        Db::edit(&path, |d| crate::ops::import(d, "s", read.drafts, false, Some((read.base, r.display().to_string())))).unwrap();
+        (tmp, path)
+    }
+
+    /// The status of revision `D{n}` stored as a fetch stores it, now.
+    #[cfg(feature = "moz-phab")]
+    fn fetched_as(path: &Path, n: u64, status: &str) {
+        let state = State { status: status.into(), phid: format!("PHID-DREV-{n}"), ..Default::default() };
+        Db::edit(path, |db| db.store_revision(&link(n), &format!("D{n}"), Some(state), None).map(|_| ())).unwrap();
+    }
+
+    /// Patch `at` of stack `s` given a new version, its diff with `from`
+    /// written `to`: an edit to make with `Db::edit`.
+    #[cfg(feature = "moz-phab")]
+    fn changing(at: usize, from: &'static str, to: &'static str) -> impl Fn(&mut Db) -> Result<usize> {
+        move |db: &mut Db| {
+            let old = db.patch(&db.stack("s")?.patches[at]).clone();
+            let draft = crate::mbox::Draft { diff: old.diff.replace(from, to), ..crate::mbox::Draft::from(&old) };
+            crate::ops::replace(db, "s", at, draft, "edit")
+        }
+    }
+
+    /// The patches of stack `s`, by their ids.
+    #[cfg(feature = "moz-phab")]
+    fn patches_of(path: &Path) -> Vec<String> {
+        Db::load(path).unwrap().stack("s").unwrap().patches.clone()
+    }
+
+    #[cfg(feature = "moz-phab")]
+    #[test]
+    fn a_write_that_changes_a_patch_that_should_not_change_is_refused_naming_it_and_writes_nothing_unless_it_was_confirmed() {
+        let (_tmp, path) = protected_stack([&format!("Bug 1 - one\n\n{}", named(11)), &format!("Bug 2 - two\n\n{}", named(12)), "Bug 3 - three"]);
+        fetched_as(&path, 11, "accepted");
+        fetched_as(&path, 12, "published");
+        let was = patches_of(&path);
+        let bytes = std::fs::read(&path).unwrap();
+        // Patch 1's diff changed: refused, as an error of its own kind
+        // naming it, its revision, its status and what that means; nothing
+        // written.
+        let one = changing(0, "+LINE 2", "+Line two");
+        match Db::edit_confirmed(&path, &[], &one) {
+            Err(Failed::Protected(r)) => {
+                assert_eq!((r.stack.as_str(), r.ids()), ("s", vec![was[0].clone()]));
+                assert_eq!(r.lines(), ["Patch 1, D11, is Accepted on Phabricator: a change needs review again."]);
+                assert_eq!(r.fetched(now()), "That status was fetched from Phabricator just now.");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "nothing written");
+        // An edit that does not ask for the refusal says it as its error.
+        let e = Db::edit(&path, &one).unwrap_err();
+        assert_eq!(e.0, "patch 1 should not change, so nothing changed: D11 is Accepted on Phabricator, and a change needs review again");
+        // Confirmed for another patch, refused all the same.
+        assert!(matches!(Db::edit_confirmed(&path, &[was[1].clone()], &one), Err(Failed::Protected(_))));
+        // Patch 2's message alone changed, as it Landed: refused too.
+        let reword = |db: &mut Db| {
+            let old = db.patch(&db.stack("s")?.patches[1]).clone();
+            let draft = crate::mbox::Draft { message: old.message.replacen("two", "TWO", 1), ..crate::mbox::Draft::from(&old) };
+            crate::ops::replace(db, "s", 1, draft, "reword")
+        };
+        match Db::edit_confirmed(&path, &[], reword) {
+            Err(Failed::Protected(r)) => assert_eq!(r.lines(), ["Patch 2, D12, is Landed: it is in the tree already."]),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "nothing written");
+        // Both in one write: both named, in their order.
+        let both = |db: &mut Db| {
+            changing(0, "+LINE 2", "+Line two")(db)?;
+            reword(db)
+        };
+        match Db::edit_confirmed(&path, &[], both) {
+            // The first write refused: the second is not made.
+            Err(Failed::Protected(r)) => assert_eq!(r.ids(), [was[0].clone()]),
+            other => panic!("{other:?}"),
+        }
+        let whole = |db: &mut Db| {
+            let s = db.stack("s")?.clone();
+            let p1 = db.patch(&s.patches[0]).clone();
+            let p2 = db.patch(&s.patches[1]).clone();
+            let a = db.add_patch(crate::ops::revise(&p1, crate::mbox::Draft { diff: p1.diff.replace("+LINE 2", "+Line two"), ..crate::mbox::Draft::from(&p1) }))?;
+            let b = db.add_patch(crate::ops::revise(&p2, crate::mbox::Draft { message: format!("{}, again", p2.message), ..crate::mbox::Draft::from(&p2) }))?;
+            db.set_stack("s", vec![a, b, s.patches[2].clone()], "edit both")
+        };
+        match Db::edit_confirmed(&path, &[], whole) {
+            Err(Failed::Protected(r)) => {
+                assert_eq!(r.ids(), [was[0].clone(), was[1].clone()]);
+                assert_eq!(r.title(false), "this changes 2 patches that should not change");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "nothing written");
+        // Confirmed for exactly those: written.
+        Db::edit_confirmed(&path, &was[..2], whole).unwrap();
+        let now_on = patches_of(&path);
+        assert!(now_on[0] != was[0] && now_on[1] != was[1] && now_on[2] == was[2]);
+        // Confirmed for patch 1, the version the stack held: written, for
+        // that edit alone.
+        let (_tmp, path) = protected_stack([&format!("Bug 1 - one\n\n{}", named(11)), "Bug 2 - two", "Bug 3 - three"]);
+        fetched_as(&path, 11, "accepted");
+        let was = patches_of(&path);
+        Db::edit_confirmed(&path, &[was[0].clone()], &one).unwrap();
+        let now_on = patches_of(&path);
+        assert!(Db::load(&path).unwrap().patch(&now_on[0]).diff.contains("+Line two"));
+        // The next edit of it, of its new version, asks again.
+        assert!(matches!(Db::edit_confirmed(&path, &[], changing(0, "+Line two", "+Line 2")), Err(Failed::Protected(_))));
+    }
+
+    #[cfg(feature = "moz-phab")]
+    #[test]
+    fn a_patch_that_should_not_change_dropped_moved_or_left_as_it_is_while_others_change_asks_nothing() {
+        let (_tmp, path) = protected_stack([&format!("Bug 1 - one\n\n{}", named(11)), &format!("Bug 2 - two\n\n{}", named(12)), &format!("Bug 3 - three\n\n{}", named(13))]);
+        fetched_as(&path, 11, "accepted");
+        fetched_as(&path, 12, "published");
+        fetched_as(&path, 13, "changes-planned");
+        // Patch 3, Changes Planned, changed: nothing asked; so in Needs
+        // Review.
+        Db::edit_confirmed(&path, &[], changing(2, "+LINE 20", "+Line twenty")).unwrap();
+        fetched_as(&path, 13, "needs-review");
+        Db::edit_confirmed(&path, &[], changing(2, "+Line twenty", "+LINE 20")).unwrap();
+        // Patch 2, Landed, moved to the top, its version as it was; patch 1,
+        // Accepted, dropped.
+        let was = patches_of(&path);
+        Db::edit_confirmed(&path, &[], |db| crate::ops::move_patch(db, "s", 1, 2)).unwrap();
+        assert_eq!(patches_of(&path), [was[0].clone(), was[2].clone(), was[1].clone()]);
+        Db::edit_confirmed(&path, &[], |db| crate::ops::drop_patches(db, "s", &[0])).unwrap();
+        assert_eq!(patches_of(&path), [was[2].clone(), was[1].clone()]);
+        // A version of the same diff and message, its author alone another:
+        // no change.
+        Db::edit_confirmed(&path, &[], |db| {
+            let old = db.patch(&db.stack("s")?.patches[1]).clone();
+            crate::ops::replace(db, "s", 1, crate::mbox::Draft { author: Some("Someone Else <else@example.com>".into()), ..crate::mbox::Draft::from(&old) }, "edit")
+        })
+        .unwrap();
+        assert_ne!(patches_of(&path)[1], was[1]);
+        // Deleted, the stack drops them all: no change either.
+        Db::edit_confirmed(&path, &[], |db| db.delete_stack("s")).unwrap();
+    }
+
+    #[cfg(feature = "moz-phab")]
+    #[test]
+    fn undo_redo_and_a_stack_picked_from_the_tree_are_refused_as_any_write_that_changes_a_patch_that_should_not_change() {
+        let (_tmp, path) = protected_stack([&format!("Bug 1 - one\n\n{}", named(11)), "Bug 2 - two", "Bug 3 - three"]);
+        // Patch 1 changed, then Accepted as it is now.
+        let first = Db::load(&path).unwrap().head("s").unwrap().0;
+        Db::edit(&path, changing(0, "+LINE 2", "+Line two")).unwrap();
+        fetched_as(&path, 11, "accepted");
+        let accepted = patches_of(&path)[0].clone();
+        let bytes = std::fs::read(&path).unwrap();
+        // Undone, the version before would be back: refused, nothing written.
+        match Db::edit_confirmed(&path, &[], |db| db.undo("s")) {
+            Err(Failed::Protected(r)) => assert_eq!(r.ids(), std::slice::from_ref(&accepted)),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "nothing written");
+        // So is that stack picked from the tree.
+        assert!(matches!(Db::edit_confirmed(&path, &[], |db| db.select(first)), Err(Failed::Protected(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "nothing written");
+        // Confirmed: undone.
+        Db::edit_confirmed(&path, std::slice::from_ref(&accepted), |db| db.undo("s")).unwrap();
+        let before = patches_of(&path)[0].clone();
+        assert_ne!(before, accepted);
+        // Redone, the version it held would be back: refused, then confirmed.
+        let bytes = std::fs::read(&path).unwrap();
+        match Db::edit_confirmed(&path, &[], |db| db.redo("s")) {
+            Err(Failed::Protected(r)) => assert_eq!(r.ids(), std::slice::from_ref(&before)),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "nothing written");
+        Db::edit_confirmed(&path, &[before], |db| db.redo("s")).unwrap();
+        assert_eq!(patches_of(&path)[0], accepted);
+        // Deleted, then brought back by an undo: from no stack, nothing
+        // changes.
+        Db::edit_confirmed(&path, &[], |db| db.delete_stack("s")).unwrap();
+        Db::edit_confirmed(&path, &[], |db| db.undo("s")).unwrap();
+        assert_eq!(patches_of(&path)[0], accepted);
+    }
+
+    #[cfg(feature = "moz-phab")]
+    #[test]
+    fn a_patch_brought_to_what_phabricator_has_of_it_is_told_from_one_changed_otherwise() {
+        let (_tmp, path) = protected_stack([&format!("Bug 1 - one\n\n{}", named(11)), "Bug 2 - two", "Bug 3 - three"]);
+        let was = patches_of(&path);
+        let db = Db::load(&path).unwrap();
+        let p1 = db.patch(&was[0]).clone();
+        drop(db);
+        // D11's latest diff on Phabricator, stored raw: patch 1's as it is
+        // now, its line written otherwise.
+        let raw = p1.diff.replace("+LINE 2", "+Line two");
+        let state = State {
+            status: "accepted".into(),
+            title: "Bug 1 - one, as titled there".into(),
+            summary: "Its summary.".into(),
+            phid: "PHID-DREV-11".into(),
+            diff: 1000,
+            ..Default::default()
+        };
+        Db::edit(&path, |db| {
+            db.store_revision(&link(11), "D11", Some(state), None)?;
+            db.store_raw_diff(&link(11), 1000, &raw).map(|_| ())
+        })
+        .unwrap();
+        let mut db = Db::load(&path).unwrap();
+        let version = |db: &mut Db, diff: &str, message: &str| -> Vec<String> {
+            let id = db.add_patch(crate::ops::revise(&p1, crate::mbox::Draft { diff: diff.into(), message: message.into(), ..crate::mbox::Draft::from(&p1) })).unwrap();
+            let mut now = was.clone();
+            now[0] = id;
+            now
+        };
+        // Its latest diff, the patch's message: Phabricator's own.
+        let now = version(&mut db, &raw, &p1.message);
+        assert_eq!(crate::protected::from_phabricator(&db, &was, &now), [was[0].clone()]);
+        // Its title and summary as its message, the patch's diff: so too.
+        let titled = format!("Bug 1 - one, as titled there\n\nIts summary.\n\n{}", named(11));
+        let now = version(&mut db, &p1.diff, &titled);
+        assert_eq!(crate::protected::from_phabricator(&db, &was, &now), [was[0].clone()]);
+        // Both: so too.
+        let now = version(&mut db, &raw, &titled);
+        assert_eq!(crate::protected::from_phabricator(&db, &was, &now), [was[0].clone()]);
+        // Another diff, or another message: a change of the pull's own, not
+        // Phabricator's.
+        let now = version(&mut db, &p1.diff.replace("+LINE 2", "+Line 2"), &p1.message);
+        assert!(crate::protected::from_phabricator(&db, &was, &now).is_empty());
+        assert_eq!(crate::protected::changes(&db, &was, &now).len(), 1);
+        let now = version(&mut db, &raw, &format!("Bug 1 - one, reworded\n\n{}", named(11)));
+        assert!(crate::protected::from_phabricator(&db, &was, &now).is_empty());
     }
 }

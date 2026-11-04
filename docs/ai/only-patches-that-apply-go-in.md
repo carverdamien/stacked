@@ -7,7 +7,9 @@ would make. If they do not, nothing is written and the error says which
 patch failed and where (`patch 3 (...) does not apply to the patches below
 it (patch failed: a.txt:12)`). Undo, redo and picking from the tree only go
 to a stack that applies too. A patch with no diff is refused, as `git am`
-cannot apply it.
+cannot apply it. Seen to apply, a stack is then seen to change no patch
+that should not change, its revision Accepted or Landed on Phabricator,
+unless that was confirmed (Phabricator, below).
 
 An edit by hand that does not apply comes back in `$EDITOR` with why at its
 top, as `git rebase -i` does: put it right, or empty the file to give up.

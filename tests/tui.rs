@@ -21894,10 +21894,12 @@ fn patch_of(db: &Path, at: usize) -> stacked::db::Patch {
 }
 
 /// Patch `at` of stack `s` given its next version, at once: `message`, and
-/// `diff`.
+/// `diff`. What the test sets up, as made before: confirmed, whatever its
+/// revision's status is stored as.
 #[cfg(feature = "moz-phab")]
 fn next_version(db: &Path, at: usize, message: &str, diff: &str) {
-    Db::edit(db, |d| {
+    let was = patch_of(db, at).id;
+    Db::edit_confirmed(db, &[was], |d| {
         let old = d.patch(&d.stack("s")?.patches[at]).clone();
         let draft = stacked::mbox::Draft {
             message: message.into(),
@@ -28054,4 +28056,680 @@ fn a_notice_clicked_goes_to_its_stack_and_its_review_only_with_nothing_open() {
     // A run that is not there: nothing.
     app.noticed("run-none");
     assert_eq!((app.stack.as_str(), app.screen), ("s", Screen::Main));
+}
+
+// -- patches that should not change ---------------------------------------- //
+
+/// The statuses that protect a patch, as the database stores them; and two
+/// that do not.
+#[cfg(feature = "moz-phab")]
+const PROTECTED: [&str; 2] = ["accepted", "published"];
+#[cfg(feature = "moz-phab")]
+const UNPROTECTED: [&str; 2] = ["changes-planned", "needs-review"];
+
+/// The status of revision `D{n}` on the tests' Phabricator stored as
+/// `status`, as a fetch stored it `ago` seconds ago, nothing else of it.
+#[cfg(feature = "moz-phab")]
+fn stored_as(db: &Path, n: u64, status: &str, ago: i64) {
+    let state = stacked::db::State { status: status.into(), phid: format!("PHID-DREV-{n}"), ..Default::default() };
+    let revision = stacked::db::Revision {
+        link: format!("https://phabricator.example.com/D{n}"),
+        d: format!("D{n}"),
+        state: Some(state),
+        comments: Some(Default::default()),
+        time: stacked::db::now() - ago,
+    };
+    Db::append(db, &[stacked::db::Record::Revision(revision)]).unwrap();
+}
+
+/// The dialog asking before patches that should not change are changed, if
+/// it is open.
+#[cfg(feature = "moz-phab")]
+fn asking(app: &App) -> Option<stacked::tui::ProtectedDialog> {
+    match &app.mode {
+        Mode::Protected(d) => Some((**d).clone()),
+        _ => None,
+    }
+}
+
+/// The dialog's line of patch `n`, of revision `D{d}`, in `status`.
+#[cfg(feature = "moz-phab")]
+fn protected_line(n: usize, d: u64, status: &str) -> String {
+    match status {
+        "accepted" => format!("Patch {n}, D{d}, is Accepted on Phabricator: a change needs review again."),
+        _ => format!("Patch {n}, D{d}, is Landed: it is in the tree already."),
+    }
+}
+
+/// What the bottom line says of patch `n`, of `D{d}` in `status`, once
+/// accept was not typed: of an edit by hand asked about before $EDITOR
+/// opens (`hand`), that it was not made.
+#[cfg(feature = "moz-phab")]
+fn not_typed(n: usize, d: u64, status: &str, hand: bool) -> String {
+    let is = if status == "accepted" { "is Accepted on Phabricator" } else { "is Landed" };
+    let done = if hand { "the edit was not made" } else { "nothing changed" };
+    format!("{done}, as accept was not typed: patch {n} (D{d}) {is}")
+}
+
+/// The dialog open in `app` strict: with `accep`, `Accept`, and accept with
+/// a space before or after it typed, Enter does nothing, nor does a click
+/// on its Change button, the dialog staying and the bottom line saying why,
+/// and nothing is written to the database at `db`. Its field emptied again.
+#[cfg(feature = "moz-phab")]
+fn strict(app: &mut App, db: &Path) {
+    let bytes = std::fs::read(db).unwrap();
+    for typo in ["accep", "Accept", " accept", "accept "] {
+        typed(app, typo);
+        assert_eq!(key(app, KeyCode::Enter), Effect::None, "{typo:?}");
+        let d = asking(app).unwrap_or_else(|| panic!("{typo:?}: no dialog: {}", app.status));
+        assert_eq!(d.typed, typo);
+        assert_eq!(app.status, format!("{} is grayed until the field says accept, in lower case and nothing else.", d.refused.change_label()));
+        let screen = draw(app);
+        let (x, y) = at(&screen, &d.drawn()[0]);
+        assert_eq!(app.click(x, y, false), Effect::None, "{typo:?}");
+        assert!(asking(app).is_some(), "{typo:?}: the dialog stays");
+        assert_eq!(std::fs::read(db).unwrap(), bytes, "{typo:?}: nothing written");
+        for _ in typo.chars() {
+            key(app, KeyCode::Backspace);
+        }
+        assert_eq!(asking(app).map(|d| d.typed), Some(String::new()));
+    }
+}
+
+/// `accept` typed in the dialog open in `app`, then Enter: what that gives
+/// back, $EDITOR for an edit by hand.
+#[cfg(feature = "moz-phab")]
+fn accepted(app: &mut App) -> Effect {
+    assert!(asking(app).is_some(), "no dialog: {}", app.status);
+    typed(app, "accept");
+    let e = key(app, KeyCode::Enter);
+    draw(app);
+    e
+}
+
+/// Esc in the dialog open in `app`, something typed in its field: closed,
+/// the bottom line saying `said`, nothing written to the database at `db`.
+#[cfg(feature = "moz-phab")]
+fn cancelled(app: &mut App, db: &Path, said: &str) {
+    let bytes = std::fs::read(db).unwrap();
+    assert!(asking(app).is_some(), "no dialog: {}", app.status);
+    typed(app, "acc");
+    assert_eq!(key(app, KeyCode::Esc), Effect::None);
+    assert!(asking(app).is_none());
+    assert_eq!(app.status, said);
+    assert_eq!(std::fs::read(db).unwrap(), bytes, "nothing written");
+}
+
+/// Stack `s` of `phab_setup`: patch 1 naming no revision, patch 2 D12, in
+/// Needs Review, and patch 3 D13, as a fetch stored them eleven minutes ago.
+#[cfg(feature = "moz-phab")]
+fn d13_stack(status: &str) -> (tempfile::TempDir, PathBuf) {
+    let (tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\n{LINK}13")]);
+    stored_as(&db, 12, "needs-review", 11 * 60);
+    stored_as(&db, 13, status, 11 * 60);
+    (tmp, db)
+}
+
+/// As `d13_stack`, patch 3 given its next version first, its line 20
+/// written `Line twenty`: undone, the version before it comes back.
+#[cfg(feature = "moz-phab")]
+fn changed_then(status: &str) -> (tempfile::TempDir, PathBuf) {
+    let (tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\n{LINK}13")]);
+    let p = patch_of(&db, 2);
+    next_version(&db, 2, &p.message, &p.diff.replace("+LINE 20", "+Line twenty"));
+    stored_as(&db, 12, "needs-review", 11 * 60);
+    stored_as(&db, 13, status, 11 * 60);
+    (tmp, db)
+}
+
+/// Patch `at` of stack `s` edited by hand as an edit landing for review
+/// leaves it, `from` written `to` in its diff, nothing confirmed for it:
+/// its run, filed as the edit's landing files it.
+#[cfg(feature = "moz-phab")]
+fn landed_change(db: &Path, at: usize, from: &str, to: &str) -> String {
+    let run = Db::edit(db, |d| {
+        let s = d.stack("s")?.patches.clone();
+        let old = d.patch(&s[at]).clone();
+        let draft = stacked::mbox::Draft {
+            diff: old.diff.replace(from, to),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let id = d.add_patch(stacked::ops::revise(&old, draft))?;
+        let mut patches = s.clone();
+        patches[at] = id.clone();
+        let op = format!("edit {} as {}", &old.id[..8], &id[..8]);
+        stacked::held::hold_by_hand(d, "s", patches, &op, &format!("patch {}", at + 1), &format!("edited {}", old.title()), None)
+    })
+    .unwrap();
+    stacked::held::work_out(db, &run).unwrap();
+    run
+}
+
+/// The review open in `app` closed, every part not marked yet accepted,
+/// from its menu, which Esc opens there.
+#[cfg(feature = "moz-phab")]
+fn close_accepting(app: &mut App) {
+    keys(app, &[KeyCode::Esc]);
+    choose(app, "Accept all remaining and Close");
+    choose(app, "Accept them and close");
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_patch_that_should_not_change_moved_or_dropped_its_version_as_it_was_asks_nothing() {
+    for status in PROTECTED.into_iter().chain(UNPROTECTED) {
+        let (_tmp, db) = d13_stack(status);
+        let was = patch_of(&db, 2).id;
+        let mut app = open(&db).unwrap();
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+        // Moved, its version the same: no change of it.
+        choose(&mut app, "Move this patch");
+        keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+        assert!(asking(&app).is_none(), "{status}: {}", app.status);
+        assert_eq!((patch_of(&db, 1).id, app.sel), (was.clone(), 1), "{status}: moved");
+        // Dropped: no change of it either.
+        choose(&mut app, "Drop this patch");
+        choose(&mut app, "Drop it");
+        assert!(asking(&app).is_none(), "{status}: {}", app.status);
+        let d = Db::load(&db).unwrap();
+        assert!(!d.stack("s").unwrap().patches.contains(&was), "{status}: dropped");
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn undo_and_redo_that_change_a_patch_that_should_not_change_ask_first_strictly_and_write_once_accept_is_typed() {
+    for status in PROTECTED {
+        let (_tmp, db) = changed_then(status);
+        let mut app = open(&db).unwrap();
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+        // Undone, the version before would be back: the write is refused,
+        // and the dialog asks, nothing written.
+        choose(&mut app, "Undo");
+        let d = asking(&app).unwrap_or_else(|| panic!("{status}: {}", app.status));
+        assert_eq!((d.hand, d.refused.lines()), (false, vec![protected_line(3, 13, status)]), "{status}");
+        assert_eq!(d.refused.title(d.hand), "this changes a patch that should not change");
+        strict(&mut app, &db);
+        cancelled(&mut app, &db, &not_typed(3, 13, status, false));
+        assert!(patch_of(&db, 2).diff.contains("+Line twenty"), "{status}: not undone");
+        // Asked again: accept typed, undone.
+        choose(&mut app, "Undo");
+        assert_eq!(accepted(&mut app), Effect::None);
+        assert!(asking(&app).is_none(), "{status}: {}", app.status);
+        assert!(patch_of(&db, 2).diff.contains("+LINE 20"), "{status}: undone");
+        // Redone, the version it held would be back: asked as well.
+        choose(&mut app, "Redo");
+        strict(&mut app, &db);
+        cancelled(&mut app, &db, &not_typed(3, 13, status, false));
+        choose(&mut app, "Redo");
+        accepted(&mut app);
+        assert!(patch_of(&db, 2).diff.contains("+Line twenty"), "{status}: redone");
+        // Confirmed for that one operation alone: the next undo asks again.
+        choose(&mut app, "Undo");
+        assert!(asking(&app).is_some(), "{status}: {}", app.status);
+        cancelled(&mut app, &db, &not_typed(3, 13, status, false));
+    }
+    // Changes Planned or Needs Review: undone and redone at once, nothing
+    // asked.
+    for status in UNPROTECTED {
+        let (_tmp, db) = changed_then(status);
+        let mut app = open(&db).unwrap();
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+        choose(&mut app, "Undo");
+        assert!(asking(&app).is_none() && patch_of(&db, 2).diff.contains("+LINE 20"), "{status}: {}", app.status);
+        choose(&mut app, "Redo");
+        assert!(asking(&app).is_none() && patch_of(&db, 2).diff.contains("+Line twenty"), "{status}: {}", app.status);
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_version_put_back_or_a_stack_picked_in_the_tree_that_changes_a_patch_that_should_not_change_asks_first_strictly() {
+    for status in PROTECTED {
+        let (_tmp, db) = changed_then(status);
+        let mut app = open(&db).unwrap();
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+        // The version before put back in the stack: asked.
+        choose(&mut app, "Versions of this patch…");
+        assert_eq!(app.screen, Screen::Versions);
+        keys(&mut app, &[KeyCode::Up]);
+        choose(&mut app, "Put this version back in the stack");
+        let d = asking(&app).unwrap_or_else(|| panic!("{status}: {}", app.status));
+        assert_eq!(d.refused.lines(), [protected_line(3, 13, status)], "{status}");
+        strict(&mut app, &db);
+        cancelled(&mut app, &db, &not_typed(3, 13, status, false));
+        assert!(patch_of(&db, 2).diff.contains("+Line twenty"), "{status}: not put back");
+        choose(&mut app, "Put this version back in the stack");
+        accepted(&mut app);
+        assert_eq!(app.status, "that version is back in the stack");
+        assert!(patch_of(&db, 2).diff.contains("+LINE 20"), "{status}: put back");
+        keys(&mut app, &[KeyCode::Esc]);
+        // The stack it was edited from picked in the tree of edits, the
+        // version it held back: asked as well.
+        let d = Db::load(&db).unwrap();
+        let back = d.head("s").unwrap().1.parent.unwrap();
+        let at = stacked::tree::graph(&d, "s").iter().position(|l| l.rev == back).unwrap();
+        drop(d);
+        keys(&mut app, &[KeyCode::Home]);
+        choose(&mut app, "Tree of edits…");
+        assert_eq!(app.screen, Screen::Tree);
+        app.pick = at;
+        choose(&mut app, "Edit from this one");
+        strict(&mut app, &db);
+        cancelled(&mut app, &db, &not_typed(3, 13, status, false));
+        choose(&mut app, "Edit from this one");
+        accepted(&mut app);
+        assert_eq!((app.status.as_str(), app.screen), (format!("editing @{back}").as_str(), Screen::Main));
+        assert!(patch_of(&db, 2).diff.contains("+Line twenty"), "{status}: picked");
+    }
+    for status in UNPROTECTED {
+        let (_tmp, db) = changed_then(status);
+        let mut app = open(&db).unwrap();
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+        choose(&mut app, "Versions of this patch…");
+        keys(&mut app, &[KeyCode::Up]);
+        choose(&mut app, "Put this version back in the stack");
+        assert!(asking(&app).is_none(), "{status}: {}", app.status);
+        assert!(patch_of(&db, 2).diff.contains("+LINE 20"), "{status}: put back at once");
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn an_edit_by_hand_that_may_change_a_patch_that_should_not_change_asks_before_the_editor_opens_and_its_review_closes_with_no_one_asked_again() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    for status in PROTECTED {
+        let (_tmp, db) = d13_stack(status);
+        // $EDITOR as the tests have it: how many times it opened, line 20
+        // of patch 3 written otherwise.
+        let opened = Rc::new(RefCell::new(0));
+        let n = opened.clone();
+        stacked::ops::stand_in(Some(Box::new(move |file: &Path, _| {
+            *n.borrow_mut() += 1;
+            let text = std::fs::read_to_string(file).unwrap();
+            std::fs::write(file, text.replace("+LINE 20", "+Line twenty")).unwrap();
+            Ok(())
+        })));
+        let mut app = open(&db).unwrap();
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+        // Patch 3 as mail: asked before $EDITOR opens; while accept is not
+        // typed, the editor does not open, and nothing is written.
+        assert_eq!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::None);
+        let d = asking(&app).unwrap_or_else(|| panic!("{status}: {}", app.status));
+        assert_eq!((d.hand, d.refused.lines()), (true, vec![protected_line(3, 13, status)]), "{status}");
+        assert_eq!(d.refused.title(d.hand), "this edit may change a patch that should not change");
+        strict(&mut app, &db);
+        cancelled(&mut app, &db, &not_typed(3, 13, status, true));
+        assert_eq!(*opened.borrow(), 0, "{status}: $EDITOR not opened");
+        // Typed: $EDITOR opens, and the edit lands for review; its review
+        // closed, the stack takes it, with no one asked again.
+        choose(&mut app, "Edit this patch in $EDITOR");
+        let e = accepted(&mut app);
+        assert!(matches!(e, Effect::EditPatch { .. }), "{status}: {e:?}");
+        app.effect(e).unwrap();
+        assert_eq!(*opened.borrow(), 1, "{status}");
+        assert_eq!(app.screen, Screen::Review, "{status}: {}", app.status);
+        close_accepting(&mut app);
+        assert!(asking(&app).is_none(), "{status}: asked again: {}", app.status);
+        assert!(app.status.starts_with("reviewed:"), "{status}: {}", app.status);
+        assert!(patch_of(&db, 2).diff.contains("+Line twenty"), "{status}: taken");
+        // Patch 2's code, under it: an edit there may rebase patch 3, a
+        // conflict with it resolved by hand, so it is asked about too.
+        assert_eq!(app.screen, Screen::Main);
+        keys(&mut app, &[KeyCode::Up, KeyCode::Right]);
+        down_to(&mut app, "+bee");
+        assert_eq!(choose(&mut app, "Edit b.txt here in $EDITOR"), Effect::None);
+        let d = asking(&app).unwrap_or_else(|| panic!("{status}: {}", app.status));
+        assert_eq!((d.hand, d.refused.lines()), (true, vec![protected_line(3, 13, status)]), "{status}");
+        cancelled(&mut app, &db, &not_typed(3, 13, status, true));
+        // The stack as a list, which may edit or reword any of its patches:
+        // asked too.
+        keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+        assert_eq!(choose(&mut app, "Edit the stack as a list in $EDITOR"), Effect::None);
+        assert_eq!(asking(&app).map(|d| d.refused.lines()), Some(vec![protected_line(3, 13, status)]), "{status}");
+        cancelled(&mut app, &db, &not_typed(3, 13, status, true));
+        assert_eq!(*opened.borrow(), 1, "{status}: $EDITOR not opened");
+        stacked::ops::stand_in(None);
+    }
+    // Changes Planned or Needs Review: $EDITOR asked for at once.
+    for status in UNPROTECTED {
+        let (_tmp, db) = d13_stack(status);
+        let mut app = open(&db).unwrap();
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+        assert!(matches!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::EditPatch { .. }), "{status}: {}", app.status);
+        assert!(asking(&app).is_none(), "{status}");
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn an_edit_by_hand_whose_conflict_with_a_patch_that_should_not_change_is_resolved_by_hand_is_asked_about_once_before_the_editor_opens() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let (_tmp, db) = d13_stack("accepted");
+    // $EDITOR as the tests have it: a.txt's line 19 written otherwise, which
+    // patch 3 has as context, so that patch 3 no longer applies on the edit;
+    // then its conflict resolved, both lines taken.
+    let opened = Rc::new(RefCell::new(Vec::<bool>::new()));
+    let seen = opened.clone();
+    stacked::ops::stand_in(Some(Box::new(move |file: &Path, _| {
+        let text = std::fs::read_to_string(file).unwrap();
+        let marked = text.contains("<<<<<<<");
+        seen.borrow_mut().push(marked);
+        let out = match marked {
+            false => text.replace("line 19\n", "LINE 19\n"),
+            true => {
+                let (mut out, mut inside) = (String::new(), false);
+                for l in text.lines() {
+                    match (l.starts_with("<<<<<<<"), l.starts_with(">>>>>>>"), inside) {
+                        (true, _, _) => inside = true,
+                        (_, true, _) => {
+                            inside = false;
+                            out.push_str("LINE 19\nLINE 20\n");
+                        }
+                        (_, _, true) => {}
+                        _ => out.push_str(&format!("{l}\n")),
+                    }
+                }
+                out
+            }
+        };
+        std::fs::write(file, out).unwrap();
+        Ok(())
+    })));
+    let mut app = open(&db).unwrap();
+    // Patch 1's code: patch 3, above it, may be rebased by the edit, its
+    // conflict resolved by hand: asked first.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+LINE 2");
+    assert_eq!(choose(&mut app, "Edit a.txt here in $EDITOR"), Effect::None);
+    assert_eq!(asking(&app).map(|d| d.refused.lines()), Some(vec![protected_line(3, 13, "accepted")]));
+    let e = accepted(&mut app);
+    assert!(matches!(e, Effect::EditCode { .. }), "{e:?}");
+    app.effect(e).unwrap();
+    // Not taken: patch 3 no longer applies on it.
+    let not_taken = |app: &App| matches!(&app.mode, Mode::Menu(m) if m.title == "your edit is not taken");
+    assert!(not_taken(&app), "{:?} {}", app.mode, app.status);
+    // D12 Accepted since, as a fetch stored it: Edit it again asks of patch
+    // 2, above the edit, and of no other, the edit confirmed for patch 3
+    // already; cancelled, the edit's menu again, the edit kept.
+    stored_as(&db, 12, "accepted", 60);
+    app.refresh();
+    choose(&mut app, "Edit it again");
+    assert_eq!(asking(&app).map(|d| d.refused.lines()), Some(vec![protected_line(2, 12, "accepted")]));
+    cancelled(&mut app, &db, &not_typed(2, 12, "accepted", true));
+    assert!(not_taken(&app), "{:?} {}", app.mode, app.status);
+    assert_eq!(*opened.borrow(), [false]);
+    // Its conflict resolved by hand, nothing asked: the edit's confirmation
+    // goes on with it.
+    let e = choose(&mut app, "Resolve the conflict in patch 3 by hand");
+    assert!(asking(&app).is_none(), "{}", app.status);
+    assert_eq!(e, Effect::Resolve);
+    app.effect(e).unwrap();
+    assert_eq!(*opened.borrow(), [false, true]);
+    // Landed, the edit and patch 3 resolved together; its review closed,
+    // the stack takes both, with no one asked again.
+    assert_eq!(app.screen, Screen::Review, "{}", app.status);
+    close_accepting(&mut app);
+    assert!(asking(&app).is_none(), "asked again: {}", app.status);
+    assert!(app.status.starts_with("reviewed:"), "{}", app.status);
+    assert!(patch_of(&db, 0).diff.contains("+LINE 19") && patch_of(&db, 2).diff.contains("+LINE 20"), "taken");
+    stacked::ops::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn closing_a_review_whose_change_changes_a_patch_that_should_not_change_asks_first_strictly_the_review_staying_open() {
+    for status in PROTECTED {
+        let (_tmp, db) = d13_stack(status);
+        let run = landed_change(&db, 2, "+LINE 20", "+Line twenty");
+        let mut app = open(&db).unwrap();
+        app.edited(stacked::ops::Edited::Landed { said: "edited Bug 3 - three".into(), run }, None, None);
+        assert_eq!(app.screen, Screen::Review);
+        // Patch 3 as the work leaves it, edited by hand from the review:
+        // asked before $EDITOR opens, as any edit by hand is.
+        down_to_review(&mut app, "modify  3 Bug 3");
+        keys(&mut app, &[KeyCode::Right, KeyCode::Enter]);
+        down_to_work_row(&mut app, "+Line twenty");
+        assert_eq!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::None);
+        let d = asking(&app).unwrap_or_else(|| panic!("{status}: {}", app.status));
+        assert_eq!((d.hand, d.refused.lines()), (true, vec![protected_line(3, 13, status)]), "{status}");
+        cancelled(&mut app, &db, &not_typed(3, 13, status, true));
+        // Its review closed, its change accepted: asked first.
+        close_accepting(&mut app);
+        let d = asking(&app).unwrap_or_else(|| panic!("{status}: {}", app.status));
+        assert_eq!((d.hand, d.refused.lines()), (false, vec![protected_line(3, 13, status)]), "{status}");
+        strict(&mut app, &db);
+        cancelled(&mut app, &db, &not_typed(3, 13, status, false));
+        // The review stays open, nothing of it written.
+        assert_eq!(app.screen, Screen::Review, "{status}");
+        assert!(patch_of(&db, 2).diff.contains("+LINE 20"), "{status}: not taken");
+        close_accepting(&mut app);
+        accepted(&mut app);
+        assert!(app.status.starts_with("reviewed:"), "{status}: {}", app.status);
+        assert!(patch_of(&db, 2).diff.contains("+Line twenty"), "{status}: taken");
+    }
+    for status in UNPROTECTED {
+        let (_tmp, db) = d13_stack(status);
+        let run = landed_change(&db, 2, "+LINE 20", "+Line twenty");
+        let mut app = open(&db).unwrap();
+        app.edited(stacked::ops::Edited::Landed { said: "edited Bug 3 - three".into(), run }, None, None);
+        close_accepting(&mut app);
+        assert!(asking(&app).is_none(), "{status}: {}", app.status);
+        assert!(patch_of(&db, 2).diff.contains("+Line twenty"), "{status}: taken at once");
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn rejecting_what_is_left_of_work_from_the_banner_its_change_accepted_asks_first_and_closes_it_from_there_once_accept_is_typed() {
+    let (_tmp, db) = d13_stack("accepted");
+    let mut app = open(&db).unwrap();
+    // A comment on patch 3, and the agent's work for it landed: a change
+    // of patch 3, and its reply.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Right]);
+    down_to(&mut app, "+LINE 20");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 2).remove(0);
+    Db::edit(&db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let old = d.patch(&s.patches[2]).clone();
+        let draft = stacked::mbox::Draft {
+            diff: old.diff.replace("+LINE 20", "+Line twenty"),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let mut patches = s.patches.clone();
+        patches[2] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        let ask = serde_json::json!({"way": "change", "scope": {"patch": n.change}, "from": from, "notes": [{"label": "c1", "change": n.change, "id": n.id}]});
+        let change = stacked::held::Change { patches, base: s.base.clone(), op: "agent: patch 3".into(), of: "patch 3".into(), from: None };
+        let reply = stacked::held::Reply { change: n.change.clone(), id: n.id.clone(), text: "Quieter now.".into(), tag: "change".into(), ..Default::default() };
+        d.add_run(stacked::db::Run {
+            id: "run-1".into(),
+            what: "change".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            ask: Some(ask),
+            held: Some(stacked::held::Held { at: stacked::db::now(), stack: Some(change), replies: vec![reply], ..Default::default() }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    stacked::held::work_out(&db, "run-1").unwrap();
+    app.refresh();
+    // Its change marked accepted in its review, its reply not, the marks
+    // saved.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.as_str()), Some("run-1"));
+    down_to_review(&mut app, "modify  3 Bug 3");
+    choose(&mut app, "Mark as accepted");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save");
+    assert_eq!(app.screen, Screen::Main);
+    // From the banner, the rest rejected and the review closed: its change
+    // accepted, which changes patch 3, asked first, the main screen staying.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner);
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Reject them and close");
+    let d = asking(&app).unwrap_or_else(|| panic!("{}", app.status));
+    assert_eq!(d.refused.lines(), [protected_line(3, 13, "accepted")]);
+    strict(&mut app, &db);
+    cancelled(&mut app, &db, &not_typed(3, 13, "accepted", false));
+    assert_eq!((app.screen, app.reviewing.is_none(), app.on_banner), (Screen::Main, true, true));
+    assert!(Db::load(&db).unwrap().review("run-1").is_none_or(|v| !v.closed), "kept for review");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Reject them and close");
+    accepted(&mut app);
+    assert!(app.status.starts_with("reviewed: its change accepted"), "{}", app.status);
+    assert_eq!((app.screen, app.reviewing.is_none()), (Screen::Main, true));
+    assert!(patch_of(&db, 2).diff.contains("+Line twenty"), "taken");
+    assert!(Db::load(&db).unwrap().review("run-1").is_some_and(|v| v.closed));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_pull_that_brings_a_patch_that_should_not_change_to_phabricator_s_latest_diff_asks_nothing_and_one_that_makes_it_again_asks_first() {
+    let two = [("Bug 12 - ten", &[(10, "LINE 10")][..]), ("Bug 13 - eleven", &[(10, "LINE 10"), (11, "LINE 11")][..])];
+    // D13 Accepted on Phabricator, and given a new diff there: its patch
+    // takes it as Phabricator has it, with no one asked.
+    let (_tmp, db, phab, _) = pull_setup(12, &two);
+    stored_as(&db, 13, "accepted", 11 * 60);
+    {
+        let mut p = phab.lock().unwrap();
+        p.revisions.get_mut(&13).unwrap().status = "accepted".into();
+        p.new_diff(13, &a_diff(&[(10, "LINE 10")], &[(10, "LINE 10"), (11, "LINE 11"), (25, "LINE 25")]));
+    }
+    pulled(&db, stacked::review::Asked::Stack).unwrap();
+    let mut app = open(&db).unwrap();
+    let screen = the_review(&mut app);
+    assert!(screen.contains("· modify  2 Bug 13 - eleven, from D13's latest diff"), "{screen}");
+    close_accepting(&mut app);
+    assert!(asking(&app).is_none(), "{}", app.status);
+    assert!(app.status.starts_with("reviewed:"), "{}", app.status);
+    assert!(patch_of(&db, 1).diff.contains("+LINE 25"), "taken");
+    stacked::phab::statuses_stand_in(&db, None);
+    // D12 given a new diff from elsewhere, line 13 too, within patch 2's
+    // lines of context: patch 2 is made again on it, the pull's own change
+    // of it, asked about first, D13 Accepted or Landed.
+    for status in PROTECTED {
+        let (_tmp, db, phab, _) = pull_setup(12, &two);
+        {
+            let mut p = phab.lock().unwrap();
+            p.revisions.get_mut(&13).unwrap().status = status.into();
+            p.new_diff(12, &a_diff(&[], &[(10, "LINE 10"), (13, "LINE 13")]));
+        }
+        pulled(&db, stacked::review::Asked::Stack).unwrap();
+        let mut app = open(&db).unwrap();
+        let screen = the_review(&mut app);
+        assert!(screen.contains("· modify  2 Bug 13 - eleven, made again on the pulled version"), "{status}: {screen}");
+        close_accepting(&mut app);
+        let d = asking(&app).unwrap_or_else(|| panic!("{status}: {}", app.status));
+        assert_eq!(d.refused.lines(), [protected_line(2, 13, status)], "{status}");
+        strict(&mut app, &db);
+        cancelled(&mut app, &db, &not_typed(2, 13, status, false));
+        assert!(!patch_of(&db, 0).diff.contains("+LINE 13"), "{status}: not taken");
+        close_accepting(&mut app);
+        accepted(&mut app);
+        assert!(app.status.starts_with("reviewed:"), "{status}: {}", app.status);
+        assert!(patch_of(&db, 0).diff.contains("+LINE 13") && patch_of(&db, 1).diff.contains("+LINE 11"), "{status}: taken");
+        stacked::phab::statuses_stand_in(&db, None);
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_dialog_names_each_patch_its_status_and_how_long_ago_that_was_fetched_and_takes_the_mouse_as_the_ask_dialog_does() {
+    let (_tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\n{LINK}13")]);
+    // Patches 2 and 3 changed in one edit; then D12 Landed, as fetched two
+    // hours ago, and D13 Accepted, eleven minutes ago.
+    Db::edit(&db, |d| {
+        let s = d.stack("s")?.clone();
+        let mut patches = s.patches.clone();
+        for (at, from, to) in [(1, "+bee", "+bees"), (2, "+LINE 20", "+Line twenty")] {
+            let old = d.patch(&s.patches[at]).clone();
+            let draft = stacked::mbox::Draft {
+                diff: old.diff.replace(from, to),
+                ..stacked::mbox::Draft::from(&old)
+            };
+            patches[at] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        }
+        d.set_stack("s", patches, "edit both")
+    })
+    .unwrap();
+    stored_as(&db, 12, "published", 2 * 3600);
+    stored_as(&db, 13, "accepted", 11 * 60);
+    let mut app = open(&db).unwrap();
+    choose(&mut app, "Undo");
+    let d = asking(&app).unwrap_or_else(|| panic!("{}", app.status));
+    assert_eq!(d.refused.lines(), [protected_line(2, 12, "published"), protected_line(3, 13, "accepted")]);
+    assert_eq!(d.refused.fetched(stacked::db::now()), "Those statuses were fetched from Phabricator: D12's 2 hours ago and D13's 11 minutes ago.");
+    // Drawn as the ask dialog is: its title on top, a line for each patch,
+    // how long ago their statuses were fetched, what to type, the field,
+    // the buttons, and what keeps Change them grayed; the cursor in the
+    // field.
+    let (screen, cursor) = draw_at(&mut app);
+    for line in [
+        "this changes 2 patches that should not change",
+        "Patch 2, D12, is Landed: it is in the tree already.",
+        "Patch 3, D13, is Accepted on Phabricator: a change needs review again.",
+        "Those statuses were fetched from Phabricator: D12's 2 hours ago and",
+        "Type accept to change them anyway.",
+        "< Change them >   < Cancel >",
+        "Change them is grayed until the field says accept, in lower case and",
+    ] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    let (x, y) = at(&screen, "Type accept to change them anyway.");
+    assert_eq!(cursor, Some((x + 1, y + 1)), "after the field's [:\n{screen}");
+    assert_eq!(app.hint(), "type accept · enter: change them · ↓: the buttons · esc: cancel");
+    // What is typed is in the field, the cursor after it.
+    typed(&mut app, "acc");
+    let (screen, cursor) = draw_at(&mut app);
+    assert!(screen.lines().nth(y as usize + 1).is_some_and(|l| l.chars().skip(x as usize).collect::<String>().starts_with("[acc ")), "{screen}");
+    assert_eq!(cursor, Some((x + 4, y + 1)));
+    // The mouse over Change them, grayed: the cursor stays in the field.
+    let (bx, by) = at(&screen, "< Change them >");
+    app.hover(bx, by);
+    assert_eq!(asking(&app).map(|d| d.line), Some(stacked::tui::protected_dialog::FIELD_LINE));
+    // Typed whole, Change them can be pressed: no more note, the dialog the
+    // shorter; the mouse over it, the cursor there, and a click on it
+    // changes them.
+    typed(&mut app, "ept");
+    let screen = draw(&mut app);
+    assert!(!screen.contains("is grayed until"), "{screen}");
+    let (bx, by) = at(&screen, "< Change them >");
+    app.hover(bx, by);
+    let d = asking(&app).unwrap();
+    assert_eq!((d.line, d.button), (stacked::tui::protected_dialog::BUTTONS_LINE, stacked::tui::protected_dialog::CHANGE));
+    assert_eq!(app.click(bx, by, false), Effect::None);
+    assert!(asking(&app).is_none(), "{}", app.status);
+    assert!(patch_of(&db, 1).diff.contains("+bee\n") && patch_of(&db, 2).diff.contains("+LINE 20"), "undone");
+    // Redone, asked again: a click out of the dialog cancels it, as Esc
+    // does, and so does Cancel.
+    choose(&mut app, "Redo");
+    assert!(asking(&app).is_some(), "{}", app.status);
+    app.click(0, 29, false);
+    assert!(asking(&app).is_none());
+    assert_eq!(app.status, "nothing changed, as accept was not typed: patch 2 (D12) is Landed and patch 3 (D13) is Accepted on Phabricator");
+    choose(&mut app, "Redo");
+    let screen = draw(&mut app);
+    let (cx, cy) = at(&screen, "< Cancel >");
+    app.click(cx, cy, false);
+    assert!(asking(&app).is_none());
+    assert_eq!(app.status, "nothing changed, as accept was not typed: patch 2 (D12) is Landed and patch 3 (D13) is Accepted on Phabricator");
+    assert!(patch_of(&db, 2).diff.contains("+LINE 20"), "not redone");
+    // From the keys: ↓ to the buttons, ← → from one to the other, past
+    // Change them while it is grayed; Enter on Cancel cancels.
+    choose(&mut app, "Redo");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Left]);
+    let d = asking(&app).unwrap();
+    assert_eq!((d.line, d.button), (stacked::tui::protected_dialog::BUTTONS_LINE, stacked::tui::protected_dialog::CANCEL));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(asking(&app).is_none());
+    assert!(patch_of(&db, 2).diff.contains("+LINE 20"), "not redone");
 }

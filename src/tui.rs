@@ -65,6 +65,9 @@ pub use crate::config::{InterLayout, InterLines};
 pub mod notices;
 pub use notices::Notice;
 pub mod places;
+pub mod protected_dialog;
+use protected_dialog::Again;
+pub use protected_dialog::ProtectedDialog;
 pub mod reviewing;
 pub use reviewing::Reviewing;
 #[cfg(feature = "moz-phab")]
@@ -742,6 +745,11 @@ pub enum Spot {
     ViewsLine(usize),
     ViewsButton(usize),
     ViewsOption(usize),
+    /// The field of the dialog that asks before patches that should not
+    /// change are changed, where a click puts the cursor; button `k` of it,
+    /// Change them or Cancel, which a click presses.
+    ProtectedField,
+    ProtectedButton(usize),
 }
 
 impl Spot {
@@ -1067,6 +1075,10 @@ pub enum Mode {
     /// of them: what is compared, its view and its lines to set, then Done
     /// or Cancel.
     Views(Box<ViewsDialog>),
+    /// The dialog that asks before patches that should not change are
+    /// changed, as Phabricator has them Accepted or Landed: accept to type,
+    /// then Change them or Cancel.
+    Protected(Box<ProtectedDialog>),
     /// A comment being written, inline.
     Edit(Box<Edit>),
     /// The patch at `from` being moved, now at `to`: ↑↓ to place it.
@@ -2464,6 +2476,22 @@ pub struct App {
     refused_work: Option<(String, usize)>,
     /// The conflict a later patch has with it, to resolve by hand.
     conflict: Option<Box<ops::Conflict>>,
+    /// What is being done, as it was asked: a write of a stack refused as
+    /// it would change patches that should not change opens the dialog that
+    /// asks about them, which does it again once accept is typed
+    /// (`protected_dialog`).
+    again: Option<Again>,
+    /// The patches that should not change that accept was typed for, for
+    /// the next edit of the database, the operation done again: taken by it
+    /// (`edit`).
+    confirmed: Vec<String>,
+    /// Those, for the edit by hand done again, asked about before $EDITOR
+    /// opened: passed on to it (`perform`); and those the edit $EDITOR is to
+    /// open, or the edit not taken that it goes on with, is confirmed for,
+    /// kept with its review once it lands, whose close changes them with no
+    /// one asked again (`hand_edited`).
+    hand_once: Vec<String>,
+    hand_ok: Vec<String>,
     /// What the last key did, when that needs saying: gone with the next.
     pub status: String,
     body_h: usize,
@@ -3014,6 +3042,10 @@ impl App {
             refused: None,
             refused_work: None,
             conflict: None,
+            again: None,
+            confirmed: Vec::new(),
+            hand_once: Vec::new(),
+            hand_ok: Vec::new(),
             status,
             body_h: 20,
             body_w: 80,
@@ -4370,7 +4402,9 @@ impl App {
             | Spot::AskOption(_)
             | Spot::ViewsLine(_)
             | Spot::ViewsButton(_)
-            | Spot::ViewsOption(_) => false,
+            | Spot::ViewsOption(_)
+            | Spot::ProtectedField
+            | Spot::ProtectedButton(_) => false,
         }
     }
 
@@ -4404,6 +4438,7 @@ impl App {
             Mode::Help { back, .. } => matches!(**back, Mode::Ask(_)),
             mode => matches!(mode, Mode::Ask(_)),
         };
+        let protecting = matches!(self.mode, Mode::Protected(_));
         let e = self.click_on(x, y, right);
         // Another menu than that one: opened by the click, next to it.
         if let Mode::Menu(m) = &mut self.mode
@@ -4411,9 +4446,15 @@ impl App {
         {
             m.at = Some((x, y));
         }
-        // The ask dialog the click opened, next to it too.
+        // The ask dialog the click opened, next to it too; and the dialog
+        // asking before patches that should not change are changed.
         if let Mode::Ask(d) = &mut self.mode
             && !asking
+        {
+            d.at = Some((x, y));
+        }
+        if let Mode::Protected(d) = &mut self.mode
+            && !protecting
         {
             d.at = Some((x, y));
         }
@@ -4513,6 +4554,25 @@ impl App {
                     }
                     Some(Spot::ViewsButton(b)) => {
                         (d.line, d.button) = (views_dialog::BUTTONS_LINE, b);
+                        press(self, KeyCode::Enter)
+                    }
+                    Some(Spot::Box) => Effect::None,
+                    _ => press(self, KeyCode::Esc),
+                };
+            }
+            // The dialog asking before patches that should not change are
+            // changed, as the ask dialog: a click in its field puts the
+            // cursor there; on a button, presses it, Change them doing
+            // nothing while the field does not say accept; out of the box,
+            // Esc, which cancels.
+            Mode::Protected(d) => {
+                return match spot {
+                    Some(Spot::ProtectedField) => {
+                        d.line = protected_dialog::FIELD_LINE;
+                        Effect::None
+                    }
+                    Some(Spot::ProtectedButton(b)) => {
+                        (d.line, d.button) = (protected_dialog::BUTTONS_LINE, b);
                         press(self, KeyCode::Enter)
                     }
                     Some(Spot::Box) => Effect::None,
@@ -4672,6 +4732,17 @@ impl App {
                 Spot::ViewsButton(b) => (d.line, d.button) = (views_dialog::BUTTONS_LINE, b),
                 _ => {}
             },
+            // The dialog asking before patches that should not change are
+            // changed, as the ask dialog: over its field, the cursor there;
+            // over a button that can be pressed, there, Change them only once
+            // the field says accept.
+            Mode::Protected(d) => match spot {
+                Spot::ProtectedField => d.line = protected_dialog::FIELD_LINE,
+                Spot::ProtectedButton(b) if b != protected_dialog::CHANGE || d.ready() => {
+                    (d.line, d.button) = (protected_dialog::BUTTONS_LINE, b);
+                }
+                _ => {}
+            },
             Mode::Moving { to, .. } => {
                 if let Spot::Patch(Some(at)) = spot {
                     *to = at;
@@ -4727,6 +4798,8 @@ impl App {
                 | Spot::ViewsLine(_)
                 | Spot::ViewsButton(_)
                 | Spot::ViewsOption(_)
+                | Spot::ProtectedField
+                | Spot::ProtectedButton(_)
         ) {
             let banner = matches!(spot, Spot::Banner | Spot::BannerLine(_));
             if banner && !self.on_banner {
@@ -4820,7 +4893,9 @@ impl App {
             | Spot::AskOption(_)
             | Spot::ViewsLine(_)
             | Spot::ViewsButton(_)
-            | Spot::ViewsOption(_) => return false,
+            | Spot::ViewsOption(_)
+            | Spot::ProtectedField
+            | Spot::ProtectedButton(_) => return false,
         }
         true
     }
@@ -5061,12 +5136,26 @@ impl App {
     }
 
     /// Runs an edit under the database's lock, then reads what it appended.
+    /// It takes the patches that should not change that accept was typed
+    /// for (`confirmed`), for its one operation. A write of a stack it makes
+    /// refused, as it would change others: the dialog asks about them, and
+    /// makes what is being done again once accept is typed (`again`);
+    /// with nothing to make again, the bottom line says why it was refused.
+    /// Nothing is written either way.
     fn edit<T>(&mut self, f: impl FnOnce(&mut Db) -> Result<T>) -> Option<T> {
-        let out = Db::edit(&self.path, f);
+        let confirmed = std::mem::take(&mut self.confirmed);
+        let out = Db::edit_confirmed(&self.path, &confirmed, f);
         self.reload();
         match out {
             Ok(v) => Some(v),
-            Err(e) => {
+            Err(crate::db::Failed::Protected(r)) => {
+                match self.again.clone() {
+                    Some(again) => self.ask_protected(*r, again, false, confirmed),
+                    None => self.status = r.said(),
+                }
+                None
+            }
+            Err(crate::db::Failed::Error(e)) => {
                 self.status = e.0;
                 None
             }
@@ -5137,9 +5226,10 @@ impl App {
 
     /// Whether the keys are typed as text, as they are: in the comment
     /// editor, the lines named to attach, a line typed for a prompt, the
-    /// search of the middle, and the search's own screen.
+    /// search of the middle, the search's own screen, and the dialog where
+    /// accept is typed before patches that should not change are changed.
     fn typing(&self) -> bool {
-        matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_))
+        matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) | Mode::Protected(_))
             || (self.screen == Screen::Search && matches!(self.mode, Mode::Normal))
     }
 
@@ -5182,7 +5272,7 @@ impl App {
                 return Effect::None;
             }
         } else if k.code == KeyCode::Char('?')
-            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_))
+            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) | Mode::Protected(_))
             && (self.helps() || self.mode != Mode::Normal)
         {
             self.mode = Mode::Help {
@@ -5198,6 +5288,7 @@ impl App {
             Mode::Menu(m) => return self.menu_key(m, k),
             Mode::Ask(d) => return self.ask_key(*d, k),
             Mode::Views(d) => return self.views_key(*d, k),
+            Mode::Protected(d) => return self.protected_key(*d, k),
             Mode::Preview(p) => return self.preview_key(*p, k),
             Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Lines(l) => return self.lines_key(*l, k),
@@ -6520,6 +6611,7 @@ impl App {
             }
             Mode::Ask(d) => return self.ask_help(d),
             Mode::Views(d) => return self.views_help(d),
+            Mode::Protected(d) => return self.protected_help(d),
             Mode::Moving { to, .. } => {
                 out.push(format!("Press Enter to put {} there, at {}.", self.patch_title(), to + 1));
                 out.push("Press ↑↓ to place it elsewhere, Esc to leave it where it was.".into());
@@ -7457,15 +7549,9 @@ impl App {
                     self.status = why;
                     return;
                 }
-                let name = self.stack.clone();
-                if self
-                    .edit(|db| {
-                        ops::by_hand(db, &name)?;
-                        ops::move_patch(db, &name, from, to)
-                    })
-                    .is_some()
-                {
-                    self.sel = to;
+                // Refused as it would change a patch that should not change:
+                // the dialog asks, and puts it there once accept is typed.
+                if self.move_patch_to(from, to) || matches!(self.mode, Mode::Protected(_)) {
                     return;
                 }
                 // Refused, and the status line says why: it can go elsewhere.
@@ -7473,6 +7559,24 @@ impl App {
             _ => {}
         }
         self.mode = Mode::Moving { from, to };
+    }
+
+    /// The patch picked up at `from` put down at `to`, as what is being
+    /// done (`again`): whether it moved there, the cursor following it.
+    fn move_patch_to(&mut self, from: usize, to: usize) -> bool {
+        let name = self.stack.clone();
+        let was = self.again.replace(Again::Move { from, to });
+        let moved = self
+            .edit(|db| {
+                ops::by_hand(db, &name)?;
+                ops::move_patch(db, &name, from, to)
+            })
+            .is_some();
+        self.again = was;
+        if moved {
+            self.sel = to;
+        }
+        moved
     }
 
     /// What the agent writes, read in place, folded once the agent is done
@@ -8144,7 +8248,40 @@ impl App {
         items.push(Item::new("Close this comment…", Action::AskCloseComment).when(open));
     }
 
+    /// What `action` does, done (`act`), as what is being done (`again`):
+    /// a write of a stack it makes refused, as it would change patches that
+    /// should not change, the dialog that asks about them does it again once
+    /// accept is typed. An edit by hand in $EDITOR that may change such
+    /// patches is asked about before the editor opens, so that no edit is
+    /// lost to a refusal after it (`hand_refused`); once accept is typed,
+    /// the editor opens, and what was confirmed goes with the edit
+    /// (`hand_ok`).
     fn perform(&mut self, action: Action) -> Effect {
+        if let Some(refused) = self.hand_refused(&action) {
+            let also = std::mem::take(&mut self.hand_once);
+            self.ask_protected(refused, Again::Action(action), true, also);
+            return Effect::None;
+        }
+        let hand = protected_dialog::hand_edit(&action);
+        let was = self.again.replace(Again::Action(action.clone()));
+        let e = self.act(action);
+        self.again = was;
+        // The edit by hand $EDITOR opens on: confirmed for what it was
+        // confirmed for, an edit it goes on with for that edit's too.
+        if let Some(continuing) = hand
+            && e != Effect::None
+        {
+            let once = std::mem::take(&mut self.hand_once);
+            match continuing {
+                true => self.hand_ok.extend(once),
+                false => self.hand_ok = once,
+            }
+        }
+        e
+    }
+
+    /// What `action` does, done, as `perform` does it.
+    fn act(&mut self, action: Action) -> Effect {
         let name = self.stack.clone();
         // Kept in memory, as the demo's database: nothing that writes on
         // disk, or reaches Phabricator.
@@ -8261,6 +8398,7 @@ impl App {
                 self.refused = None;
                 self.refused_work = None;
                 self.conflict = None;
+                self.hand_ok.clear();
                 self.status = "your edit is thrown away".into();
             }
             Action::AskDrop => {
@@ -8901,6 +9039,23 @@ impl App {
             Action::Quit => return Effect::Quit,
         }
         Effect::None
+    }
+
+    /// What an edit by hand in $EDITOR came to, as `edited` takes it, `ok`
+    /// the patches that should not change that accept was typed for before
+    /// the editor opened: landed, they are kept with its review, whose close
+    /// changes them with no one asked again (`held::confirm`); not taken, to
+    /// edit again or resolve, they stay confirmed for that.
+    fn hand_edited(&mut self, done: ops::Edited, file: Option<(String, usize)>, work: Option<String>, ok: Vec<String>) {
+        match &done {
+            ops::Edited::Landed { run, .. } if !ok.is_empty() => {
+                let run = run.clone();
+                self.edit(|db| crate::held::confirm(db, &run, &ok));
+            }
+            ops::Edited::Refused { .. } => self.hand_ok = ok,
+            _ => {}
+        }
+        self.edited(done, file, work);
     }
 
     /// The menu of an edit by hand the stack did not take, `why` said:
@@ -10523,17 +10678,21 @@ impl App {
             self.status = self.say_keys("not in the demo: $EDITOR would edit a file on disk; press Enter on a line to write a comment here instead".into());
             return Ok(());
         }
+        // An edit by hand: the patches that should not change confirmed for
+        // it before the editor opened go with it (`hand_edited`).
+        let hand = matches!(e, Effect::EditPatch { .. } | Effect::EditCode { .. } | Effect::EditWork { .. } | Effect::Resolve | Effect::EditTodo);
+        let ok = if hand { std::mem::take(&mut self.hand_ok) } else { Vec::new() };
         match e {
             Effect::EditPatch { line } if self.patch_id().is_some() => {
                 let done = ops::edit_patch(&self.path, &name, self.sel, line, None, &self.checkout)?;
-                self.edited(done, None, None);
+                self.hand_edited(done, None, None, ok);
                 return Ok(());
             }
             Effect::EditCode { file, line, again } if self.patch_id().is_some() => {
                 let place = self.edit_place();
                 let done = ops::edit_code(&self.path, &name, self.sel, &file, line, &place, again, None, &self.checkout)?;
                 self.refused_work = None;
-                self.edited(done, Some((file, line)), None);
+                self.hand_edited(done, Some((file, line)), None, ok);
                 return Ok(());
             }
             Effect::EditWork { run, edit } => {
@@ -10547,7 +10706,7 @@ impl App {
                         (done, Some((file, line)))
                     }
                 };
-                self.edited(done, file, Some(run));
+                self.hand_edited(done, file, Some(run), ok);
                 return Ok(());
             }
             Effect::Resolve => {
@@ -10555,12 +10714,14 @@ impl App {
                     return Ok(());
                 };
                 match ops::resolve(&self.path, &name, &c, kept, &self.checkout) {
-                    Ok(done) => self.edited(done, None, c.work.clone()),
+                    Ok(done) => self.hand_edited(done, None, c.work.clone(), ok),
                     // Not resolved (the editor failed, say): the conflict is
-                    // as it was, to resolve again.
+                    // as it was, to resolve again, and so is what the edit was
+                    // confirmed for.
                     Err(e) => {
                         self.reload();
                         self.conflict = Some(c);
+                        self.hand_ok = ok;
                         self.not_taken(e.0);
                     }
                 }
@@ -10568,7 +10729,7 @@ impl App {
             }
             Effect::EditTodo => {
                 let done = ops::edit_stack(&self.path, &name, None, &self.checkout)?;
-                self.edited(done, None, None);
+                self.hand_edited(done, None, None, ok);
                 return Ok(());
             }
             Effect::EditComment(target @ (Target::Edit { .. } | Target::Turn { .. })) => {
@@ -10869,6 +11030,7 @@ impl App {
         self.draw_menu(buf, body);
         self.draw_ask(buf, body);
         self.draw_views(buf, body);
+        let cursor = self.draw_protected(buf, body).or(cursor);
         self.draw_help(buf, body);
         self.draw_ref_preview(buf, body);
         let cursor = self.draw_lines(buf, body).or(cursor);
@@ -11250,6 +11412,7 @@ impl App {
             },
             Mode::Ask(d) => App::ask_hint(d),
             Mode::Views(d) => App::views_hint(d),
+            Mode::Protected(d) => App::protected_hint(d),
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
             Mode::MovingHead { .. } => "↑↓ to place HEAD · enter: move your checkout there · esc: leave it where it was".into(),
             // What was closed here, taller than its box: ↑↓ scroll it. Whole

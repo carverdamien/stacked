@@ -154,9 +154,10 @@ impl App {
     /// A box open over the screen (a menu, what `?` says, a reference's
     /// preview, the comment being written) scrolls alone, and nothing out
     /// of it does, as the mouse going by out of it moves nothing; nor does
-    /// anything while the ask dialog is open or a line is typed, which do
-    /// not scroll. The stream read in place scrolls over the middle, a
-    /// patch or HEAD being moved over the patches, and nothing elsewhere.
+    /// anything while a dialog is open (the ask dialog, the views', the one
+    /// where accept is typed) or a line is typed, which do not scroll. The
+    /// stream read in place scrolls over the middle, a patch or HEAD being
+    /// moved over the patches, and nothing elsewhere.
     fn scrolled_at(&self, x: u16, y: u16) -> Option<(Wheeled, Rect)> {
         let at = ratatui::layout::Position::new(x, y);
         let (area, place) = self.scrolls.borrow().iter().rev().find(|(r, _)| r.contains(at)).copied()?;
@@ -169,7 +170,7 @@ impl App {
             Mode::Edit(_) => alone(Wheeled::Editor),
             Mode::Stream { .. } => alone(Wheeled::Middle).map(|(_, area)| (Wheeled::Stream, area)),
             Mode::Moving { .. } | Mode::MovingHead { .. } => alone(Wheeled::Patches),
-            Mode::Ask(_) | Mode::Views(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) => None,
+            Mode::Ask(_) | Mode::Views(_) | Mode::Protected(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) => None,
         }
     }
 

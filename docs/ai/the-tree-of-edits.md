@@ -14,3 +14,10 @@ $ stacked tree bug123
 `select @8`, or enter on it in the editor's `Tree of edits…`, goes back to
 the other branch. Deleting a stack moves its name to nothing, and `undo`
 brings it back.
+
+With the `moz-phab` feature, undo, redo and a stack picked from the tree
+are refused, as every write is, when the stack they go to holds another
+version of a patch that should not change, its revision Accepted or Landed
+on Phabricator, than the stack they leave: the editor's dialog asks, and
+the command line on its terminal, `accept` to type (Phabricator, below).
+Deleting drops every patch, which changes none.

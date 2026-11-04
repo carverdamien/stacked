@@ -402,6 +402,102 @@ patch of its own, a fetch, the one a submit makes first, and a pull
 storing that commit as Phabricator names it), and its menu
 holds every item of the patch about Phabricator (The editor, above).
 
+## Patches that should not change
+
+A patch whose revision is Accepted, or Landed, as its status was last
+fetched (by `Fetch the latest from Phabricator`, a pull, or the fetch a
+submit makes first), should not change: a change of an Accepted patch needs
+review again, and a Landed one is in the tree already. Which statuses
+protect a patch is said in one place (`protected::protecting`); every other
+status, a patch that names no revision, and one whose revision nothing is
+fetched of yet, change as any. Without the `moz-phab` feature, or with
+reviews coming from nowhere (`reviews.source = "none"`, Settings, above),
+no patch is protected.
+
+A stack written to hold another version of such a patch, its diff or its
+message differing from the version the stack holds, changes it; nothing
+else does: the patch dropped from the stack, moved with its version as it
+was, another version of the same diff and message (another author, say), or
+left as it is while patches change around it. No such stack goes in, nor
+does a name move to one of its tree (an undo, a redo, a stack picked in the
+tree of edits), unless that patch was confirmed for that one operation: the
+database refuses the write, nothing written, as an error of its own kind
+that names the patches (`patch 3 should not change, so nothing changed: D123
+is Accepted on Phabricator, and a change needs review again`; of several,
+`patches 3 and 5 should not change, so nothing changed: D123 is Accepted on
+Phabricator, and a change needs review again; D125 is Landed, and it is in
+the tree already`). Every write of a stack checks it, once the stack is
+seen to apply, a check that keeps what it found, so that the write made
+again once it is confirmed checks nothing twice; a write that replaces no
+version of a patch costs a look at the ids alone.
+
+In the editor, in the browser and in StackED, a write refused so opens the
+dialog that asks about those patches (The editor, above), where `accept` is
+typed; once it is, what was asked is done again, as it was asked, those
+patches confirmed for it: an undo or a redo, a stack picked in the tree of
+edits, a version put back in the stack from the versions of a patch, and
+the close of a review of a change of the stack (the agent's work, an edit
+by hand, Reconcile with HEAD, a pull, a lint job), from the review, the
+review staying open meanwhile, or from the banner, which rejects what is
+left of the work (`Reject them and close`), the main screen staying. A move
+and a drop write no other version of a patch, and never ask. Cancelled,
+nothing is written, and the bottom line says that nothing changed, and why
+(`nothing changed, as accept was not typed: patch 3 (D123) is Accepted on
+Phabricator`).
+
+An edit by hand in $EDITOR asks before the editor opens, so that no edit is
+lost to a refusal after it: of a patch as mail, when that patch should not
+change; of its code, when it or a patch above it should not, as a conflict
+with one of those, resolved by hand, makes it again on the edit; of the stack
+as a list, which may edit or reword any patch, when any should not; and so
+from the review of landed work, of the stack the work makes, the patches
+named as the stack holds them. The dialog then says that the edit may change
+them (`this edit may change a patch that should not change`), and cancelled,
+that it was not made (`the edit was not made, as accept was not typed: patch
+3 (D123) is Accepted on Phabricator`), $EDITOR not opened. Once `accept` is
+typed, $EDITOR opens, and the confirmation goes with the edit: not taken, it
+is edited again, or its conflict resolved by hand, with no one asked again
+of those patches; landed, its review keeps them (`held::Review`'s
+`confirmed`), so that closing it changes them with no one asked again, and
+an edit by hand of that work from its review hands them on to the work that
+takes its place. A patch that came to be protected since is asked about as
+any; cancelled then, the menu of the edit not taken comes back, the edit
+kept.
+
+A pull takes what Phabricator has: closing its review asks nothing of a
+patch it brings to what Phabricator has of its revision, as the pull's read
+stored it: its latest diff, raw, and the revision's title and summary as a
+submit sends them (`submit::message_against`), each or both, the rest of the
+patch as it was (`protected::from_phabricator`). It asks of one it changes
+otherwise, as a patch made again on the pulled versions under it is, an
+Accepted one or a Landed one, which the pull leaves as it is but for that.
+
+Work landing for your review (the agent's, a pull's, a lint job's,
+Reconcile with HEAD, an edit by hand) writes no stack: the stack changes
+only as its review closes, which asks then, and nothing is asked before.
+
+On the command line, every command that writes a stack (`import`, `base`,
+`add`, `move`, `drop`, `undo`, `redo`, `select`, `delete`, `edit
+--accept`, `review`, `send --accept`) asks the same on its terminal, when its
+standard input and its standard error are one: the dialog's lines, then the
+question, `accept` read to the letter:
+
+```
+stacked: this changes a patch that should not change.
+Patch 1, D12, is Accepted on Phabricator: a change needs review again.
+That status was fetched from Phabricator 11 minutes ago.
+Type accept to change patch 1 anyway: accept
+```
+
+`accept` typed, the command is made again, those patches confirmed for it;
+anything else, nothing changed (`stacked: nothing changed, as accept was not
+typed: patch 1 (D12) is Accepted on Phabricator`). With no terminal to ask
+on, it refuses, saying why and which patches, and that a terminal asks
+(`stacked: patch 1 should not change, so nothing changed: D12 is Accepted on
+Phabricator, and a change needs review again; on a terminal, stacked asks
+you to type accept to change patch 1 anyway`), nothing written; `stacked
+edit --accept` says too that the edit waits for your review, as its run.
+
 ## Submitting a patch
 
 `Submit to Phabricator as WIP`, in a patch's own `Phabricator` menu and

@@ -1151,6 +1151,69 @@ the help then names those:
   near the one after; back, the line it was on. The lines left out are not
   drawn at all, so the arrows and the wheel go over what is. In the
   browser (`stacked web`) and in StackED, the same.
+- With the `moz-phab` feature, an operation that would change patches that
+  should not change, their revisions Accepted or Landed on Phabricator
+  (Phabricator, below), is refused, nothing written, and opens a dialog
+  that asks about them; an edit by hand in $EDITOR that may change them asks
+  before the editor opens. It is laid out as the ask dialog is (Asking the
+  agent, below), in the middle of the screen, or next to the cell clicked
+  to open it: on its top, that the operation changes them (`this changes a
+  patch that should not change`, `this changes 2 patches that should not
+  change`), or that the edit may (`this edit may change a patch that should
+  not change`); a line for each patch, its number, its revision, its status
+  and what that status means (`Patch 3, D123, is Accepted on Phabricator: a
+  change needs review again.`, `Patch 5, D125, is Landed: it is in the tree
+  already.`); how long ago those statuses were fetched, as the Phabricator
+  line says it (`That status was fetched from Phabricator 11 minutes
+  ago.`; of several, `Those statuses were fetched from Phabricator 11
+  minutes ago.`, or, fetched apart, `Those statuses were fetched from
+  Phabricator: D123's 11 minutes ago and D125's yesterday.`); what to type
+  (`Type accept to change patch 3 anyway.`; of several, `Type accept to
+  change them anyway.`), a field to type it in, then its buttons, `< Change
+  it >` (`< Change them >` of several) and `< Cancel >`, and, while Change
+  them is grayed, why (`Change it is grayed until the field says accept, in
+  lower case and nothing else.`):
+
+  ```
+  ┌─ this changes a patch that should not change ──────────────────────────────┐
+  │ Patch 3, D123, is Accepted on Phabricator: a change needs review again.    │
+  │                                                                            │
+  │ That status was fetched from Phabricator 11 minutes ago.                   │
+  │                                                                            │
+  │ Type accept to change patch 3 anyway.                                      │
+  │ [accep                                                                   ] │
+  │                                                                            │
+  │ < Change it >   < Cancel >                                                 │
+  │                                                                            │
+  │ Change it is grayed until the field says accept, in lower case and nothing │
+  │ else.                                                                      │
+  └────────────────────────────────────────────────────────────────────────────┘
+  ```
+
+  It is strict: Change them, and Enter, do nothing until the field says
+  `accept`, to the letter, in lower case and nothing around it (`accep`,
+  `Accept`, ` accept` do nothing), the bottom line saying why. It opens
+  with nothing typed, the cursor in the field, the terminal's cursor after
+  what is typed. What is typed goes in the field as it is, whatever keys
+  the settings map, `?` and Space with it, the cursor going to the field,
+  and Backspace takes its last character back; ↑↓ and Tab go from the field
+  to the buttons and back; on the buttons, ← → go from one to the other,
+  past Change them while it is grayed, and Enter presses the one the cursor
+  is on, Change them from the field. Esc, Cancel, and a click out of the
+  dialog cancel it: nothing is written, and the bottom line says that
+  nothing changed, and why (`nothing changed, as accept was not typed: patch
+  3 (D123) is Accepted on Phabricator`; before $EDITOR opened, `the edit was
+  not made, as accept was not typed: …`). Once accept is typed, what was
+  asked is done again, as it was asked, those patches confirmed for its one
+  operation, and for no other: the next asks again. The mouse is as in the
+  ask dialog: over the field the cursor goes there, and over a button that
+  can be pressed, there; a click in the field puts the cursor there, one on
+  a button presses it (Change them, while it is grayed, doing nothing but
+  saying why), one in the box on nothing does nothing. The bottom bar says the
+  keys there (`type accept · enter: change it · ↓: the buttons · esc:
+  cancel`; on the buttons, `←→: another button · enter: press it · ↑: the
+  field · esc: cancel`). In the browser (`stacked web`) and in StackED, the
+  same.
 - Unified split in two shows the patch picked twice, side by side, each
   half a unified view of its own with a line between them, to read one
   place of the patch while going through another: a function's definition

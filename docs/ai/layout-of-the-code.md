@@ -1,12 +1,21 @@
 # Layout of the code
 
-- `main.rs`: the command line; the library does the rest.
+- `main.rs`: the command line; the library does the rest; and a write
+  refused as it would change patches that should not change asked about on
+  its terminal (`edit_asking`).
 - `complete.rs`: the shell's completion: what `stacked __complete` offers
   for the word being typed, from stacked's commands and their options, and
   from the database (its stacks, a stack's patches and comments, the
   agent's runs); and the function for zsh that `stacked completions zsh`
   prints.
-- `db.rs`: the file, its records and its lock.
+- `db.rs`: the file, its records and its lock; every write of a stack
+  guarded, refused as an error of its own kind when it changes patches that
+  should not change and were not confirmed for it (`edit_confirmed`).
+- `protected.rs`: the patches that should not change, their revisions
+  Accepted or Landed on Phabricator as last fetched (`protecting`, the one
+  place that says which statuses); what changes one; those an edit by hand
+  may change; those a pull brings to what Phabricator has of them; and the
+  refusal, said, for the dialog and the command line.
 - `check.rs`: whether patches apply, before they go in; the files as a
   patch leaves them, and the tree, for a submit; the files around a
   version, before and after it on its base, and a file from one of them
@@ -199,6 +208,12 @@
   laid out as the ask dialog: what is compared, the view and the lines,
   each set at once, the line under each saying what its value draws, then
   Done or Cancel;
+  `tui/protected_dialog.rs`, the dialog asking before patches that should
+  not change are changed, laid out as the ask dialog: a line for each
+  patch, how long ago their statuses were fetched, a field where `accept`
+  is typed, then Change them or Cancel; what is done again once it is
+  typed, as it was asked; and the edits by hand in $EDITOR asked about
+  before the editor opens;
   `tui/change.rs`, the change from one version to another as a patch of
   its own in the views of the code there, the lines the change of base
   made left out with only what the patches changed, what each screen

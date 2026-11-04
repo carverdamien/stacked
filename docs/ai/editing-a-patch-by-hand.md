@@ -129,6 +129,16 @@ undo and redo change the stack at once. On the command line, `stacked edit`
 says the run the edit landed as: `stacked review NAME RUN --accept-all`
 takes it, and `stacked edit … --accept` takes it at once.
 
+With the `moz-phab` feature, an edit by hand that may change a patch that
+should not change, its revision Accepted or Landed on Phabricator, asks
+before $EDITOR opens, `accept` to type (Phabricator, below): the patch as
+mail asks of itself; a file of it, of itself and of the patches above it,
+which a conflict with it resolved by hand makes again; the stack as a list,
+of every patch. Typed, $EDITOR opens, and closing the review the edit lands
+for changes them with no one asked again; cancelled, the editor does not
+open, and nothing changes. On the command line, `stacked edit … --accept`
+asks on its terminal, as it takes the edit.
+
 The editor is told the line: `+LINE` for vi, vim, nvim, nano, emacs or kak,
 `FILE:LINE` for hx, zed or subl, `--goto FILE:LINE` for code; any other is
 given the file alone, unless the settings' `editor` says where `{file}` and

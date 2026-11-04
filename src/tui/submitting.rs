@@ -28,9 +28,10 @@
 use super::change::{Near, change_stops, code_view};
 use super::compared::{diff_rows, message_rows, row, said_rows};
 use super::interdiffs::{At, Seen, Two, half_of, paired};
-use super::revisions::{Shown as CodeShown, age_said, bare, files_drawn, files_heading, interdiff_drawn, named_interdiff, shown_of, shown_said};
+use super::revisions::{Shown as CodeShown, bare, files_drawn, files_heading, interdiff_drawn, named_interdiff, shown_of, shown_said};
 use super::*;
 use crate::ops::CodePlace;
+use crate::phab::age_said;
 use crate::submit::{Prepared, and};
 
 /// What the bar says while a submit is read, or sent.
@@ -54,7 +55,7 @@ pub struct Submitting {
     /// (`interdiffs::Seen`); what they were drawn for: the width, the view
     /// of the interdiffs, every line or only what the patches changed, and
     /// how long ago what they show of the revision was fetched, as they say
-    /// it (`revisions::age_said`); and, drawn again, the line the cursor
+    /// it (`phab::age_said`); and, drawn again, the line the cursor
     /// went on and the place it came with (`interdiffs::locate`), so that
     /// switching back and forth it goes back where it was.
     rows: Vec<Row>,

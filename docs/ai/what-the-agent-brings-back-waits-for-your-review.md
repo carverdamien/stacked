@@ -358,6 +358,14 @@ the stack the change makes was checked as the work landed, and rejected,
 the stack stays as it is. `stacked review --accept-all` and
 `--reject-all` check the stack the operations accepted leave the same
 before they take the database's lock, and refuse as the review does.
+With the `moz-phab` feature, a close whose stack would change a patch that
+should not change, its revision Accepted or Landed on Phabricator, is
+refused, nothing done, and asks, from the review or from the banner, as the
+command line does on its terminal, `accept` to type (Phabricator, below):
+the review stays open meanwhile, and once accept is typed it is closed as it
+was asked; cancelled, it stays open, nothing changed. What you typed accept
+for before $EDITOR opened on an edit by hand, and what a pull brings to what
+Phabricator has, closes with no one asked.
 Accepted in part, the history names the operations rejected, by their
 word and place as the list says them (`agent: the stack; rejected:
 modify 5`), and so does the run (`reviewed: its change accepted in part, 3

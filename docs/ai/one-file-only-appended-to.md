@@ -84,8 +84,12 @@ bytes long, padded with spaces.
   the
   stack before its change, kept, restarted or stopped, by that answer's
   run: `keep RUN`, `restart RUN`, `stop RUN`),
-  the replies taken already, and whether it is closed; the last one is
-  what stands.
+  the replies taken already, whether it is closed, and, of an edit by hand,
+  the patches that should not change that accept was typed for before
+  $EDITOR opened on it, by their versions (`confirmed`, Phabricator below),
+  which its close changes with no one asked again; the last one is what
+  stands. A refusal of a write that would change such patches writes
+  nothing at all.
 - A reconcile with HEAD's run holds what it takes, each patch's change,
   its commit and that commit's message, and the work it went on from, if it
   was chained; made, its change of the stack, as an ask's.

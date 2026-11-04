@@ -65,12 +65,19 @@ pub(super) const CHECKING_CLOSE: &str = "checking the stack the operations you a
 /// was checked is not what would close.
 pub(super) const CLOSE_CHANGED: &str = "the review changed while the stack the operations you accepted leave was being checked, so nothing changed: close it again";
 
+/// What it says when the review changed while the dialog asked about the
+/// patches that should not change that closing it changes: what was asked
+/// about is not what would close.
+pub(super) const CLOSE_CHANGED_ASKING: &str = "the review changed while you were asked about the patches that should not change, so nothing changed: close it again";
+
 /// A close of the review asked, waiting for its check of the stack the
-/// operations accepted leave, made away from the screen: the review as it
-/// was when it was asked, its run and its marks; the parts not marked, as
-/// `rest` says; whether the build and test of the stack as it was is
-/// stopped too; and whether it was asked from the banner, the review not
-/// open.
+/// operations accepted leave, made away from the screen, or for the dialog
+/// asking about the patches that should not change that it changes: the
+/// review as it was when it was asked, its run and its marks; the parts not
+/// marked, as `rest` says; whether the build and test of the stack as it
+/// was is stopped too; and whether it was asked from the banner, the review
+/// not open.
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct ToClose {
     review: Reviewing,
     rest: Option<bool>,
@@ -1665,7 +1672,7 @@ impl App {
             return;
         }
         self.reviewing = Some(rv);
-        self.review_close_now(Some(false), false);
+        self.review_close_now(Some(false), false, true);
         self.reviewing = None;
         self.screen = Screen::Main;
     }
@@ -4119,7 +4126,7 @@ impl App {
             self.check_closing(ToClose { review: rv, rest, stop, banner: false }, ops, stands);
             return;
         }
-        self.review_close_now(rest, stop);
+        self.review_close_now(rest, stop, false);
     }
 
     /// Close `c` waiting for its check of the stack the operations accepted
@@ -4143,35 +4150,69 @@ impl App {
     /// itself, as what was checked is not what would close.
     pub(super) fn closing_checked(&mut self, n: usize, found: std::result::Result<Option<String>, String>) {
         let Some((_, c)) = self.bg.closing.take_if(|(k, _)| *k == n) else { return };
-        let now = match c.banner {
-            true => self.reviewing.is_none().then(|| self.review_of(&c.review.run)),
-            false => self.reviewing.clone(),
-        };
-        if !now.is_some_and(|rv| rv.run == c.review.run && rv.marks == c.review.marks) {
+        if !self.close_stands(&c) {
             self.status = CLOSE_CHANGED.into();
             return;
         }
         match found {
-            Ok(None) if c.banner => {
-                self.reviewing = Some(c.review);
-                self.review_close_now(c.rest, c.stop);
-                self.reviewing = None;
-                self.screen = Screen::Main;
-            }
-            Ok(None) => self.review_close_now(c.rest, c.stop),
+            Ok(None) => self.close_as_asked(c),
             Ok(Some(why)) => self.status = crate::held::refused_closing(&why),
             Err(e) => self.status = format!("the stack the operations you accepted leave could not be checked: {e}; nothing changed"),
         }
+    }
+
+    /// Whether close `c` is still of the review as it is: the same run, the
+    /// same marks; asked from the banner, with no review open.
+    fn close_stands(&self, c: &ToClose) -> bool {
+        let now = match c.banner {
+            true => self.reviewing.is_none().then(|| self.review_of(&c.review.run)),
+            false => self.reviewing.clone(),
+        };
+        now.is_some_and(|rv| rv.run == c.review.run && rv.marks == c.review.marks)
+    }
+
+    /// Close `c` made, its check made: from the banner, on the review as it
+    /// was asked, the main screen staying.
+    fn close_as_asked(&mut self, c: ToClose) {
+        match c.banner {
+            true => {
+                self.reviewing = Some(c.review);
+                self.review_close_now(c.rest, c.stop, true);
+                self.reviewing = None;
+                self.screen = Screen::Main;
+            }
+            false => self.review_close_now(c.rest, c.stop, false),
+        }
+    }
+
+    /// Close `c`, refused as it would change patches that should not change,
+    /// made again once accept was typed for them, as it was asked: nothing
+    /// done if the review changed meanwhile, as what was asked about is not
+    /// what would close.
+    pub(super) fn close_again(&mut self, c: ToClose) {
+        if !self.close_stands(&c) {
+            self.status = CLOSE_CHANGED_ASKING.into();
+            return;
+        }
+        self.close_as_asked(c);
     }
 
     /// The review closed: what is accepted applied, the rest dropped; the
     /// parts not marked accepted or rejected as `rest` says; `stop`, the
     /// build and test of the stack as it was stopped too, once it is closed.
     /// Its change accepted, HEAD of your checkout follows the stack to its
-    /// top, if it can safely and you did not pick otherwise.
-    fn review_close_now(&mut self, rest: Option<bool>, stop: bool) {
+    /// top, if it can safely and you did not pick otherwise. Refused, as it
+    /// would change patches that should not change, the dialog asks about
+    /// them, then closes it again as it was asked, from the banner (`banner`)
+    /// or not (`again`).
+    fn review_close_now(&mut self, rest: Option<bool>, stop: bool, banner: bool) {
         let builds = if stop { ask::builds_going(&self.db, &self.stack) } else { vec![] };
+        let was = self.again.clone();
+        if let Some(review) = self.reviewing.clone() {
+            self.again = Some(Again::Close(ToClose { review, rest, stop, banner }));
+        }
         self.review_closed(rest);
+        self.again = was;
         if self.reviewing.is_none() && !builds.is_empty() {
             for r in builds {
                 self.stop(r.id, false);

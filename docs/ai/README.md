@@ -34,7 +34,8 @@ its tests. A new section is a new file, listed here in its place.
   `stacked app`, its fonts, mouse, windows and File menu, `--bundle`,
   StackED opened as an app, and its icon.
 - [The editor](the-editor.md): the panes, HEAD's line, Move HEAD and
-  Reconcile with HEAD, the Phabricator statuses and line, and every key.
+  Reconcile with HEAD, the Phabricator statuses and line, every key, and
+  the dialog that asks before patches that should not change are changed.
 - [Making a stack in the editor](making-a-stack-in-the-editor.md): a stack
   made by the agent, or imported from the workspace or from Phabricator.
 - [Writing comments](writing-comments.md): threads, their colours and
@@ -82,8 +83,10 @@ its tests. A new section is a new file, listed here in its place.
 - [Phabricator](phabricator.md): a stack pulled, its revisions' new
   versions, their parents and those stacked on top, and the reviews, in
   one review; a new stack pulled from a revision; reviewers' edits, links
-  to bugs, the statuses, and a patch submitted as work in progress or a
-  revision in review updated.
+  to bugs, the statuses; the patches that should not change, Accepted or
+  Landed, a change of them asked about first, in the editor and on the
+  command line; and a patch submitted as work in progress or a revision in
+  review updated.
 - [Copied from self-review-rs](copied-from-self-review-rs.md): where
   stacked comes from, and what it copies.
 - [Layout of the code](layout-of-the-code.md): what each source file does.

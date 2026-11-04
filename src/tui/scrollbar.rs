@@ -102,8 +102,9 @@ impl App {
     /// the main screen, the banner while the cursor is on it, or the pane
     /// the cursor is in, of the middle split in two the half it is in; on a
     /// screen of its own, the part of it the cursor is in. The search of
-    /// the middle puts the cursor in the middle. None in the ask dialog,
-    /// nor while a line is typed in a box: neither scrolls.
+    /// the middle puts the cursor in the middle. None in a dialog (the ask
+    /// dialog, the views', the one where accept is typed), nor while a line
+    /// is typed in a box: none of them scrolls.
     pub(super) fn barred(&self) -> Option<Wheeled> {
         match &self.mode {
             Mode::Menu(_) => return Some(Wheeled::Menu),
@@ -112,7 +113,7 @@ impl App {
             Mode::Edit(_) => return Some(Wheeled::Editor),
             Mode::Stream { .. } => return Some(Wheeled::Stream),
             Mode::Moving { .. } | Mode::MovingHead { .. } => return Some(Wheeled::Patches),
-            Mode::Ask(_) | Mode::Views(_) | Mode::Lines(_) | Mode::Prompt(_) => return None,
+            Mode::Ask(_) | Mode::Views(_) | Mode::Protected(_) | Mode::Lines(_) | Mode::Prompt(_) => return None,
             Mode::Normal | Mode::Find(_) => {}
         }
         Some(match self.screen {

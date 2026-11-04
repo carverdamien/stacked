@@ -443,7 +443,8 @@ fn made_from(r: &Run, h: &Held) -> Option<usize> {
 /// calls it, `of` what it changes, and `said` what the edit was. Made from
 /// the stack as it is; or, editing the work run `work` holds, from the
 /// stack that work makes, in its place: that work is rejected, and the new
-/// holds its replies and comments as they were. The new run. What each
+/// holds its replies and comments as they were, and the patches that should
+/// not change that were confirmed for it (`confirm`). The new run. What each
 /// operation of its change needs is worked out once it is filed, no lock
 /// held (`work_out`): none of what that work held, which was another
 /// change's.
@@ -497,6 +498,11 @@ pub fn hold_by_hand(db: &mut Db, name: &str, patches: Vec<String>, op: &str, of:
         rev: None,
         ..r.clone()
     })?;
+    // The patches that should not change you typed accept for before an
+    // edit by hand of yours that this work was: they go on with it.
+    if !v.confirmed.is_empty() {
+        db.set_review(&id, Review { confirmed: v.confirmed.clone(), ..Default::default() })?;
+    }
     v.closed = true;
     v.marks.insert(Part::Stack.key(), false);
     db.set_review(work, v)?;
@@ -545,8 +551,11 @@ impl Part {
 }
 
 /// The review of work held, as saved: each part marked accepted (true) or
-/// rejected; the replies taken already into their threads; and whether it
-/// is closed.
+/// rejected; the replies taken already into their threads; whether it is
+/// closed; and the patches that should not change (`protected`) that you
+/// typed `accept` for before $EDITOR opened on the edit by hand it is of, by
+/// the versions the stack held then, which closing it changes with no
+/// one asked again (`confirm`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Review {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -555,6 +564,8 @@ pub struct Review {
     pub taken: Vec<usize>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub closed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confirmed: Vec<String>,
 }
 
 impl Held {
@@ -980,6 +991,21 @@ pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()>
         return err(FILED);
     }
     v.marks = marks.clone();
+    db.set_review(id, v).map(|_| ())
+}
+
+/// Keeps with run `id`'s review `ids`, patches that should not change
+/// (`protected`), by the versions the stack holds, which you typed `accept`
+/// for before $EDITOR opened on the edit by hand it holds: closing the
+/// review changes them with no one asked again, as that confirmation was
+/// for that edit, and its review's close is what writes it.
+pub fn confirm(db: &mut Db, id: &str, ids: &[String]) -> Result<()> {
+    let (_, _, mut v) = under_review(db, id)?;
+    for i in ids {
+        if !v.confirmed.contains(i) {
+            v.confirmed.push(i.clone());
+        }
+    }
     db.set_review(id, v).map(|_| ())
 }
 
@@ -1902,6 +1928,16 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         let s = db.stack(&r.stack)?.clone();
         let olds: Vec<Patch> = s.patches.iter().map(|p| db.patch(p).clone()).collect();
         let base = base.or(s.base.clone());
+        // Of the patches that should not change, those you typed accept for
+        // before $EDITOR opened on this edit by hand, and those a pull
+        // brings to what Phabricator has of them, as a pull takes what
+        // Phabricator has, change with no one asked again. The write is
+        // refused for any other, the editor and the command line asking.
+        db.confirm(v.confirmed.iter().cloned());
+        if pull {
+            let own = crate::protected::from_phabricator(db, &s.patches, &patches);
+            db.confirm(own);
+        }
         rev = Some(db.set_stack_on(&r.stack, patches.clone(), base, s.repo.clone(), &op)?);
         crate::ask::follow_lines(db, &olds, &patches)?;
     }

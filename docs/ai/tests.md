@@ -132,6 +132,58 @@ never half of it; and a thread that holds the lock to write reading the
 file again under it, with no shared lock asked for, which would wait on
 the thread for ever.
 
+The tests of the patches that should not change (Phabricator, above), with
+moz-phab, store their revisions' statuses in the test's database, as a
+fetch stores them, and reach no Phabricator. In `protected.rs`, Accepted and
+Landed alone protect a patch, and the refusal says each patch, its
+revision, its status and what that means, how long ago their statuses were
+fetched, at once or apart, what to type, the button, and what the bottom
+line says once accept is not typed. In `db.rs`, a write that changes such a
+patch, its diff or its message alone, is refused as an error of its own
+kind naming it, nothing written, `Db::edit` saying it as its error, the
+first write of an edit refused leaving the next unmade, both patches of one
+write named in order; confirmed for another patch, refused all the same;
+confirmed for exactly those, written, for that edit alone, the next edit of
+its new version refused again; one Changes Planned or Needs Review changed
+at once; such a patch moved, its version as it was, dropped, given another
+author alone, and its stack deleted, with no one asked; undo, redo and a
+stack picked from the tree refused as any write, then written once
+confirmed, a delete undone changing none; and a patch brought to its
+revision's latest diff as stored raw, or to its title and summary, or to
+both, told apart from one with another diff or another message. In
+`tests/tui.rs`, for Accepted and Landed each: a move and a drop ask
+nothing, nor do they of Changes Planned and Needs Review; undo and redo,
+a version put back from the versions of a patch, and a stack picked in the
+tree of edits open the dialog, which stays with `accep`, `Accept`, `
+accept` or `accept ` typed, Enter and a click on its Change button doing
+nothing but saying why, nothing written; Esc cancels it, the bottom line
+saying why, nothing written; `accept` writes it, for that one operation, the
+next undo asking again; Changes Planned and Needs Review write at once. An
+edit by hand asks before $EDITOR opens, of the patch as mail, of a file
+of the patch under it, as it may rebase it, of the stack as a list, and
+from the review of landed work; cancelled, $EDITOR does not open; typed,
+it opens, the edit lands, and its review closes with no one asked again; an
+edit of a file not taken, as the patch above it no longer applies on it,
+edited again asks of a patch Accepted since alone, cancelled giving back the
+edit's menu, and its conflict resolved by hand asks nothing more, its review
+closing so too; Changes Planned and Needs Review give $EDITOR at once. A review of a change of such a patch, closed,
+asks first, the review staying open while cancelled; from the banner too,
+the main screen staying, the review closed from there once accept is typed.
+A pull that brings such a patch to its revision's latest diff closes with
+no one asked; one that makes it again on the pulled version under it asks,
+Accepted or Landed. The dialog draws its title, each patch's line, how long
+ago their statuses were fetched, apart, what to type, the field with the
+terminal's cursor after what is typed, the buttons, and what keeps Change
+them grayed, gone once accept is typed; the mouse over a grayed Change
+them leaves the cursor in the field, over it once typed puts it there, and
+a click on it changes them; a click out of the dialog, and one on Cancel,
+cancel it; ↓ goes to the buttons, ← stays on Cancel while Change them is
+grayed, and Enter there cancels. In `tests/cli.rs`, `stacked undo` of such
+a patch is refused with no terminal, saying why and which patch, nothing
+written; with reviews coming from nowhere, undone at once; on a terminal
+of its own (a pseudo-terminal), it asks there, `Accept` typed refused, and
+`accept` typed undone.
+
 The tests of the launch lock, in `ask.rs`, show it on a file of its own
 beside the database, taken again by the thread that holds it, the
 database's lock taken under it, another thread waiting until it is given

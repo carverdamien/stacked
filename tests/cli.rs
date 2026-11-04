@@ -5543,6 +5543,92 @@ fn moz_phab_says_what_it_cannot_do_before_reaching_phabricator() {
     }
 }
 
+/// stacked run as `stacked_in` runs it, its standard input and its
+/// standard error a terminal of its own, a pseudo-terminal, on which
+/// `typed` is typed ahead: whether it succeeded, and what it wrote on the
+/// terminal, the terminal's echo of what was typed in.
+#[cfg(feature = "moz-phab")]
+fn stacked_on_terminal(dir: &Path, db: &Path, args: &[&str], typed: &str) -> (bool, String) {
+    use std::io::{Read, Write};
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let (mut master, mut slave) = (0, 0);
+    let opened = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
+    assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let child = stacked_command(dir, db, args, &[])
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(slave))
+        .spawn()
+        .unwrap();
+    let mut terminal = std::fs::File::from(master);
+    terminal.write_all(typed.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    // The terminal's side of it gone with it: what it wrote is read to its
+    // end, which the system says as an error of reading on.
+    let mut said = Vec::new();
+    let _ = terminal.read_to_end(&mut said);
+    (out.status.success(), String::from_utf8_lossy(&said).into_owned())
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_command_that_changes_a_patch_that_should_not_change_asks_on_a_terminal_and_refuses_off_one() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // Patch 1 given a version naming D12, then D12 Accepted, as a fetch
+    // stored it: undone, the version before would be back.
+    Db::edit(&e.db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let message = format!("{}\n\nDifferential Revision: https://phabricator.example.com/D12", old.message);
+        ops::replace(d, "s", 0, Draft { message, ..Draft::from(&old) }, "reword").map(|_| ())
+    })
+    .unwrap();
+    let state = stacked::db::State { status: "accepted".into(), phid: "PHID-DREV-12".into(), ..Default::default() };
+    Db::edit(&e.db, |d| d.store_revision("https://phabricator.example.com/D12", "D12", Some(state), None).map(|_| ())).unwrap();
+    let names_d12 = |db: &Path| {
+        let d = Db::load(db).unwrap();
+        d.patch(&d.stack("s").unwrap().patches[0]).message.contains("/D12")
+    };
+    let bytes = std::fs::read(&e.db).unwrap();
+    // With no terminal to ask on: refused, saying why and which patch,
+    // nothing written.
+    let (fine, _, err) = e.run(&["undo", "s"]);
+    assert!(!fine);
+    assert_eq!(
+        err.trim(),
+        "stacked: patch 1 should not change, so nothing changed: D12 is Accepted on Phabricator, and a change needs review again; on a terminal, stacked asks you to type accept to change patch 1 anyway"
+    );
+    assert_eq!(std::fs::read(&e.db).unwrap(), bytes, "nothing written");
+    // With reviews coming from nowhere, nothing is protected: undone at
+    // once. Redone, the version back changes none that is.
+    let settings = e.root.join("nowhere.toml");
+    std::fs::write(&settings, "[reviews]\nsource = \"none\"\n").unwrap();
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["undo", "s"], "", &[("STACKED_CONFIG", settings.as_path())]);
+    assert!(fine && !names_d12(&e.db), "{err}");
+    e.ok(&["redo", "s"]);
+    assert!(names_d12(&e.db), "redone");
+    let bytes = std::fs::read(&e.db).unwrap();
+    // On a terminal: asked there, as the editor's dialog asks; anything but
+    // accept typed, nothing written.
+    let (fine, said) = stacked_on_terminal(&e.src, &e.db, &["undo", "s"], "Accept\n");
+    assert!(!fine, "{said}");
+    for line in [
+        "stacked: this changes a patch that should not change.",
+        "Patch 1, D12, is Accepted on Phabricator: a change needs review again.",
+        "That status was fetched from Phabricator just now.",
+        "Type accept to change patch 1 anyway: ",
+        "stacked: nothing changed, as accept was not typed: patch 1 (D12) is Accepted on Phabricator",
+    ] {
+        assert!(said.contains(line), "{line:?} in {said:?}");
+    }
+    assert_eq!(std::fs::read(&e.db).unwrap(), bytes, "nothing written");
+    // accept typed: undone.
+    let (fine, said) = stacked_on_terminal(&e.src, &e.db, &["undo", "s"], "accept\n");
+    assert!(fine, "{said}");
+    assert!(!names_d12(&e.db), "undone");
+}
+
 #[test]
 fn phabricator_s_commands_are_there_when_built_with_it() {
     let e = env();
