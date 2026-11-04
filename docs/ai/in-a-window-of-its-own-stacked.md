@@ -44,7 +44,8 @@ StackED's menus take no key, on any system: every other key goes to the
 editor, as in a terminal.
 
 A drag selects the text it goes over, as in a terminal, but kept to the
-pane it starts in, or to the box (a menu, a preview, a comment being
+pane it starts in, its scroll bar left out where that is in its last
+column, or to the box (a menu, a preview, a comment being
 written): the lines from where it starts to where it ends, or with option
 held (alt elsewhere) a block of them, their columns only. ⌘C copies it
 (ctrl-c elsewhere, which quits only when nothing is selected), each line

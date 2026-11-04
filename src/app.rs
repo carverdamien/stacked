@@ -2291,7 +2291,7 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts);
         let _ = ctx.run(egui::RawInput::default(), |_| {});
-        let drawn = "·…─↑↓→←│−↕●⇢✓○–▶↗⇗↪•◇◌└┼⋯✗┘⟳≡◆✉▲▼⇣✎▏┌┐▎▸‹›";
+        let drawn = "·…─↑↓→←│−↕●⇢✓○–▶↗⇗↪•◇◌└┼⋯✗┘⟳≡◆✉▲▼⇣✎▏┌┐▎▸‹›█";
         for face in Face::ALL {
             let font = FontId::new(FONT_SIZE, face.family());
             let missing: String = drawn.chars().filter(|c| !ctx.fonts_mut(|f| f.has_glyph(&font, *c))).collect();

@@ -294,9 +294,15 @@ impl App {
                 s.top = s.sel + 1 - rows;
             }
         }
+        // More found than the list has room for: its scroll bar beside them,
+        // in the line on its right, else, the list alone on the screen, in
+        // its last column.
+        let shown = Shown { top: s.top, rows, all: s.found.len() };
+        let tw = self.pane_bar(Wheeled::Found, list, buf.area, (1, rows), shown);
+        let s = self.searching.as_ref()?;
         for (y, (i, f)) in s.found.iter().enumerate().skip(s.top).take(rows).enumerate() {
             let st = if i == s.sel { on_cursor(Style::new()) } else { Style::new() };
-            put(buf, list, 0, y + 1, list_w, &fit(&format!(" {} · {}", f.at, f.line), list_w), st);
+            put(buf, list, 0, y + 1, tw, &fit(&format!(" {} · {}", f.at, f.line), tw), st);
             spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::Found(i));
         }
         let n = s.found.len();

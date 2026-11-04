@@ -407,6 +407,18 @@ impl Editor {
         text.max(1) + self.under.len()
     }
 
+    /// What the box showed of its text as it was last drawn (`draw`), in
+    /// the screen lines the text takes there: the first it showed, how many
+    /// it held, and how many there are; of what was closed here, while that
+    /// shows. For its scroll bar.
+    pub fn showed(&self) -> (usize, usize, usize) {
+        let (inner, text_h) = self.shown.get();
+        match self.ghosted() {
+            true => (self.ghost_top.get(), text_h, self.ghost_lines(inner).len()),
+            false => (self.vtop.get(), text_h, self.visual(inner).0.len()),
+        }
+    }
+
     /// The inside of a box of `w` by `h`, as `draw` lays it out: how wide it
     /// is, how many lines the text has, and how many the references under
     /// the text have.

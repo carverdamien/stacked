@@ -836,6 +836,10 @@ impl App {
                 self.banner_top = at + 1 - room;
             }
         }
+        // More rows than it has room for: its scroll bar beside them, in the
+        // screen's last column, which they then leave to it.
+        let shown = Shown { top: self.banner_top, rows: room, all: rows.len() };
+        let tw = self.pane_bar(Wheeled::Banner, area, area, (2, room), shown);
         for (y, &(i, k)) in rows.iter().skip(self.banner_top).take(room).enumerate() {
             let Some(i) = i else {
                 let title = match k {
@@ -845,11 +849,11 @@ impl App {
                     5 => " the linter",
                     _ => " open comments",
                 };
-                put(buf, area, 0, 2 + y, w, &fit(title, w), color::file());
+                put(buf, area, 0, 2 + y, tw, &fit(title, tw), color::file());
                 continue;
             };
             let st = if i == self.banner_sel { on_cursor(Style::new()) } else { Style::new() };
-            put(buf, area, 0, 2 + y, w, &fit(&self.banner_line(&lines[i]), w), st);
+            put(buf, area, 0, 2 + y, tw, &fit(&self.banner_line(&lines[i]), tw), st);
             spot_in(&self.spots, area, (0, 2 + y, w, 1), Spot::BannerLine(i));
         }
     }

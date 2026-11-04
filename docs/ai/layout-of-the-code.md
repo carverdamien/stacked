@@ -193,7 +193,9 @@
   `tui/wheel.rs`, the wheel of the browser and of StackED: whether the
   mouse is in use, what the wheel scrolls under it then, and ↑↓ after a
   key; `tui/drag.rs`, HEAD's row dragged with the mouse there, a press on
-  it held until it is a click or a drag;
+  it held until it is a click or a drag; `tui/scrollbar.rs`, the scroll
+  bar of the place the cursor is in while what it holds does not fit,
+  where each place draws it, and its thumb;
   `tui/finding.rs`, the search of the middle (`/`); `tui/ask_dialog.rs`,
   the dialog every `Ask agent…` item opens, its permission and effort set
   each time, then Ask Now, Ask Later or Cancel; and a review's `Send it

@@ -2577,6 +2577,10 @@ impl App {
                     top = rv.sel + 1 - rows;
                 }
             }
+            // Longer than the list, its scroll bar beside the lines under its
+            // title: in the line on its right, else, the list alone on the
+            // screen, in its last column.
+            let tw = self.pane_bar(Wheeled::ReviewList, list, buf.area, (1, rows), Shown { top, rows, all: lines.len() });
             for (y, (i, l)) in lines.iter().enumerate().skip(top).take(rows).enumerate() {
                 // The line the cursor is on: each of its parts in the cursor's
                 // colours, whatever its own, a mark too; picked, the cursor in
@@ -2587,7 +2591,7 @@ impl App {
                     (true, false) => on_cursor(st),
                 };
                 let parts: Parts = l.parts.iter().map(|(text, st)| (text.clone(), drawn(*st))).collect();
-                put_parts(buf, list, 0, y + 1, list_w, &parts);
+                put_parts(buf, list, 0, y + 1, tw, &parts);
                 spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::ReviewLine(i));
             }
             if let Some(r) = &mut self.reviewing {
@@ -2652,6 +2656,10 @@ impl App {
             if let Some(r) = &mut self.reviewing {
                 (r.row, r.row_top, r.main_w, r.goto) = (cur, top, pw, None);
             }
+            // Longer than the pane, its scroll bar beside the rows under its
+            // title, in its last column, which its rows, built a column short
+            // of the pane, leave blank.
+            self.pane_bar(Wheeled::ReviewMain, main, buf.area, (1, rows), Shown { top, rows: room, all: all.len() });
             put(buf, main, 0, 0, main_w, &fit(&format!(" patch {} as the work leaves it: {}", at + 1, p.title()), main_w), head);
             let (mut y, mut cursor) = (1, None);
             for (i, row) in all.iter().enumerate().skip(top) {
@@ -2693,6 +2701,10 @@ impl App {
         if let Some(r) = &mut self.reviewing {
             r.scroll = scroll;
         }
+        // Longer than the pane, or scrolled past its first line, its scroll
+        // bar beside the lines under its title, in its last column, which
+        // its lines, built a column short of the pane, leave blank.
+        self.pane_bar(Wheeled::ReviewMain, main, buf.area, (1, rows), Shown { top: scroll, rows, all: view.len() });
         for (i, parts) in view.iter().enumerate().skip(scroll) {
             let y = 1 + i - scroll + if i >= at.end { edit_h } else { 0 };
             if y > rows {

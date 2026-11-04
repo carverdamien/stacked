@@ -329,6 +329,10 @@ impl App {
                 sub.top = sub.cursor + 1 - rows_h;
             }
         }
+        // Longer than the screen, its scroll bar beside the lines under its
+        // title, in the screen's last column, which its rows, folded a column
+        // short of it, leave blank.
+        let shown = Shown { top: sub.top, rows: rows_h, all: sub.lines };
         for (y, k) in (sub.top..sub.lines).take(rows_h).enumerate() {
             let lit = k == sub.cursor;
             if !side {
@@ -348,6 +352,7 @@ impl App {
                 }
             }
         }
+        self.pane_bar(Wheeled::Submit, area, buf.area, (1, rows_h), shown);
     }
 
     /// What the review's bar says: how to send it, how to send nothing; on a

@@ -634,11 +634,11 @@ fn the_wheel_scrolls_the_middle_under_the_mouse_its_cursor_on_the_line_then_unde
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     // On a screen of 12 lines, the middle shows 10 of patch 1's rows, from
-    // column 31. The mouse over its fifth line: the cursor there, in the
-    // middle, as the mouse puts it.
+    // column 31, in 88 columns, its last its scroll bar's. The mouse over
+    // its fifth line: the cursor there, in the middle, as the mouse puts it.
     draw_sized(&mut app, 120, 12);
     let over = (MIDDLE as u16 + 2, 5);
-    let under = |screen: &str| line_at(screen, MIDDLE, 89, 5);
+    let under = |screen: &str| line_at(screen, MIDDLE, 88, 5);
     app.hover(over.0, over.1);
     let screen = draw_sized(&mut app, 120, 12);
     assert_eq!((app.focus, app.top, app.cursor), (Focus::Diff, 0, 4));
@@ -657,7 +657,7 @@ fn the_wheel_scrolls_the_middle_under_the_mouse_its_cursor_on_the_line_then_unde
     wheel(&mut app, over, 100);
     let screen = draw_sized(&mut app, 120, 12);
     let last = app.rows.len() - 1;
-    assert_eq!(line_at(&screen, MIDDLE, 89, 10), app.rows[last].text.trim_end(), "{screen}");
+    assert_eq!(line_at(&screen, MIDDLE, 88, 10), app.rows[last].text.trim_end(), "{screen}");
     assert_eq!(under(&screen), app.rows[app.cursor].text.trim_end(), "{screen}");
     let end = app.top;
     wheel(&mut app, over, -100);
@@ -701,8 +701,9 @@ fn the_wheel_scrolls_the_half_under_the_mouse_of_the_middle_split_in_two_and_the
     keys(&mut app, &[KeyCode::Enter]);
     pick_view(&mut app, "Unified, split in two");
     // On a screen of 12 lines: the left half from column 31, the right one
-    // from 76, 44 columns each. The mouse over the left half's fifth line:
-    // the cursor there.
+    // from 76, 44 columns each, the last of the half the cursor is in its
+    // scroll bar's. The mouse over the left half's fifth line: the cursor
+    // there.
     draw_sized(&mut app, 120, 12);
     app.hover(40, 5);
     assert_eq!((app.in_right_half(), app.top, app.cursor), (Some(false), 0, 4));
@@ -712,7 +713,7 @@ fn the_wheel_scrolls_the_half_under_the_mouse_of_the_middle_split_in_two_and_the
     wheel(&mut app, (80, 5), 4);
     let screen = draw_sized(&mut app, 120, 12);
     assert_eq!((app.in_right_half(), app.top), (Some(true), 4), "{screen}");
-    assert_eq!(line_at(&screen, 76, 44, 5), app.rows[app.cursor].text.trim_end(), "{screen}");
+    assert_eq!(line_at(&screen, 76, 43, 5), app.rows[app.cursor].text.trim_end(), "{screen}");
     assert_eq!(app.other_half().map(|h| (h.top, h.cursor)), Some((0, 4)));
     // The wheel over the half the cursor is in: that half alone.
     wheel(&mut app, (80, 5), -2);
@@ -742,9 +743,9 @@ fn the_wheel_scrolls_the_middle_side_by_side_and_compact_too_the_cursor_on_the_l
         // it, the cursor on a row of it.
         wheel(&mut app, over, 3);
         let after = draw_sized(&mut app, 120, 12);
-        assert_eq!(line_at(&after, MIDDLE, 89, 4), line_at(&before, MIDDLE, 89, 7), "{view}:\n{before}\n{after}");
+        assert_eq!(line_at(&after, MIDDLE, 88, 4), line_at(&before, MIDDLE, 88, 7), "{view}:\n{before}\n{after}");
         let row = app.rows[app.cursor].text.trim().to_string();
-        assert!(line_at(&after, MIDDLE, 89, 4).contains(&row), "{view}: {row:?}\n{after}");
+        assert!(line_at(&after, MIDDLE, 88, 4).contains(&row), "{view}: {row:?}\n{after}");
     }
 }
 
@@ -1141,8 +1142,8 @@ fn the_wheel_scrolls_a_transcript_up_from_its_end_and_back() {
     assert_eq!(app.screen, Screen::Transcript);
     // On a screen of 12 lines, its end on the bottom line; five lines up,
     // and back, no further than its end, then as far as its first line on
-    // the top one.
-    let bottom = |app: &mut App| line_at(&draw_sized(app, 120, 12), 1, 119, 10);
+    // the top one. Its lines from column 1, the last its scroll bar's.
+    let bottom = |app: &mut App| line_at(&draw_sized(app, 120, 12), 1, 118, 10);
     assert_eq!(bottom(&mut app), "said 40");
     app.hover(5, 5);
     wheel(&mut app, (5, 5), -5);
@@ -1151,7 +1152,7 @@ fn the_wheel_scrolls_a_transcript_up_from_its_end_and_back() {
     assert_eq!(bottom(&mut app), "said 40");
     wheel(&mut app, (5, 5), -100);
     let screen = draw_sized(&mut app, 120, 12);
-    assert_eq!((line_at(&screen, 1, 119, 1), line_at(&screen, 1, 119, 2)), (String::new(), "said 1".to_string()), "{screen}");
+    assert_eq!((line_at(&screen, 1, 118, 1), line_at(&screen, 1, 118, 2)), (String::new(), "said 1".to_string()), "{screen}");
     assert_eq!(bottom(&mut app), "said 9");
 }
 
@@ -1176,6 +1177,463 @@ fn the_wheel_scrolls_the_pane_on_the_right_of_why_move_head_does_not_move_head_t
     assert_eq!(at(&app), (sel, false, 2));
     wheel(&mut app, (70, 5), -5);
     assert_eq!(at(&app), (sel, false, 0));
+}
+
+/// What column `x` of `screen` shows on its rows `rows`, from the top down.
+fn column_of(screen: &str, x: usize, rows: std::ops::Range<usize>) -> String {
+    let lines: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
+    rows.map(|y| lines[y][x]).collect()
+}
+
+/// The thumb of the scroll bar that `col` is (`column_of`), its track `│`
+/// and its thumb `█`, in one piece: the row of `col` it starts on, and how
+/// many rows it takes. None where `col` has no thumb, as a line between
+/// two panes has none.
+fn thumb_of(col: &str) -> Option<(usize, usize)> {
+    assert!(col.chars().all(|c| c == '│' || c == '█'), "no scroll bar, nor a line: {col:?}");
+    let at = col.chars().position(|c| c == '█')?;
+    let len = col.chars().filter(|&c| c == '█').count();
+    assert!(col.chars().skip(at).take(len).all(|c| c == '█'), "a thumb in pieces: {col:?}");
+    Some((at, len))
+}
+
+#[test]
+fn a_pane_longer_than_it_is_high_draws_a_scroll_bar_where_the_cursor_is_in_the_line_on_its_right() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    // On a screen of 12 lines, the patches pane has 9 rows under its header
+    // for the 20 patches, a line each: the cursor there, its scroll bar is
+    // in the line on its right, column 30, beside those rows, 2 to 10, the
+    // header's row keeping the line. A thumb of 4 rows of the 9, as the
+    // pane shows 9 of the 20; at the top, on patch 1.
+    let bar = |app: &mut App| thumb_of(&column_of(&draw_sized(app, 120, 12), 30, 2..11));
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!((app.focus, app.sel), (Focus::List, 0));
+    assert_eq!(column_of(&screen, 30, 1..2), "│");
+    assert_eq!(bar(&mut app), Some((0, 4)), "{screen}");
+    // Patch 14, the pane from patch 6, 5 lines down of the 11 it can go:
+    // between, 2 rows down of the 5 the thumb can go.
+    for _ in 0..13 {
+        key(&mut app, KeyCode::Down);
+    }
+    assert_eq!(bar(&mut app), Some((2, 4)));
+    // Patch 15, a line further: so is the view, and the thumb, a row.
+    key(&mut app, KeyCode::Down);
+    assert_eq!(bar(&mut app), Some((3, 4)));
+    // The last: at the bottom.
+    key(&mut app, KeyCode::End);
+    assert_eq!(bar(&mut app), Some((5, 4)));
+    // Patch 11, the pane from it, a line from the bottom: a row from it.
+    for _ in 0..9 {
+        key(&mut app, KeyCode::Up);
+    }
+    assert_eq!((app.sel, bar(&mut app)), (10, Some((4, 4))));
+    // The cursor in the middle: the pane, which it is not in, draws its line
+    // as ever; and the middle, which patch 11 fits in, draws none, its last
+    // column blank.
+    key(&mut app, KeyCode::Right);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!(column_of(&screen, 30, 1..11), "│".repeat(10), "{screen}");
+    assert_eq!(column_of(&screen, 119, 1..11), " ".repeat(10), "{screen}");
+    // On a screen tall enough for all of the patches, the pane draws none,
+    // the cursor in it.
+    key(&mut app, KeyCode::Left);
+    let screen = draw_sized(&mut app, 120, 30);
+    assert_eq!(app.focus, Focus::List);
+    assert_eq!(column_of(&screen, 30, 1..29), "│".repeat(28), "{screen}");
+}
+
+#[test]
+fn a_pane_on_the_screen_s_right_edge_draws_its_scroll_bar_in_its_last_column_which_its_lines_leave_to_it() {
+    let (_tmp, db, _src) = setup();
+    stack_note(&db, "n00", "a comment long enough to go on past the edge of the pane");
+    for k in 1..=11 {
+        stack_note(&db, &format!("n{k:02}"), &format!("comment number {k:02}"));
+    }
+    let mut app = open(&db).unwrap();
+    // The stack's twelve comments, two lines each, four of them under the
+    // comments pane's header on a screen of 12 lines, the banner of the
+    // open comments over the panes: the pane is the screen's last 30
+    // columns, from 90, nothing on its right, its header on row 2.
+    for code in [KeyCode::Home, KeyCode::Right, KeyCode::Right] {
+        key(&mut app, code);
+        draw_sized(&mut app, 120, 12);
+    }
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!((app.focus, app.notes_head, app.note_sel), (Focus::Notes, false, 0), "{screen}");
+    assert_eq!(header_row(&screen.lines().collect::<Vec<_>>()), 2, "{screen}");
+    // Its scroll bar is in its last column, beside its rows under the
+    // header, 3 to 10: a thumb of 3 rows of the 8, as it shows 4 of the 12
+    // comments, at the top. The first comment's last word, cut where the
+    // pane ends, is cut a column sooner, leaving that column to the bar.
+    assert_eq!(column_of(&screen, 119, 2..3), " ", "{screen}");
+    assert_eq!(thumb_of(&column_of(&screen, 119, 3..11)), Some((0, 3)), "{screen}");
+    let (x, y) = at_from(&screen, "   a comment long", 90);
+    assert_eq!((x, line_at(&screen, 90, 29, y.into())), (90, "   a comment long enough to g".to_string()), "{screen}");
+    // In StackED, the text a drag selects in the pane keeps to its columns,
+    // the bar's left out.
+    let bar_cell = ratatui::layout::Position::new(119, y);
+    assert!(!app.regions().iter().any(|r| r.contains(bar_cell)), "{:?}", app.regions());
+    // The last comment picked: the pane from the ninth, the bar at the
+    // bottom.
+    key(&mut app, KeyCode::End);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(thumb_of(&column_of(&screen, 119, 3..11)), Some((5, 3)), "{screen}");
+    // The cursor back in the middle, on the stack, longer than it is high
+    // too: the middle's bar is in the line on its right, column 89, as high
+    // as the middle, at its top. The comments pane, which the cursor is not
+    // in, has its last column again: the first comment's line whole to the
+    // pane's edge.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Left]);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!(thumb_of(&column_of(&screen, 89, 2..11)).map(|(at, _)| at), Some(0), "{screen}");
+    let (_, y) = at_from(&screen, "   a comment long", 90);
+    assert_eq!(line_at(&screen, 90, 30, y.into()), "   a comment long enough to go", "{screen}");
+    assert!(app.regions().iter().any(|r| r.contains(bar_cell)), "{:?}", app.regions());
+    // The comments pane hidden, the middle reaches the right edge: its bar
+    // is in its own last column, which its rows, folded a column short of
+    // the pane, leave blank.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!((app.focus, app.comments), (Focus::Diff, Pane::Hidden), "{screen}");
+    assert_eq!(thumb_of(&column_of(&screen, 119, 2..11)).map(|(at, _)| at), Some(0), "{screen}");
+}
+
+#[test]
+fn split_in_two_the_half_the_cursor_is_in_draws_its_scroll_bar_and_the_other_half_none() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    pick_view(&mut app, "Unified, split in two");
+    // On a screen of 12 lines: the left half from column 31, the right one
+    // from 76, 44 columns each, the line between them in column 75; patch
+    // 1 is longer than they are high. The cursor in the left half: its bar
+    // in that line, as high as the half, at the top; the right half's last
+    // column blank.
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(app.in_right_half(), Some(false));
+    let (at, len) = thumb_of(&column_of(&screen, 75, 1..11)).unwrap_or_else(|| panic!("no bar:\n{screen}"));
+    assert_eq!(at, 0, "{screen}");
+    assert_eq!(column_of(&screen, 119, 1..11), " ".repeat(10), "{screen}");
+    // The left half at its end: the bar at the bottom, its title pinned on
+    // its first line, the share it shows a line less.
+    key(&mut app, KeyCode::End);
+    let screen = draw_sized(&mut app, 120, 12);
+    let (at, n) = thumb_of(&column_of(&screen, 75, 1..11)).unwrap_or_else(|| panic!("no bar:\n{screen}"));
+    assert_eq!(at + n, 10, "{screen}");
+    // → into the right half, at its top: its bar in its last column, as it
+    // reaches the screen's right edge; the line between the halves as ever.
+    key(&mut app, KeyCode::Right);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(app.in_right_half(), Some(true));
+    assert_eq!(column_of(&screen, 75, 1..11), "│".repeat(10), "{screen}");
+    assert_eq!(thumb_of(&column_of(&screen, 119, 1..11)), Some((0, len)), "{screen}");
+}
+
+#[test]
+fn a_box_longer_than_it_is_high_draws_its_scroll_bar_in_its_right_border() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // The stack's menu, on a screen of 12 lines: longer than its box.
+    key(&mut app, KeyCode::Home);
+    draw_sized(&mut app, 120, 12);
+    key(&mut app, KeyCode::Char(' '));
+    let screen = draw_sized(&mut app, 120, 12);
+    let (bx, by, bw, bh) = menu_box(&screen, &menu_title(&app));
+    let n = items(&app).len();
+    // Its rows of items, from the box's top: down to the empty one over its
+    // note, if it has one.
+    let rows = (by + 1..by + bh - 1).take_while(|&y| !line_at(&screen, bx + 1, bw - 2, y).trim().is_empty()).count();
+    assert!(n > rows, "{n} items, {rows} rows:\n{screen}");
+    // Its scroll bar is in the box's right border, beside its items: as long
+    // as the share of them it shows, rounded, at the top, on the first item;
+    // the box's corners as they are.
+    let bar = |screen: &str| thumb_of(&column_of(screen, bx + bw - 1, by + 1..by + 1 + rows));
+    let len = ((rows * rows) as f64 / n as f64).round() as usize;
+    assert_eq!(bar(&screen), Some((0, len.clamp(1, rows - 1))), "{screen}");
+    assert_eq!(column_of(&screen, bx + bw - 1, by..by + 1) + &column_of(&screen, bx + bw - 1, by + bh - 1..by + bh), "┐┘");
+    // ↑ from the top is the last item, Quit: at the bottom.
+    key(&mut app, KeyCode::Up);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(bar(&screen), Some((rows - len.clamp(1, rows - 1), len.clamp(1, rows - 1))), "{screen}");
+    // A menu that fits draws none: the views of the code, in the middle.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Right]);
+    key(&mut app, KeyCode::Char('1'));
+    let screen = draw_sized(&mut app, 120, 12);
+    let (bx, by, bw, bh) = menu_box(&screen, "the view");
+    assert_eq!(column_of(&screen, bx + bw - 1, by + 1..by + bh - 1), "│".repeat(bh - 2), "{screen}");
+    // What `?` says, taller than its box on a screen of 8 lines: its bar in
+    // its right border, beside its 4 lines, at the top; the panes under it,
+    // the middle's longer than it is high, draw none.
+    keys(&mut app, &[KeyCode::Esc]);
+    draw_sized(&mut app, 120, 8);
+    key(&mut app, KeyCode::Char('?'));
+    let screen = draw_sized(&mut app, 120, 8);
+    let (bx, by, bw, bh) = menu_box(&screen, "what can I do here");
+    assert_eq!(bh, 6, "{screen}");
+    assert_eq!(thumb_of(&column_of(&screen, bx + bw - 1, by + 1..by + 5)).map(|(at, _)| at), Some(0), "{screen}");
+    assert_eq!(column_of(&screen, 119, 1..7), " ".repeat(6), "{screen}");
+}
+
+#[test]
+fn a_text_screen_longer_than_the_screen_draws_its_scroll_bar_in_its_last_column() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    // What the import changed, on a screen of its own, of 12 lines: its 9
+    // lines under its title, from row 2, its bar in the screen's last
+    // column beside them, its first line shown: at the top.
+    key(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "Tree of edits…");
+    key(&mut app, KeyCode::End);
+    choose_unseen(&mut app, "What this edit changed…");
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(app.screen, Screen::Text, "{screen}");
+    let all = app.text.as_ref().unwrap().lines.len();
+    assert!(all > 18, "{all}");
+    let bar = |app: &mut App| thumb_of(&column_of(&draw_sized(app, 120, 12), 119, 2..11)).unwrap_or_else(|| panic!("no bar"));
+    assert_eq!(column_of(&screen, 119, 1..2), " ", "the title's row: {screen}");
+    let (at, len) = bar(&mut app);
+    assert_eq!(at, 0);
+    assert_eq!(len, ((81.0 / all as f64).round() as usize).clamp(1, 8));
+    // Halfway down it: between, neither at the top nor at the bottom.
+    for _ in 0..(all - 9) / 2 {
+        key(&mut app, KeyCode::Down);
+    }
+    let (at, _) = bar(&mut app);
+    assert!(at > 0 && at + len < 9, "{at} of {all}");
+    // Its last line the first shown: at the bottom.
+    key(&mut app, KeyCode::End);
+    assert_eq!(bar(&mut app), (9 - 1, 1));
+    // On a screen tall enough for all of it, none.
+    key(&mut app, KeyCode::Home);
+    let screen = draw_sized(&mut app, 120, (all + 3) as u16);
+    assert_eq!(column_of(&screen, 119, 2..all + 2), " ".repeat(all), "{screen}");
+}
+
+#[test]
+fn the_banner_open_longer_than_its_room_draws_its_scroll_bar_beside_its_rows() {
+    let (_tmp, db, _src) = setup();
+    for k in 1..=12 {
+        stack_note(&db, &format!("n{k:02}"), &format!("comment number {k:02}"));
+    }
+    let mut app = open(&db).unwrap();
+    // Esc opens the banner, on a screen of 16 lines: 6 rows under its own
+    // line, from row 2, its section's title and 5 of the 12 comments, of 13
+    // rows. Its bar in the screen's last column beside them, a thumb of 3
+    // rows, at the top; its own line has none, nor the panes under it.
+    draw_sized(&mut app, 120, 16);
+    key(&mut app, KeyCode::Esc);
+    let screen = draw_sized(&mut app, 120, 16);
+    assert!(app.on_banner, "{screen}");
+    assert_eq!(column_of(&screen, 119, 1..2), " ", "{screen}");
+    assert_eq!(thumb_of(&column_of(&screen, 119, 2..8)), Some((0, 3)), "{screen}");
+    assert_eq!(column_of(&screen, 119, 8..15).trim(), "", "{screen}");
+    // On its last comment: at the bottom.
+    key(&mut app, KeyCode::End);
+    let screen = draw_sized(&mut app, 120, 16);
+    assert_eq!(thumb_of(&column_of(&screen, 119, 2..8)), Some((3, 3)), "{screen}");
+}
+
+#[test]
+fn history_s_list_and_stack_diff_and_what_the_search_found_draw_their_scroll_bars() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    for _ in 0..20 {
+        Db::edit(&db, |d| stacked::ops::move_patch(d, "s", 1, 0).map(|_| ())).unwrap();
+    }
+    let mut app = open(&db).unwrap();
+    key(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "History…");
+    // On a screen of 12 lines: the history's list, 48 columns, 9 of its
+    // records under its title, its bar in the line on its right, column 48,
+    // as long as the share it shows, at the top on the newest record, at the
+    // bottom on the oldest.
+    let screen = draw_sized(&mut app, 120, 12);
+    let n = app.history().len();
+    assert!(n > 9, "{n}");
+    let len = ((81.0 / n as f64).round() as usize).clamp(1, 8);
+    assert_eq!(thumb_of(&column_of(&screen, 48, 2..11)), Some((0, len)), "{screen}");
+    key(&mut app, KeyCode::End);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(thumb_of(&column_of(&screen, 48, 2..11)), Some((9 - len, len)), "{screen}");
+    // → into the oldest's stack diff, the import's: its bar in the screen's
+    // last column, beside its lines under the two that say what the record
+    // is, at the top, then at the bottom; the list's line as ever.
+    key(&mut app, KeyCode::Right);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(app.hist_focus, stacked::tui::HistFocus::Diff);
+    assert_eq!(column_of(&screen, 48, 1..11), "│".repeat(10), "{screen}");
+    assert_eq!(thumb_of(&column_of(&screen, 119, 3..11)).map(|(at, _)| at), Some(0), "{screen}");
+    key(&mut app, KeyCode::End);
+    let screen = draw_sized(&mut app, 120, 12);
+    let (at, len) = thumb_of(&column_of(&screen, 119, 3..11)).unwrap_or_else(|| panic!("no bar:\n{screen}"));
+    assert_eq!(at + len, 8, "{screen}");
+    // What the search found, more than its list holds: its bar in the line
+    // on its right, beside the matches under the search's line, at the top.
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    key(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "Search");
+    typed(&mut app, "line");
+    let found = searched(&mut app).len();
+    assert!(found > 12, "{found}");
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(thumb_of(&column_of(&screen, 48, 2..10)).map(|(at, _)| at), Some(0), "{screen}");
+    assert_eq!(column_of(&screen, 48, 1..2) + &column_of(&screen, 48, 10..11), "││", "{screen}");
+}
+
+#[test]
+fn the_review_s_pane_on_the_right_a_transcript_and_the_middle_in_each_view_draw_their_scroll_bars() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // The middle side by side, then compact, on a screen of 12 lines,
+    // patch 1 longer than it is high: its bar in its last column, at the
+    // top, then at the bottom.
+    for view in ["Side by side", "Side by side, compact"] {
+        pick_view(&mut app, view);
+        key(&mut app, KeyCode::Home);
+        let screen = draw_sized(&mut app, 120, 12);
+        assert_eq!(thumb_of(&column_of(&screen, 119, 1..11)).map(|(at, _)| at), Some(0), "{view}:\n{screen}");
+        key(&mut app, KeyCode::End);
+        let screen = draw_sized(&mut app, 120, 12);
+        let (at, len) = thumb_of(&column_of(&screen, 119, 1..11)).unwrap_or_else(|| panic!("{view}: no bar:\n{screen}"));
+        assert_eq!(at + len, 10, "{view}:\n{screen}");
+    }
+    pick_view(&mut app, "Unified");
+    key(&mut app, KeyCode::Home);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // The review, on a screen of 10 lines: the cursor in its list, the pane
+    // on the right draws no bar; → into it, longer than it is high, its bar
+    // in the screen's last column beside its lines under its title.
+    let screen = draw_sized(&mut app, 120, 10);
+    assert!(!column_of(&screen, 119, 2..9).contains('█'), "{screen}");
+    key(&mut app, KeyCode::Right);
+    let screen = draw_sized(&mut app, 120, 10);
+    assert!(app.reviewing.as_ref().unwrap().in_main);
+    assert!(thumb_of(&column_of(&screen, 119, 2..9)).is_some(), "{screen}");
+    // A transcript of 40 lines and more, on its end: its bar in the screen's
+    // last column, at the bottom.
+    Db::edit(&db, |d| {
+        d.add_run(stacked::db::Run {
+            id: "run-long".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            output: (1..=40).map(|k| format!("said {k}")).collect::<Vec<_>>().join("\n"),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    let mut app = open(&db).unwrap();
+    choose_unseen(&mut app, "Runs…");
+    key(&mut app, KeyCode::Enter);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!(app.screen, Screen::Transcript, "{screen}");
+    let (at, len) = thumb_of(&column_of(&screen, 119, 1..11)).unwrap_or_else(|| panic!("no bar:\n{screen}"));
+    assert_eq!(at + len, 10, "{screen}");
+}
+
+#[test]
+fn the_comment_written_and_a_reference_s_preview_taller_than_their_boxes_draw_their_scroll_bars_in_their_borders() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    // Twenty lines written, on a screen of 16 lines: the box shows the last
+    // five, the cursor at the end of the last. Its bar in its right border,
+    // beside them, at the bottom; the middle under it draws none.
+    for k in 1..=20 {
+        typed(&mut app, &format!("line {k}"));
+        if k < 20 {
+            key(&mut app, KeyCode::Enter);
+        }
+    }
+    let screen = draw_sized(&mut app, 120, 16);
+    let (inside, _, bottom) = editor_box(&screen);
+    assert_eq!(inside.len(), 5, "{screen}");
+    let (bx, by) = at(&screen, "┌─ a comment on");
+    let right = usize::from(bx) + screen.lines().nth(by.into()).unwrap().chars().skip(bx.into()).position(|c| c == '┐').unwrap();
+    let bar = |screen: &str| thumb_of(&column_of(screen, right, usize::from(by) + 1..bottom));
+    assert_eq!(bar(&screen), Some((4, 1)), "{screen}");
+    // Ten lines up, the text with the cursor: between.
+    for _ in 0..10 {
+        key(&mut app, KeyCode::Up);
+    }
+    let (row, _) = bar(&draw_sized(&mut app, 120, 16)).unwrap();
+    assert!(row > 0 && row < 4, "{row}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    // A reference to lines 3 to 40, previewed in a box taller than the
+    // screen holds: its bar in the box's right border, beside its lines, at
+    // the top.
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        let said = "All of these.\n\n```refs\na.txt:3-40 @1\n```";
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, said, Some("answer")),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    draw(&mut app);
+    down_to(&mut app, "     ▎   ⇢ a.txt:3");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Preview(_)), "{:?}", app.mode);
+    let screen = draw_sized(&mut app, 120, 16);
+    let (x, y) = at(&screen, "    3 │ three");
+    let lines: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
+    let (left, top) = (usize::from(x) - 2, usize::from(y) - 1);
+    let right = left + lines[top][left..].iter().position(|&c| c == '┐').unwrap();
+    let bottom = top + lines[top..].iter().position(|l| l[left] == '└').unwrap();
+    assert_eq!(thumb_of(&column_of(&screen, right, top + 1..bottom)).map(|(at, _)| at), Some(0), "{screen}");
+}
+
+#[test]
+fn the_scroll_bar_follows_the_view_as_the_wheel_scrolls_it_and_as_a_search_jumps() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    // The cursor in the patches pane, on patch 1, on a screen of 12 lines.
+    let bar = |app: &mut App| thumb_of(&column_of(&draw_sized(app, 120, 12), 30, 2..11));
+    assert_eq!(bar(&mut app), Some((0, 4)));
+    // The wheel, the mouse over the pane: as far as its end, patch 1 picked
+    // still, out of sight; the bar where the view is, at the bottom.
+    let over = at(&draw_sized(&mut app, 120, 12), "Bug 3 - add 3");
+    app.hover(over.0, over.1);
+    wheel(&mut app, over, 30);
+    assert_eq!((app.focus, app.sel, bar(&mut app)), (Focus::List, 0, Some((5, 4))));
+    // A key brings the pick back into sight, and the bar with it: patch 2
+    // on the pane's first row, a line down, a row down.
+    key(&mut app, KeyCode::Down);
+    assert_eq!((app.sel, bar(&mut app)), (1, Some((1, 4))));
+    // The search of the middle, on a patch longer than the middle is high:
+    // as it jumps to what is typed, a third of the way down the patch, so
+    // does the bar; Esc puts both back.
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    let bar = |app: &mut App| thumb_of(&column_of(&draw_sized(app, 120, 12), 119, 1..11)).unwrap_or_else(|| panic!("no bar"));
+    let (top, len) = bar(&mut app);
+    assert_eq!(top, 0);
+    key(&mut app, KeyCode::Char('/'));
+    typed(&mut app, "line 39");
+    let (at, _) = bar(&mut app);
+    assert!(matches!(app.mode, Mode::Find(_)) && at > 0, "{at}:\n{}", draw_sized(&mut app, 120, 12));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(bar(&mut app), (0, len));
 }
 
 /// Where `text` is in the patches pane of a screen drawn 120 wide, its 30
@@ -12058,10 +12516,10 @@ fn as_drawn(s: ratatui::style::Style) -> (ratatui::style::Color, ratatui::style:
 }
 
 /// The lines of the review's right pane, drawn 100 rows high, the spaces
-/// around them gone.
+/// around them gone, and the pane's last column, its scroll bar's.
 fn review_pane(app: &mut App) -> Vec<String> {
     let screen = draw_sized(app, 120, 100);
-    screen.lines().map(|l| l.chars().skip(49).collect::<String>().trim().to_string()).collect()
+    screen.lines().map(|l| l.chars().skip(49).take(70).collect::<String>().trim().to_string()).collect()
 }
 
 #[test]
@@ -14007,11 +14465,14 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
         assert!(texts.iter().any(|t| t.contains(said)), "{said:?} in {texts:#?}");
     }
     // In the comments pane: who opened the agent's comment, and before what
-    // the agent said last; the comment of before as ever.
+    // the agent said last; the comment of before as ever, in the pane, from
+    // column 90 (the line before it the middle's scroll bar's, as the
+    // middle does not fit).
     let screen = draw(&mut app);
-    for said in ["✓ you · a.txt: TWO", "   agent(max): A shout.", "✓ agent(max) · a.txt: TWO", "   agent(max): Softly?", "✓ you · a.txt: LINE 39", "│   It is old."] {
+    for said in ["✓ you · a.txt: TWO", "   agent(max): A shout.", "✓ agent(max) · a.txt: TWO", "   agent(max): Softly?", "✓ you · a.txt: LINE 39"] {
         assert!(screen.contains(said), "{said:?} in:\n{screen}");
     }
+    assert!(screen.lines().any(|l| l.chars().skip(90).collect::<String>().starts_with("   It is old.")), "{screen}");
     // Searched, from the comments pane: each turn found by who said it, as
     // its turn is headed.
     app.focus = Focus::Notes;
@@ -15667,13 +16128,14 @@ fn added_change(db: &Path, run: &str) -> String {
 }
 
 /// The row the cursor is on in the review's right pane, as drawn: of the
-/// patch, or of the stack diff; the spaces around it gone.
+/// patch, or of the stack diff, the pane's last column aside, its scroll
+/// bar's; the spaces around it gone.
 fn work_row(app: &mut App) -> Option<String> {
     let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
     app.draw(&mut buf);
     (1..30).find_map(|y| {
         let on = buf[(49, y)].modifier.contains(ratatui::style::Modifier::REVERSED);
-        on.then(|| (49..120).map(|x| buf[(x, y)].symbol()).collect::<String>().trim().to_string())
+        on.then(|| (49..119).map(|x| buf[(x, y)].symbol()).collect::<String>().trim().to_string())
     })
 }
 
@@ -17870,7 +18332,8 @@ fn the_cursor_looks_the_same_on_every_line_whatever_its_colours() {
     };
     under(&patch(&mut app), "the patch picked, the cursor in its pane");
     // The middle's line the cursor is on: from where its row's text starts,
-    // past the reading mode's margin, to the pane's edge.
+    // past the reading mode's margin, to the pane's edge, the line on its
+    // right, or its scroll bar there.
     fn cursor_line(app: &mut App) -> Vec<Cell> {
         let text = app.rows[app.cursor].text.clone();
         let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
@@ -17882,7 +18345,7 @@ fn the_cursor_looks_the_same_on_every_line_whatever_its_colours() {
                 Some((31 + at as u16, y))
             })
             .unwrap_or_else(|| panic!("no {text:?} at the start of the middle"));
-        (x..120).map(|x| buf[(x, y)].clone()).take_while(|c| c.symbol() != "│").collect()
+        (x..120).map(|x| buf[(x, y)].clone()).take_while(|c| !matches!(c.symbol(), "│" | "█")).collect()
     }
     // The cursor on the first row `is` says.
     fn go(app: &mut App, what: &str, is: impl Fn(&Row) -> bool) {

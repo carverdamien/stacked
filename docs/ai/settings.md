@@ -268,7 +268,7 @@ settings:
   dark tint): what changed in a line almost the same as the one paired with it,
   `hunk` (`magenta`), `file` (`cyan bold`: a file's name, the
   titles of boxes, the history's records), `meta` (`blue`: index lines,
-  borders), `header` (`cyan bold`: each pane's first row); `you` (`172`),
+  borders, scroll bars), `header` (`cyan bold`: each pane's first row); `you` (`172`),
   `agent` (`134`) and `reviewer` (`32`): the comments and turns of each,
   their bar and name; `note` (`yellow`: what a menu says under its items, the
   tour's box, the comment editor's frame, a run going); `bar` (`brightwhite

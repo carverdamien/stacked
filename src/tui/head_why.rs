@@ -702,12 +702,18 @@ impl App {
                     v.top = v.sel + 1 - room;
                 }
             }
+            // Longer than the list, its scroll bar beside the lines under its
+            // title: in the line on its right, else, the list alone on the
+            // screen, in its last column.
+            let shown = Shown { top: v.top, rows: room, all: v.lines.len() };
+            let tw = self.pane_bar(Wheeled::WhyList, list, buf.area, (1, room), shown);
+            let Some(v) = self.head_why.as_ref() else { return };
             for (y, (i, l)) in v.lines.iter().enumerate().skip(v.top).take(room).enumerate() {
                 let mut st = l.style;
                 if i == v.sel {
                     st = if v.in_main { st.patch(color::picked()) } else { on_cursor(st) };
                 }
-                put(buf, list, 0, y + 1, list_w, &fit(&l.text, list_w), st);
+                put(buf, list, 0, y + 1, tw, &fit(&l.text, tw), st);
                 if l.why.is_some() {
                     spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::WhyLine(i));
                 }
@@ -721,6 +727,7 @@ impl App {
             }
             self.areas.borrow_mut().push(list);
         }
+        let Some(v) = self.head_why.as_mut() else { return };
         let (main_x, main_w) = if wide { (0, w) } else { (list_w + 1, w - list_w - 1) };
         let main = Rect::new(body.x + main_x as u16, body.y, main_w as u16, body.height);
         self.areas.borrow_mut().push(main);
@@ -742,6 +749,11 @@ impl App {
         for (y, r) in v.rows.iter().skip(v.scroll).take(room).enumerate() {
             put_parts(buf, main, 0, y + 1, main_w, &row_parts(r, false));
         }
+        // Longer than the pane, or scrolled past its first line, its scroll
+        // bar beside the lines under its title, in its last column, which its
+        // rows, folded a column short of the pane, leave blank.
+        let shown = Shown { top: v.scroll, rows: room, all: v.rows.len() };
+        self.pane_bar(Wheeled::WhyMain, main, buf.area, (1, room), shown);
     }
 
     /// What the bar says in the view: the keys there are, in the list or in

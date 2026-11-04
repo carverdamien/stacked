@@ -268,6 +268,60 @@ shows, under a header of its own; with none, it is not there. The top bar
 names the file and the stack, and on its right says how far the stack's
 review is (Reading, below, says how).
 
+The place the cursor is in, while it holds more than it shows (lines above
+the first it shows, or below the last), has a scroll bar on its right
+edge: a column a character wide, as high as its rows that scroll (those
+under its header, where it has one), its track a light line, `│`, as the
+lines between the panes are, and on it the thumb, a block, `█`, both in the
+colour of its border, `meta` (the comment being written: its frame's,
+`note`; Settings, below), so that the thumb stands out by its shape alone.
+The thumb is as long as the share of what the place holds that it shows,
+rounded, a row at least, and a row short of the track, which then says
+that there is more; it is at the track's top while the view is at its first
+line, at its bottom once its last line is shown (or the view is past it,
+as a text on a screen of its own scrolls until its last line is the first
+shown), and else where the view is between, a row from either end where
+the track has the room. The patches pane counts by its lines, a patch's
+title folded the lines it takes, the comments pane and a menu by their
+comments and items. The place is the pane the cursor is in, of the middle
+split in two the half it is in (the search of the middle, `/`, puts the
+cursor in the middle); the banner, while the cursor is on it; the patches,
+while a patch or HEAD is moved there; a box open over the screen, a menu
+longer than its box, what `?` says, a reference's preview, or the comment
+being written, taller than its box, the panes under it drawing none; the
+agent's stream read in place, the bar beside its lines; and on a screen of
+its own the part of it the cursor is in: the list of the tree of edits,
+the stacks, the runs, the versions or the history, History…'s stack diff,
+the review's list and its pane on the right, what a submit sends, the list
+and the pane on the right of why Move HEAD does not move HEAD, a text or
+interdiffs on a screen of their own, a transcript, what the search found.
+There is none in the ask dialog, nor while a line is typed in a box, which
+do not scroll. The places the cursor is not in draw nothing new, nor does a
+place that fits.
+
+A place with a line on its right draws the bar in that line, losing no
+width: the patches, the middle beside the comments, the left half of the
+middle split in two, the list of a screen of its own beside its pane (the
+tree's, the stacks', the versions', History…'s, the review's, that of why
+Move HEAD does not move HEAD, the search's); and every box, in its right
+border, its corners as they are. A pane on the right edge of the screen
+draws it in its own last column, which its lines then leave to it: the
+comments, the middle and its right half while the comments are hidden, the
+pane on the right of a screen of its own, a screen of one pane (Runs…, a
+transcript, a text, what a submit sends, a list alone, the screen too
+narrow for its pane beside it), and the banner, in the screen's last
+column. The code, the messages, the comments in the middle and the lines
+of the stack diffs and of interdiffs are folded a column short of their
+pane, and leave that column blank already; a line cut at the pane's edge
+is cut a column sooner: the comments pane's, a list's, a transcript's, a
+text's, the banner's, and in the middle a hunk's header or a file's path
+too long for it. The cursor's line is lit as far as the bar, and what a
+box holds is as it was. In StackED, a pane's text selected leaves out the
+bar's column. The bar follows the view however it moves: by the keys, by
+the wheel (a pane the wheel scrolled away from what it picked shows where
+its view is), and by a search jumping. In the browser (`stacked web`) and
+in StackED, the same, as they draw the same screen.
+
 With the `moz-phab` feature, a patch that names a revision has the
 Phabricator line over its message, in every view of the code, reading or
 not, its hunks or each file whole:

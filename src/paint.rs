@@ -88,7 +88,7 @@ impl Paint {
             Paint::RemovedWord => "In a line removed, another added in its place, the two almost the same: what changes.",
             Paint::Hunk => "A hunk's @@ line.",
             Paint::File => "A file's name in a patch, the titles of boxes, and the records of the history.",
-            Paint::Meta => "A patch's index lines, the borders of the panes and the menus, and the editor's keys.",
+            Paint::Meta => "A patch's index lines, the borders of the panes and the menus, their scroll bars, and the editor's keys.",
             Paint::Header => "The first row of each pane.",
             Paint::You => "Your comments and turns: the bar left of what you said, and your name.",
             Paint::Agent => "The agent's comments and turns, the same way.",

@@ -699,7 +699,54 @@ view of why opened, as `Move HEAD…` opens it; with moz-phab, let go below
 its last commit marked `!`, said why as a click there says it, HEAD
 being moved still; and a press on a patch's row a click at once, a drag
 from there the mouse going by), the mouse going over the search's scope
-turning nothing, and a click on it turning it, the comments pane's previews,
+turning nothing, and a click on it turning it, the scroll bar (only in the
+place the cursor is in, and only while it holds more than it shows: the
+patches pane longer than it is high, its bar in the line on its right
+beside its rows under the header, the header's row keeping the line, a
+thumb as long as the share it shows, at the top on the first patch,
+between on the fourteenth, a row further on the next, at the bottom on the
+last, and a row from it a line from it, none once the cursor is in the
+middle, nor in the middle that the patch fits in, nor on a screen tall
+enough for all of the patches; the comments pane on the screen's right
+edge, the banner over the panes, its bar in its last column beside its
+rows under the header, a comment's line cut a column sooner, that column
+in none of the regions StackED selects text in, at the bottom on the last
+comment, then, the cursor in the middle, the middle's bar in the line
+between it and the comments, the comment's line whole again and its column
+the pane's again, and the comments hidden, the middle's in its own last
+column; the middle split in two, the bar of the half the cursor is in, the
+left one's in the line between the halves, at its top and at its end, the
+right one's in the screen's last column, the other half drawing none; the
+middle side by side and compact, at the top and at the bottom; a menu
+longer than its box, its bar in the box's right border beside its items,
+its corners as they were, at the top, and at the bottom on Quit; a menu
+that fits with none; what `?` says taller than its box, its bar in its
+border, the middle under it drawing none; the comment being written taller
+than its box, its bar in the box's right border beside its text, at the
+bottom, then between as the cursor goes up, and a reference's preview, at
+the top; the banner open, its bar in the screen's last column beside its
+rows, not its own line, at the top and on its last comment at the bottom,
+the panes under it drawing none; History…'s list, in the line on its
+right, at the top and on the oldest record at the bottom, and its stack
+diff, the cursor in it, in the screen's last column, at the top and at its
+end at the bottom, the list's line as ever; what the search found, in the
+line on its right beside the matches alone; the review's pane on the
+right, no bar while the cursor is in the list, one once it is in the pane;
+a transcript on its end, at the bottom; a text on a screen of its own,
+what an edit changed, its bar in the screen's last column beside its lines
+under the title, at the top, between halfway down, at the bottom with its
+last line the first shown, and none on a screen tall enough for all of it;
+the bar following the view, the wheel scrolling the patches pane to its
+end, the patch picked out of sight, the bar at the bottom, and a key
+bringing both back, the search of the middle jumping down the patch, the
+bar with it, and Esc putting both back; the tests that read a pane's
+lines, or the cursor's row, to the pane's edge reading them up to the
+bar's column, not into it; and the tests in `tui/scrollbar.rs` of the
+thumb, its length and its place: a tenth, a half and all but a line shown,
+at the first line, halfway and at the last, a line from either end a row
+from it, a share too small for a row a row, a track of a row, a view past
+its last line, and whether a place holds more than it shows, scrolled past
+its first line too), the comments pane's previews,
 moving a patch, the long lines of messages wrapped (a patch's menu
 offering it only when its message has some at the settings' width, the
 note saying how many lines of which patches; the edit landing for review,
