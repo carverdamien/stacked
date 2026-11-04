@@ -27,9 +27,11 @@
 //! such as a notice.
 //!
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
-//! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`, F1
-//! to F12 and Insert among them while the screen is the editor's own, as
-//! all else the page has but what goes with ⌘, which stays the browser's;
+//! character, by its code, without alt where Option made it on a Mac, or
+//! without ctrl and alt where AltGr made it elsewhere), MODS `c` ctrl, `a`
+//! alt, `s` shift, or `-`, F1 to F12 and Insert among them while the
+//! screen is the editor's own, as all else the page has but what goes with
+//! ⌘, which stays the browser's;
 //! `p HEX`, text pasted while the screen is the editor's, its UTF-8 in hex,
 //! as it is, for the editor (else a paste is the keys that type it);
 //! `m X Y l|r`, a click on a cell, with the left or the right button, said
@@ -206,24 +208,50 @@ pub fn row_html(runs: &str) -> String {
     out
 }
 
-/// A key the page was pressed, as the browser names it, made a line for
-/// the server; none for those not the editor's (with ⌘, the browser's own:
-/// copy, paste, its tabs). While the screen is the editor's own, run in the
+/// The modifiers held with a key, as the page's browser says them: ctrl,
+/// alt (Option, on a Mac), shift, ⌘ (`meta`), and AltGr (`altgr`, as
+/// `getModifierState('AltGraph')` says it), which Windows says as ctrl and
+/// alt at once, and Firefox on a Mac as Option.
+#[derive(Clone, Copy, Default)]
+pub struct Held {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub meta: bool,
+    pub altgr: bool,
+}
+
+/// A key the page was pressed, as the browser names it (`key`), on the key
+/// of the keyboard `code` names (`KeyD`, whatever the layout), with the
+/// modifiers `held`, made a line for the server; none for those not the
+/// editor's (with ⌘, the browser's own: copy, paste, its tabs), nor for a
+/// dead key (`Dead`, as Option-E is on a Mac before the letter it
+/// accents), which is left to the browser: it names the next key by the
+/// character the two make. While the screen is the editor's own, run in the
 /// page (`terminal`), F1 to F12 and Insert are the editor's too, which are
-/// otherwise the browser's.
-pub fn key(key: &str, ctrl: bool, alt: bool, shift: bool, meta: bool, terminal: bool) -> String {
+/// otherwise the browser's. A character goes with ctrl and alt as a
+/// terminal takes them, but for one that Option made on a Mac (`mac`): ∂
+/// for Option-D, `@` for Option-L on a German keyboard, which goes as it
+/// is, without alt, as Terminal.app types it; and for one that AltGr made
+/// elsewhere, which goes as it is, without the ctrl and alt Windows says
+/// AltGr with. Where Option or AltGr made none, the key typing its own
+/// character (`own`: d for Option-D), the modifiers stay as said, as
+/// StackED decides it for Option (src/app.rs `typed`). The line is the
+/// same whether the screen is stacked's own or the editor's, so that both
+/// are given the same characters.
+pub fn key(key: &str, code: &str, held: Held, mac: bool, terminal: bool) -> String {
+    let Held { ctrl, alt, shift, meta, altgr } = held;
     if meta {
         return String::new();
     }
-    let function = key.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=12).contains(&n));
-    if terminal && (function || key == "Insert") {
-        let m: String = [(ctrl, 'c'), (alt, 'a'), (shift, 's')].iter().filter(|(on, _)| *on).map(|(_, m)| *m).collect();
-        return format!("k {key} {}", if m.is_empty() { "-" } else { &m });
-    }
-    let mods = |shift: bool| -> String {
+    let mods = |ctrl: bool, alt: bool, shift: bool| -> String {
         let m: String = [(ctrl, 'c'), (alt, 'a'), (shift, 's')].iter().filter(|(on, _)| *on).map(|(_, m)| *m).collect();
         if m.is_empty() { "-".into() } else { m }
     };
+    let function = key.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=12).contains(&n));
+    if terminal && (function || key == "Insert") {
+        return format!("k {key} {}", mods(ctrl, alt, shift));
+    }
     let name = match key {
         "Enter" => "Enter",
         "Escape" => "Esc",
@@ -242,13 +270,35 @@ pub fn key(key: &str, ctrl: bool, alt: bool, shift: bool, meta: bool, terminal: 
         other => {
             // A character, shifted already if it is: by its code.
             let mut cs = other.chars();
-            return match (cs.next(), cs.next()) {
-                (Some(c), None) => format!("k c {:x} {}", c as u32, mods(false)),
-                _ => String::new(),
+            let (Some(c), None) = (cs.next(), cs.next()) else { return String::new() };
+            let made = own(code) != Some(c.to_ascii_lowercase());
+            let (ctrl, alt) = match (made, mac, altgr) {
+                // Option's, on a Mac: as it is.
+                (true, true, _) => (ctrl, false),
+                // AltGr's, elsewhere: as it is, without the ctrl and alt
+                // Windows says it with.
+                (true, false, true) => (false, false),
+                _ => (ctrl, alt),
             };
+            return format!("k c {:x} {}", c as u32, mods(ctrl, alt, false));
         }
     };
-    format!("k {name} {}", mods(shift && name != "BackTab"))
+    format!("k {name} {}", mods(ctrl, alt, shift && name != "BackTab"))
+}
+
+/// The character the key `code` names types of its own, unshifted, as
+/// StackED's `key_char` has it of a key (src/app.rs): a letter's (`KeyD`,
+/// d) or a digit's (`Digit1`, 1). None for any other key, whose characters
+/// the layout decides, so that what Option or AltGr types on it is taken
+/// for theirs. `code` names a key by its place on a US keyboard, whatever
+/// the layout (A is `KeyQ` on a French one): there, a letter Option or
+/// AltGr left as it is would be taken for theirs too.
+fn own(code: &str) -> Option<char> {
+    match code.as_bytes() {
+        [b'K', b'e', b'y', c] if c.is_ascii_uppercase() => Some(c.to_ascii_lowercase() as char),
+        [b'D', b'i', b'g', b'i', b't', c] if c.is_ascii_digit() => Some(*c as char),
+        _ => None,
+    }
 }
 
 /// What the page's mouse has done: the cell it is over, as the server was
@@ -457,9 +507,16 @@ mod wasm {
         give(super::screen(&text(p, n)))
     }
 
+    /// A key pressed: its text the key's code, a space, then what the
+    /// browser names it (a space itself, for the space bar); then the
+    /// modifiers held, AltGr last, whether the page is on a Mac, and whether
+    /// the screen is the editor's own.
     #[unsafe(no_mangle)]
-    pub extern "C" fn key(p: *mut u8, n: usize, ctrl: u32, alt: u32, shift: u32, meta: u32, terminal: u32) -> usize {
-        give(super::key(&text(p, n), ctrl != 0, alt != 0, shift != 0, meta != 0, terminal != 0))
+    pub extern "C" fn key(p: *mut u8, n: usize, ctrl: u32, alt: u32, shift: u32, meta: u32, altgr: u32, mac: u32, terminal: u32) -> usize {
+        let text = text(p, n);
+        let (code, key) = text.split_once(' ').unwrap_or(("", &text));
+        let held = super::Held { ctrl: ctrl != 0, alt: alt != 0, shift: shift != 0, meta: meta != 0, altgr: altgr != 0 };
+        give(super::key(key, code, held, mac != 0, terminal != 0))
     }
 
     #[unsafe(no_mangle)]
@@ -607,29 +664,41 @@ mod tests {
         assert_eq!(screen("v"), "");
     }
 
+    /// The modifiers held, named as a line names them, `c` ctrl, `a` alt
+    /// (Option), `s` shift, then `m` ⌘ and `g` AltGr.
+    fn held(mods: &str) -> Held {
+        let on = |m: char| mods.contains(m);
+        Held { ctrl: on('c'), alt: on('a'), shift: on('s'), meta: on('m'), altgr: on('g') }
+    }
+
     #[test]
     fn keys_clicks_wheel_and_pastes_are_lines_for_the_server() {
-        assert_eq!(key("Enter", false, false, false, false, false), "k Enter -");
-        assert_eq!(key("ArrowDown", false, false, true, false, false), "k Down s");
-        assert_eq!(key("Tab", false, false, true, false, false), "k BackTab -");
-        assert_eq!(key("?", false, false, true, false, false), "k c 3f -", "shifted already");
-        assert_eq!(key("c", true, false, false, false, false), "k c 63 c");
-        assert_eq!(key(" ", false, false, false, false, false), "k c 20 -");
-        assert_eq!(key("é", false, true, false, false, false), "k c e9 a");
-        assert_eq!(key("v", false, false, false, true, false), "", "⌘V, the browser's");
-        assert_eq!(key("Shift", false, false, true, false, false), "");
+        // A key pressed elsewhere than on a Mac, as the browser names it,
+        // its code and the modifiers held, the screen stacked's own, or the
+        // editor's (`t`).
+        let k = |name: &str, code: &str, mods: &str| key(name, code, held(mods), false, false);
+        let t = |name: &str, code: &str, mods: &str| key(name, code, held(mods), false, true);
+        assert_eq!(k("Enter", "Enter", ""), "k Enter -");
+        assert_eq!(k("ArrowDown", "ArrowDown", "s"), "k Down s");
+        assert_eq!(k("Tab", "Tab", "s"), "k BackTab -");
+        assert_eq!(k("?", "Slash", "s"), "k c 3f -", "shifted already");
+        assert_eq!(k("c", "KeyC", "c"), "k c 63 c");
+        assert_eq!(k(" ", "Space", ""), "k c 20 -");
+        assert_eq!(k("é", "Digit2", "a"), "k c e9 a", "alt-é, on a French keyboard");
+        assert_eq!(k("v", "KeyV", "m"), "", "⌘V, the browser's");
+        assert_eq!(k("Shift", "ShiftLeft", "s"), "");
         // F1 to F12 and Insert: the browser's, but while the screen is the
         // editor's own, run in the page; ⌘ the browser's all the same.
-        assert_eq!(key("F5", false, false, false, false, false), "", "the browser's: it loads the page again");
-        assert_eq!(key("Insert", false, false, false, false, false), "");
-        assert_eq!(key("F5", false, false, false, false, true), "k F5 -");
-        assert_eq!(key("F12", true, false, true, false, true), "k F12 cs");
-        assert_eq!(key("F1", false, true, false, false, true), "k F1 a");
-        assert_eq!(key("Insert", false, false, true, false, true), "k Insert s");
-        assert_eq!(key("F13", false, false, false, false, true), "");
-        assert_eq!(key("F5", false, false, false, true, true), "", "⌘ the browser's");
-        assert_eq!(key("ArrowUp", true, false, false, false, true), "k Up c", "the others as ever");
-        assert_eq!(key("c", true, false, false, false, true), "k c 63 c", "ctrl-c the editor's");
+        assert_eq!(k("F5", "F5", ""), "", "the browser's: it loads the page again");
+        assert_eq!(k("Insert", "Insert", ""), "");
+        assert_eq!(t("F5", "F5", ""), "k F5 -");
+        assert_eq!(t("F12", "F12", "cs"), "k F12 cs");
+        assert_eq!(t("F1", "F1", "a"), "k F1 a");
+        assert_eq!(t("Insert", "Insert", "s"), "k Insert s");
+        assert_eq!(t("F13", "F13", ""), "");
+        assert_eq!(t("F5", "F5", "m"), "", "⌘ the browser's");
+        assert_eq!(t("ArrowUp", "ArrowUp", "c"), "k Up c", "the others as ever");
+        assert_eq!(t("c", "KeyC", "c"), "k c 63 c", "ctrl-c the editor's");
         let mut mouse = Mouse::default();
         assert_eq!(click(&mut mouse, 17.0, 41.0, 8.0, 20.0, false), "m 2 2 l");
         assert_eq!(click(&mut mouse, 0.0, 0.0, 8.0, 20.0, true), "m 0 0 r");
@@ -656,6 +725,93 @@ mod tests {
         assert_eq!(pasted("a\r\nb\t"), "p 610d0a6209");
         assert_eq!(pasted("日"), "p e697a5");
         assert_eq!(pasted(""), "");
+    }
+
+    #[test]
+    fn a_character_option_makes_on_a_mac_is_typed_as_it_is_alt_kept_only_where_it_makes_none() {
+        // Each key pressed, as the browser names it, its code and the
+        // modifiers held, then its line on a Mac and elsewhere, the screen
+        // stacked's own or the editor's.
+        let cases = [
+            // Option-D typing ∂: Option's character, as it is; elsewhere,
+            // alt with it, as terminals take it.
+            ("∂", "KeyD", "a", "k c 2202 -", "k c 2202 a"),
+            // Option-D typing d, Option making none there: alt-d.
+            ("d", "KeyD", "a", "k c 64 a", "k c 64 a"),
+            // Option-Shift-D: Î, shifted already, as it is; D, where Option
+            // makes none, alt-D.
+            ("Î", "KeyD", "as", "k c ce -", "k c ce a"),
+            ("D", "KeyD", "as", "k c 44 a", "k c 44 a"),
+            // On a French keyboard, Option-5 types { and Option-Shift-5 [;
+            // on a German one, Option-5 types [ and Option-L @.
+            ("{", "Digit5", "a", "k c 7b -", "k c 7b a"),
+            ("[", "Digit5", "as", "k c 5b -", "k c 5b a"),
+            ("[", "Digit5", "a", "k c 5b -", "k c 5b a"),
+            ("@", "KeyL", "a", "k c 40 -", "k c 40 a"),
+            // On any, Option-; types … and Option-Shift-2 €, and
+            // Option-Space a no-break space: a character typed with Option
+            // on a key other than a letter or a digit is Option's.
+            ("…", "Semicolon", "a", "k c 2026 -", "k c 2026 a"),
+            ("€", "Digit2", "as", "k c 20ac -", "k c 20ac a"),
+            ("\u{a0}", "Space", "a", "k c a0 -", "k c a0 a"),
+            // With ctrl too, ctrl stays as the browser says it.
+            ("∂", "KeyD", "ca", "k c 2202 c", "k c 2202 ca"),
+            ("d", "KeyD", "ca", "k c 64 ca", "k c 64 ca"),
+            // A dead key, Option-E: nothing, left to the browser; then E,
+            // typing é, the character the two make, Option let go or held.
+            ("Dead", "KeyE", "a", "", ""),
+            ("é", "KeyE", "", "k c e9 -", "k c e9 -"),
+            ("é", "KeyE", "a", "k c e9 -", "k c e9 a"),
+            // Option with a key that is no character: alt, as ever, which
+            // xterm's forms say for the editor, and Option-← and Option-→
+            // stacked's word moves.
+            ("ArrowLeft", "ArrowLeft", "a", "k Left a", "k Left a"),
+            ("ArrowRight", "ArrowRight", "a", "k Right a", "k Right a"),
+            ("ArrowUp", "ArrowUp", "as", "k Up as", "k Up as"),
+            ("Backspace", "Backspace", "a", "k Backspace a", "k Backspace a"),
+            ("Enter", "Enter", "a", "k Enter a", "k Enter a"),
+        ];
+        for (name, code, mods, on_a_mac, elsewhere) in cases {
+            for terminal in [false, true] {
+                assert_eq!(key(name, code, held(mods), true, terminal), on_a_mac, "{name} {code} {mods} on a Mac");
+                assert_eq!(key(name, code, held(mods), false, terminal), elsewhere, "{name} {code} {mods} elsewhere");
+            }
+        }
+    }
+
+    #[test]
+    fn a_character_altgr_makes_is_typed_as_it_is_without_ctrl_and_alt_and_alt_is_alt_elsewhere_than_on_a_mac() {
+        // Each key pressed elsewhere than on a Mac, then its line, the
+        // screen stacked's own or the editor's.
+        let cases = [
+            // AltGr-Q typing @ on a German keyboard, said with ctrl and alt
+            // as Windows says it, and alone as Linux does; AltGr-E typing
+            // €; AltGr-Shift-D typing Ð, shifted already: as it is.
+            ("@", "KeyQ", "cag", "k c 40 -"),
+            ("@", "KeyQ", "g", "k c 40 -"),
+            ("€", "KeyE", "cag", "k c 20ac -"),
+            ("Ð", "KeyD", "gs", "k c d0 -"),
+            // AltGr making none, the key's own typed, as when Firefox on
+            // Windows says ctrl-alt-d with AltGr: ctrl and alt as said.
+            ("d", "KeyD", "cag", "k c 64 ca"),
+            ("d", "KeyD", "g", "k c 64 -"),
+            // Alt, and ctrl and alt, without AltGr: as they are.
+            ("f", "KeyF", "a", "k c 66 a"),
+            ("d", "KeyD", "ca", "k c 64 ca"),
+            // A dead key with AltGr: nothing; AltGr with a key that is no
+            // character, as the browser says it.
+            ("Dead", "BracketRight", "cag", ""),
+            ("ArrowLeft", "ArrowLeft", "cag", "k Left ca"),
+        ];
+        for (name, code, mods, line) in cases {
+            for terminal in [false, true] {
+                assert_eq!(key(name, code, held(mods), false, terminal), line, "{name} {code} {mods}");
+            }
+        }
+        // On a Mac, where Firefox says AltGr with Option, Option decides:
+        // its character as it is, alt where it made none.
+        assert_eq!(key("@", "KeyL", held("ag"), true, false), "k c 40 -");
+        assert_eq!(key("d", "KeyD", held("ag"), true, false), "k c 64 a");
     }
 
     #[test]

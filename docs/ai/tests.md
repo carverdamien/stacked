@@ -1496,7 +1496,18 @@ no notice), as the client reads them, the screen of the editor run in the
 page sent whole, its size, then `t`, then its rows, as the client reads
 them, the keys the client makes while the screen is the editor's made the
 bytes xterm sends (F5, ↑ in the cursor keys' application mode, ctrl-c,
-Shift-Tab), and a paste's text, as the client sends it, read back as it
+Shift-Tab), a character Option made on a Mac or AltGr elsewhere, its line
+as the client makes it, the same whether the screen is stacked's own or
+the editor's, the same character for both (∂ for Option-D, @ for Option-L
+on a German keyboard, [ for Option-Shift-5 on a French one, é for E after
+the dead key Option-E, which makes no line, @ for AltGr-Q said with ctrl
+and alt as Windows says it, € for AltGr-E as Linux says it): with no
+modifier for stacked's own screen, which a comment's box types, its UTF-8
+alone for the editor, with no Esc; and alt where Option made none (d for
+Option-D) and elsewhere with a character (alt-f), alt with it for
+stacked's own screen, which the box does not type, Esc first for the
+editor, Option-← alt-← and `ESC [ 1 ; 3 D`; and a paste's text, as the
+client sends it, read back as it
 was, none for what is not hex, and a token kept for its port alone, in a file of mode
 0600 whatever the umask or a mode opened meanwhile, written whole beside
 it, nothing left there, none read of what is not a token, and nothing kept
@@ -1524,7 +1535,23 @@ the screen, by the program it runs, `the editor` when none is named; `t`
 alone, the screen the editor's own, the next size stacked's again, `t`
 with more nothing; F1 to F12 and Insert the browser's, but while the
 screen is the editor's, with their modifiers, ⌘ the browser's all the
-same, and the other keys as ever, ctrl-c among them; a paste then its
+same, and the other keys as ever, ctrl-c among them; a character Option
+made on a Mac as it is, without alt, and elsewhere with alt (∂ for
+Option-D, Î for Option-Shift-D, { for Option-5 and [ for Option-Shift-5
+on a French keyboard, [ for Option-5 and @ for Option-L on a German one,
+and on keys other than a letter or a digit … for Option-;, € for
+Option-Shift-2 and a no-break space for Option-Space), alt kept where
+Option made none, the key's own typed (d for Option-D, D for
+Option-Shift-D), ctrl kept either way, a dead key (Option-E) no line,
+then the character it makes, é, as it is, Option let go or held, and
+Option with the arrows, Backspace and Enter alt, as ever; a character
+AltGr made elsewhere as it is, without ctrl and alt (@ for AltGr-Q, said
+with them as Windows says it, and alone as Linux does, € for AltGr-E, Ð
+for AltGr-Shift-D), ctrl and alt as said where it made none (d), alt and
+ctrl-alt without it as they are, a dead key with it no line, ← with it as
+said, and on a Mac, AltGr said with Option as Firefox says it, Option
+deciding; each of those lines the same whether the screen is stacked's
+own or the editor's; a paste then its
 text, its UTF-8 in hex, none for no text; and
 which stacked serves the page made what the page keeps of it, nothing for
 one short of a field or with one more, an empty field, one the page could

@@ -1454,7 +1454,7 @@ mod tests {
         assert_eq!(key(&["F1", "-"]), None);
         assert_eq!(key(&["c", "zz", "-"]), None);
         // As the client makes them.
-        let line = client::key("ArrowUp", false, false, false, false, false);
+        let line = client::key("ArrowUp", "ArrowUp", client::Held::default(), false, false);
         assert_eq!(key(&line.split_whitespace().skip(1).collect::<Vec<_>>()), Some(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
         assert_eq!(fitted(5, 5000), (40, 200));
     }
@@ -1475,10 +1475,12 @@ mod tests {
         // the bytes xterm sends: F5, ↑ in the cursor keys' application mode,
         // ctrl-c.
         let bytes = |line: String, application: bool| crate::pty::key(&line.split_whitespace().skip(1).collect::<Vec<_>>(), application);
-        assert_eq!(bytes(client::key("F5", false, false, false, false, true), false), Some(b"\x1b[15~".to_vec()));
-        assert_eq!(bytes(client::key("ArrowUp", false, false, false, false, true), true), Some(b"\x1bOA".to_vec()));
-        assert_eq!(bytes(client::key("c", true, false, false, false, true), false), Some(vec![3]));
-        assert_eq!(bytes(client::key("Tab", false, false, true, false, true), false), Some(b"\x1b[Z".to_vec()));
+        let none = client::Held::default();
+        let (ctrl, shift) = (client::Held { ctrl: true, ..none }, client::Held { shift: true, ..none });
+        assert_eq!(bytes(client::key("F5", "F5", none, false, true), false), Some(b"\x1b[15~".to_vec()));
+        assert_eq!(bytes(client::key("ArrowUp", "ArrowUp", none, false, true), true), Some(b"\x1bOA".to_vec()));
+        assert_eq!(bytes(client::key("c", "KeyC", ctrl, false, true), false), Some(vec![3]));
+        assert_eq!(bytes(client::key("Tab", "Tab", shift, false, true), false), Some(b"\x1b[Z".to_vec()));
         // A paste, its text as the client sends it, back as it was; what is
         // not hex, none.
         let text = "one\r\ntwo 日\t";
@@ -1488,6 +1490,56 @@ mod tests {
         for wrong in ["6", "zz", "+f", "日"] {
             assert_eq!(unhex(wrong), None, "{wrong}");
         }
+    }
+
+    #[test]
+    fn a_character_option_or_altgr_makes_is_the_same_character_for_stacked_s_own_screen_and_the_editor_in_the_page() {
+        // A key pressed in the page, as the browser names it, its code and
+        // the modifiers held, named as a line names them (AltGr `g`), on a
+        // Mac or not: the line the client makes of it, the same whether the
+        // screen is stacked's own or the editor's; what stacked's own
+        // screen takes of it (`key`), and the bytes the editor run in the
+        // page is given (`pty::key`).
+        let held = |m: &str| client::Held { ctrl: m.contains('c'), alt: m.contains('a'), shift: m.contains('s'), meta: false, altgr: m.contains('g') };
+        let line = |name: &str, code: &str, m: &str, mac: bool| {
+            let [own, editor] = [false, true].map(|terminal| client::key(name, code, held(m), mac, terminal));
+            assert_eq!(own, editor, "the same line for both");
+            own
+        };
+        let own = |line: &str| key(&line.split_whitespace().skip(1).collect::<Vec<_>>());
+        let editor = |line: &str| crate::pty::key(&line.split_whitespace().skip(1).collect::<Vec<_>>(), false);
+        // Typed as it is: on a Mac, ∂ for Option-D, @ for Option-L on a
+        // German keyboard, [ for Option-Shift-5 on a French one, é for E
+        // after the dead key Option-E, which sends nothing; elsewhere, @
+        // for AltGr-Q on a German keyboard, said with ctrl and alt as
+        // Windows says it, € for AltGr-E, as Linux says it. Stacked's own
+        // screen takes each with no modifier, as a comment's box types it;
+        // the editor is given its UTF-8 alone, with no Esc before it.
+        assert_eq!(line("Dead", "KeyE", "a", true), "");
+        let typed = [("∂", "KeyD", "a", true), ("@", "KeyL", "a", true), ("[", "Digit5", "as", true), ("é", "KeyE", "", true), ("@", "KeyQ", "cag", false), ("€", "KeyE", "g", false)];
+        let mut comment = crate::editor::Editor::new("");
+        for (name, code, m, mac) in typed {
+            let l = line(name, code, m, mac);
+            let c = name.chars().next().unwrap();
+            assert_eq!(own(&l), Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)), "{l}");
+            assert_eq!(editor(&l), Some(name.as_bytes().to_vec()), "{l}");
+            comment.key(own(&l).unwrap());
+        }
+        assert_eq!(comment.text(), "∂@[é@€");
+        // Alt where Option made no character, d for Option-D, and elsewhere
+        // with a character, as terminals take it: alt with it for stacked's
+        // own screen, which its box does not type, and Esc first for the
+        // editor. With a key that is no character, alt on a Mac as
+        // elsewhere: Option-← a word back, xterm's `ESC [ 1 ; 3 D`.
+        for (l, c) in [(line("d", "KeyD", "a", true), 'd'), (line("f", "KeyF", "a", false), 'f')] {
+            assert_eq!(own(&l), Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)), "{l}");
+            assert_eq!(editor(&l), Some(format!("\x1b{c}").into_bytes()), "{l}");
+            comment.key(own(&l).unwrap());
+        }
+        assert_eq!(comment.text(), "∂@[é@€", "nothing typed with alt");
+        let l = line("ArrowLeft", "ArrowLeft", "a", true);
+        assert_eq!(own(&l), Some(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)));
+        assert_eq!(editor(&l), Some(b"\x1b[1;3D".to_vec()));
     }
 
     #[test]

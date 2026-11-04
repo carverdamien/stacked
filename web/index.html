@@ -47,6 +47,9 @@ try { launch = sessionStorage.getItem('stacked-launch') || ''; } catch (_) {}
 // stacked web's (`t`), until the next screen's size: every key goes to it
 // then, F1 to F12 and Insert too, but those with ⌘, and a paste as it is.
 let terminal = false;
+// Whether the page is on a Mac, as it can tell, where a character Option
+// makes is typed as it is (web/client.rs `key`).
+const mac = /^mac/i.test(navigator.userAgentData?.platform || navigator.platform || '');
 // What the page says over its screen without the server.
 const said = {
   quit: 'stacked has quit.\nThis tab waits for stacked web to start again on this address, then goes on by itself.',
@@ -260,8 +263,11 @@ addEventListener('pageshow', e => { if (e.persisted && w && !events) connect(); 
 WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instance}) => {
   w = instance.exports;
   connect();
+  // A key: its code, which says where it is on the keyboard, a space, then
+  // what the browser names it; the modifiers held, AltGr too; for the
+  // client to tell a character Option or AltGr made from the key's own.
   addEventListener('keydown', e => {
-    const line = call(w.key, e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey, terminal);
+    const line = call(w.key, e.code + ' ' + e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey, e.getModifierState('AltGraph'), mac, terminal);
     if (line) { e.preventDefault(); send(line); }
   });
   screen.addEventListener('mousedown', e => {

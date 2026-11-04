@@ -36,6 +36,27 @@ sight. A click in the box puts the cursor where the
 click is. Writing a comment, or reading what `?` says, the mouse going by
 moves nothing. A paste types what is pasted, into a comment being written.
 
+A key types what the keyboard makes of it, as in a terminal. On a Mac, a
+character Option makes is typed as it is, as Terminal.app types it by
+default: ∂ for Option-D, `[`, `{`, `|` and `~`, which French and German
+keyboards type with Option, `@` on a German one, and `…` and `€` on any;
+in a comment, in a search and in the editor run in the page alike, which
+is given the character alone, with no Esc before it. Option is alt only
+where it makes no character, the key typing its own (d for Option-D),
+which the page tells for a letter or a digit by where the key is on the
+keyboard; on any other key, what Option types is its own. Elsewhere, alt
+is alt, as terminals take it, Esc first for the editor run in the page;
+and a character AltGr makes is typed as it is, without the ctrl and alt
+that Windows says AltGr with, which stay where AltGr makes none. A dead
+key (Option-E, before the letter it accents) types nothing: the browser
+keeps it, and the next key types the character the two make (é for
+Option-E, then E). With a key that types no character, the arrows,
+Backspace, Enter and the others, Option and alt are alt, as ever, and the
+editor run in the page is given xterm's forms for them (`ESC [ 1 ; 3 D`
+for Option-←): in a comment, where Option-B and Option-F type characters
+on a Mac (∫ and ƒ on a US keyboard), Option-← and Option-→ go a word back
+and on.
+
 HEAD being moved goes under the patch the mouse is over (under the
 stack's header, at the base), and a click on HEAD's own row (`↕ HEAD`)
 puts it down there, as Enter does; a click on the patch it is under does
@@ -137,7 +158,8 @@ which an editor tells that the page is dark. Nothing else is answered.
 What the pages send meanwhile goes to the editor, made the bytes xterm
 sends: a character as UTF-8, ctrl with a letter its control byte (and
 with `@ [ \ ] ^ _ / ?`, space and 2 to 8 the one xterm gives), alt as Esc
-first; Enter a carriage return, Tab a tab, Shift-Tab `ESC [ Z`, Backspace
+first (a character Option or AltGr made comes without alt: above); Enter a
+carriage return, Tab a tab, Shift-Tab `ESC [ Z`, Backspace
 DEL (BS with ctrl), Esc ESC; the arrows, Home and End as `ESC [ A`, or as
 `ESC O A` once the editor asks for the cursor keys' application mode,
 Insert, Delete, Page Up and Down and F5 to F12 as `ESC [ 2 ~`, F1 to F4 as
@@ -409,11 +431,15 @@ is wasm
 them, the bell's line the bell, `$EDITOR` running the words said over the
 screen, `t` what says that the screen is the editor's own, which stacked
 sends the lines what the page keeps of it, the keys, F1 to F12 and Insert
-among them while the screen is the editor's, a paste the keys that type it
+among them while the screen is the editor's, a character Option made on a
+Mac, or AltGr elsewhere, as it is, told from the key's own by the key's
+code (`KeyD`), a paste the keys that type it
 or then its text, the clicks and the wheel made lines for the server, the
 wheel's small turns in pixels kept until they make a notch, 40 pixels, and
 each turn in lines or in pages a notch, whatever its size), carried by a
-hundred and ninety lines of JS (`web/index.html`), which reads the
+hundred and ninety lines of JS (`web/index.html`), which tells whether the
+page is on a Mac (`navigator.userAgentData`'s platform, else
+`navigator.platform`); which reads the
 wheel's mode before its turn: Firefox says a mouse's notches in lines only to a
 page that reads the mode first; which shows the notices, and asks the
 browser's permission for them; which rings the bell, its audio made on
