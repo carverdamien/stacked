@@ -242,7 +242,9 @@ failure, says it again in the bottom line; with a menu, a dialog or a
 comment being written open, or on any other screen, nothing more is done,
 so that what is open is never left for a notice. The browser asks once
 whether the page may show them, on the first click or key that reaches it
-(but Esc, which browsers do not let a page ask on), as a page may ask only
+(but Esc, or a modifier alone, such as the ⌘ that each ⌘ shortcut, ⌘-Tab,
+⌘-L, ⌘-W or ⌘-1, sends first: browsers do not let a page ask on those),
+as a page may ask only
 then; once you answer, never again. It keeps your answer for the page's
 address, its port included: with `web.port = "random"`, a new port each
 launch, it asks at each launch, and with `"fixed-random"` or a port, once.
@@ -266,8 +268,8 @@ it; with both false, the editor keeps no notice. The notice of a tab come
 back, `stacked web is running again: click to switch to this tab.`
 (above), rings nothing, as it tells nothing the editor learned. A browser
 lets a page make sound only once a click or a key reached it: the page
-makes its audio on its first click or key (but Esc), where it asks the
-browser's permission for the banners, and starts it there, and again on
+makes its audio on its first click or key (but Esc), and starts it there,
+and again on
 each click or key after until it has started once, as a browser may take a
 key for no such key (⌘ alone, as ⌘-Tab sends it). Until then the bell is
 silent, and nothing says so, as nothing says that the banners wait for

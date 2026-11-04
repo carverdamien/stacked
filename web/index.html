@@ -106,13 +106,13 @@ const notice = (tag, title, body, line) => {
 // its own time, the higher the sooner. A bell still sounding is not struck
 // again.
 const PITCH = 880, STRUCK = 0.004, PARTIALS = [[1, 0.15, 1.2], [2.828, 0.045, 0.6], [5.423, 0.015, 0.3]];
-// The page's audio, made on the first click or key that reaches it, where
-// the browser's permission for the banners is asked (`allow`), as a browser
-// lets a page make sound only after one (Esc is no such key): until then,
-// the bell is silent. Started there, as only a click or a key may start
-// it, and on each one after until it has started once, as a browser may
-// take a key for no such key (⌘ alone, as ⌘-Tab sends it); then suspended
-// while the bell does not sound. No Web Audio: never made.
+// The page's audio, made on the first click or key that reaches it, as a
+// browser lets a page make sound only after one (Esc is no such key): until
+// then, the bell is silent. Started there, as only a click or a key may
+// start it, and on each one after until it has started once, as a browser
+// may take a key for no such key (⌘ alone, as ⌘-Tab sends it, which `allow`
+// passes over); then suspended while the bell does not sound. No Web Audio:
+// never made.
 let audio = null, started = false, strikes = 0, rung = -Infinity;
 const ready = e => {
   if (e.key === 'Escape') return;
@@ -159,10 +159,13 @@ const bell = () => {
   } catch (_) {}
 };
 // The browser's permission is asked once, on the first click or key that
-// reaches the page, as a page may ask only then (Esc is no such key); once
-// given or refused, never again.
+// reaches the page, as a page may ask only then: Esc is no such key, nor is
+// a modifier alone (`OS` is older Firefox's name for the system key), such
+// as the ⌘ that each ⌘ shortcut (⌘-Tab, ⌘-L, ⌘-W, ⌘-1) sends first, on
+// which a browser may drop the request without a prompt; once given or
+// refused, never again.
 const allow = e => {
-  if (e.key === 'Escape') return;
+  if (e.key === 'Escape' || ['Meta', 'Control', 'Alt', 'AltGraph', 'Shift', 'CapsLock', 'OS', 'Fn'].includes(e.key)) return;
   removeEventListener('mousedown', allow);
   removeEventListener('keydown', allow);
   try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch (_) {}
