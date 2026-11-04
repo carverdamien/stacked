@@ -5025,6 +5025,8 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
         db.store_raw_diff(link, 6, "raw 6")?;
         db.store_revision(link, "D11", Some(state(6)), None)?;
         db.store_fetched(vec![link.into()])?;
+        // A repository a submit read.
+        db.store_repository(stacked::db::Repository { phid: "PHID-REPO-1".into(), callsign: "TEST".into(), vcs: "git".into(), ..Default::default() })?;
         db.mark_read(&p.change, keys.clone()).map(|_| ())
     })
     .unwrap();
@@ -5063,6 +5065,9 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
     assert_eq!(made.revision_state(link).map(|(s, _)| s.diff), Some(6));
     assert_eq!((made.raw_diff(link, 6), made.raw_diff(link, 5)), (Some("raw 6"), None));
     assert_eq!(made.fetched(link), old.fetched(link));
+    // The repository a submit read, as it was read.
+    assert!(made.repository("PHID-REPO-1").is_some_and(|r| r.vcs == "git"));
+    assert_eq!((made.repository("PHID-REPO-1"), made.repository_called("TEST")), (old.repository("PHID-REPO-1"), old.repository_called("TEST")));
     assert!(made.warnings.is_empty() && on(&["check"]).contains("s: applies"));
     // The history kept: its start, then the drop and the undo; the ask that
     // landed before is left out.

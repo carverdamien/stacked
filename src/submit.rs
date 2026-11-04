@@ -6,17 +6,26 @@
 //! summary and parent: no new diff, the status kept. Built with the
 //! `moz-phab` feature.
 //!
-//! Nothing is sent before what will be is read and checked (`prepare`): a
-//! revision that landed or was abandoned is refused, and so is one in work
-//! whose latest diff is no version of the patch the database holds, as it
-//! came from elsewhere. Then only what changed is sent (`send`): a new diff
-//! and its commit's author and message, the title, the summary and the
-//! bug, the status kept or put in Changes Planned; after that, in a call
-//! of its own, so that a refusal undoes none of the rest, the parent set to
-//! the revision of the patch below. No reviewers are set, as `moz-phab
-//! submit --wip` sets none: those the title names stay in it, written as
-//! moz-phab writes them. A new revision's link goes into the patch, as a
-//! new version of it, at once. The workspace's commits are not touched.
+//! Nothing is sent before what will be is worked out and checked
+//! (`prepare`), from what the database holds of Phabricator, as the last
+//! fetch of it stored it, which the review says how long ago was: what it
+//! lacks of the revision, of the revision of the patch below, or of the
+//! repository a new diff is made in, is fetched into it first (`lacking`).
+//! A revision that landed or was abandoned is refused, and so is one in
+//! work whose latest diff is no version of the patch the database holds, as
+//! it came from elsewhere. Then only what changed is sent (`send`), nothing
+//! read first, the writes moz-phab makes: a new diff, then its commit's
+//! author and message; then one edit, as moz-phab's `edit_revision` makes
+//! it, of the title, the summary and the bug, the new diff, the parent set
+//! to the revision of the patch below, and Changes Planned; and, for a
+//! revision in Changes Planned that takes a new diff, which Phabricator
+//! puts in Needs Review then and does not put back in the same edit,
+//! Changes Planned again, in an edit of its own. No reviewers are set, as
+//! `moz-phab submit --wip` sets none: those the title names stay in it,
+//! written as moz-phab writes them. A new revision's link goes into the
+//! patch, as a new version of it, at once. Nothing is read after: what
+//! stacked shows of the revision is what was fetched before, until the next
+//! fetch. The workspace's commits are not touched.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -423,16 +432,18 @@ pub fn summary_of(message: &str, trailer: &str) -> String {
 
 // -- what Phabricator holds ----------------------------------------------- //
 
-/// A revision as a submit reads it, before it sends anything, and again
-/// before it does: if any of it but `raw` changed meanwhile, nothing is.
-/// Its reviewers are not read: a submit sets none, in work or not.
+/// A revision as the database holds it, as the last fetch of it stored it
+/// (`Remote::stored`): what the review of a submit shows of it, and what
+/// Send sends to, nothing read again. Its reviewers are not read: a submit
+/// sets none, in work or not.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Remote {
     /// `D123`.
     pub id: String,
     pub phid: String,
-    /// `changes-planned`, as differential.revision.search says it; and as
-    /// it names it, `Changes Planned`.
+    /// `changes-planned`, as differential.revision.search says it; and by
+    /// its name, as stacked names it (`phab::Status::name`), `Changes
+    /// Planned`, empty for a status stacked does not know.
     pub status: String,
     pub status_name: String,
     /// A draft, not yet sent for review.
@@ -458,90 +469,59 @@ impl Remote {
         self.status == "changes-planned" || self.draft
     }
 
-    /// Whether it is open, as `phab::open` reads one: neither landed nor
-    /// abandoned.
+    /// Whether it is open, as `phab::Status::open` reads one: neither
+    /// landed nor abandoned.
     pub fn open(&self) -> bool {
         !matches!(self.status.as_str(), "published" | "abandoned")
     }
 
-    /// Whether it is as `other` was, its raw diff aside.
-    fn same_as(&self, other: &Remote) -> bool {
-        Remote { raw: String::new(), ..self.clone() } == Remote { raw: String::new(), ..other.clone() }
+    /// Revision `d` at `link` as `db` holds it (`Db::revision_state`): its
+    /// state, its parents' PHIDs, sorted, and its latest diff, raw. Or that
+    /// it cannot be had, said: nothing of it stored, or Phabricator had no
+    /// such revision when it was fetched. Where its raw diff is not stored,
+    /// or whether it is a draft was not read, as a stacked of before stored
+    /// it, it is taken as none and as no draft: an open revision is never
+    /// taken so, as it is fetched first then (`lacking`), and a closed one
+    /// needs neither.
+    fn stored(db: &Db, d: &str, link: &str) -> Result<Remote, String> {
+        let Some((st, _)) = db.revision_state(link) else {
+            return Err(format!("Nothing of {d} is stored, so nothing was sent."));
+        };
+        if st.missing {
+            return Err(format!("Phabricator had no revision {d} when it was last fetched, so nothing was sent."));
+        }
+        let status = crate::phab::Status::from_value(&st.status);
+        let mut parents: Vec<String> = st.parents.iter().map(|(phid, _)| phid.clone()).collect();
+        parents.sort();
+        Ok(Remote {
+            id: d.to_string(),
+            phid: st.phid.clone(),
+            status: st.status.clone(),
+            status_name: match status {
+                crate::phab::Status::Unknown => String::new(),
+                known => known.name().to_string(),
+            },
+            draft: st.draft.unwrap_or(false),
+            title: st.title.clone(),
+            summary: st.summary.clone(),
+            bug: st.bug.clone(),
+            repository: Some(st.repository.clone()).filter(|r| !r.is_empty()),
+            parents,
+            diff: st.diff,
+            base: st.base.clone(),
+            raw: db.raw_diff(link, st.diff).unwrap_or_default().to_string(),
+        })
     }
 }
 
-/// A field of revision `r`, as differential.revision.search gives it, as
-/// text: a number written out, none empty.
-fn field(r: &Value, k: &str) -> String {
-    match r.pointer(&format!("/fields/{k}")) {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.to_string(),
-        _ => String::new(),
-    }
-}
-
-/// Revision `id` (`D123`) as it is now, its latest diff raw too if `raw`.
-fn read_remote(call: &mut Call, id: &str, raw: bool) -> Result<Remote, String> {
-    let n: u64 = id.trim_start_matches('D').parse().map_err(|_| format!("{id} names no revision"))?;
-    let found = call("differential.revision.search", json!({"constraints": {"ids": [n]}}))?;
-    let r = found.pointer("/data/0").cloned().ok_or(format!("Phabricator has no revision {id}"))?;
-    let phid = r.get("phid").and_then(Value::as_str).unwrap_or_default().to_string();
-    let mut parents = crate::phab::edges(call, &phid, "revision.parent")?;
-    parents.sort();
-    let diffs = call("differential.querydiffs", json!({"revisionIDs": [n]}))?;
-    let (diff, latest) = diffs
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v)))
-        .max_by_key(|(k, _)| *k)
-        .ok_or(format!("{id} has no diff"))?;
-    let base = latest.get("sourceControlBaseRevision").and_then(Value::as_str).unwrap_or_default().to_string();
-    let raw = match raw {
-        true => call("differential.getrawdiff", json!({"diffID": diff}))?.as_str().unwrap_or_default().to_string(),
-        false => String::new(),
-    };
-    let repository = r.pointer("/fields/repositoryPHID").and_then(Value::as_str).filter(|p| !p.is_empty()).map(String::from);
-    Ok(Remote {
-        id: format!("D{n}"),
-        phid,
-        status: r.pointer("/fields/status/value").and_then(Value::as_str).unwrap_or_default().to_string(),
-        status_name: r.pointer("/fields/status/name").and_then(Value::as_str).unwrap_or_default().to_string(),
-        draft: r.pointer("/fields/isDraft").and_then(Value::as_bool).unwrap_or(false),
-        title: field(&r, "title"),
-        summary: field(&r, "summary"),
-        bug: field(&r, "bugzilla.bug-id"),
-        repository,
-        parents,
-        diff,
-        base,
-        raw,
-    })
-}
-
-/// Stores in `db` what a submit read of revision `r` at `link`, as every
-/// read of Phabricator is stored (`Db::store_revision`): its state, its
-/// parents named by `names`, PHID by PHID, where the submit named them,
-/// else as what is stored names them (`phab::parents_known`); and its
-/// latest diff, raw, when it was read with it (`raw`). Its comments are
-/// not read, and stay as they were stored.
-fn store_read(db: &mut Db, link: &str, r: &Remote, names: Option<&[String]>, raw: bool) -> crate::db::Result<()> {
-    let parents: Vec<(String, String)> = r.parents.iter().enumerate().map(|(k, p)| (p.clone(), names.and_then(|n| n.get(k)).cloned().unwrap_or_else(|| p.clone()))).collect();
-    let state = crate::db::State {
-        missing: false,
-        status: r.status.clone(),
-        title: r.title.clone(),
-        summary: r.summary.clone(),
-        bug: r.bug.clone(),
-        phid: r.phid.clone(),
-        parents: crate::phab::parents_known(db, &parents),
-        diff: r.diff,
-        base: r.base.clone(),
-    };
-    if raw {
-        db.store_raw_diff(link, r.diff, &r.raw)?;
-    }
-    db.store_revision(link, &r.id, Some(state), None).map(|_| ())
+/// The parents of the revision at `link`, as `db` holds them, by PHID,
+/// sorted, each its `D123` where what is stored names it, else its PHID
+/// (`phab::parents_known`): what the review says they are.
+fn parents_named(db: &Db, link: &str) -> Vec<String> {
+    let Some((st, _)) = db.revision_state(link) else { return Vec::new() };
+    let mut named = crate::phab::parents_known(db, &st.parents);
+    named.sort();
+    named.into_iter().map(|(_, d)| d).collect()
 }
 
 /// A status as Phabricator names it: its name, else its value written out.
@@ -594,15 +574,44 @@ pub struct Repository {
     pub vcs: String,
 }
 
-/// The repository by `constraint` (`phids`, `callsigns`), as
-/// diffusion.repository.search finds it.
-fn repository_by(call: &mut Call, constraint: &str, value: &str) -> Result<Repository, String> {
+impl From<&crate::db::Repository> for Repository {
+    fn from(r: &crate::db::Repository) -> Repository {
+        Repository { phid: Some(r.phid.clone()).filter(|p| !p.is_empty()), vcs: r.vcs.clone() }
+    }
+}
+
+/// The repository by `constraint` (`phids`, `callsigns`), `value`, as
+/// diffusion.repository.search finds it, to store: its PHID, empty where
+/// the search gives none; its callsign, as the search gives it, else the
+/// one it was asked by; and what holds it, git where the search does not
+/// say.
+fn repository_by(call: &mut Call, constraint: &str, value: &str) -> Result<crate::db::Repository, String> {
     let r = call("diffusion.repository.search", json!({"constraints": {constraint: [value]}, "limit": 1}))?;
     let d = r.pointer("/data/0").ok_or(format!("Phabricator has no repository {value}"))?;
-    Ok(Repository {
-        phid: d.get("phid").and_then(Value::as_str).map(String::from),
+    let callsign = d.pointer("/fields/callsign").and_then(Value::as_str).filter(|c| !c.is_empty()).map(String::from);
+    Ok(crate::db::Repository {
+        phid: d.get("phid").and_then(Value::as_str).unwrap_or_default().to_string(),
+        callsign: callsign.or_else(|| (constraint == "callsigns").then(|| value.to_string())).unwrap_or_default(),
         vcs: d.pointer("/fields/vcs").and_then(Value::as_str).unwrap_or("git").to_string(),
+        time: 0,
     })
+}
+
+/// The repository a new diff is made in: that of PHID `phid`, the
+/// revision's, else the one the checkout's `.arcconfig` names by its
+/// callsign (`arc`), as `db` holds it, else as `read` reads it from
+/// Phabricator, by that PHID or that callsign; none, held in git, where
+/// neither names one.
+fn repository_for(db: &Db, phid: Option<&str>, arc: &Arc, read: &mut dyn FnMut(&str, &str) -> Result<Repository, String>) -> Result<Repository, String> {
+    let (stored, constraint, value) = match (phid, arc.callsign.as_deref()) {
+        (Some(phid), _) => (db.repository(phid), "phids", phid),
+        (None, Some(cs)) => (db.repository_called(cs), "callsigns", cs),
+        (None, None) => return Ok(Repository { phid: None, vcs: "git".into() }),
+    };
+    match stored {
+        Some(r) => Ok(Repository::from(r)),
+        None => read(constraint, value),
+    }
 }
 
 // -- the plan ------------------------------------------------------------- //
@@ -636,7 +645,8 @@ pub enum Parent {
 
 pub use crate::head::and;
 
-/// What a submit of one patch sends, read and checked before anything is.
+/// What a submit of one patch sends, worked out and checked before
+/// anything is, from what the database holds of Phabricator.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prepared {
     pub stack: String,
@@ -649,8 +659,12 @@ pub struct Prepared {
     /// `phabricator.uri`), to reach it again.
     pub url: String,
     pub from: Option<String>,
-    /// The revision updated, as it was read; none for a new one.
+    /// The revision updated, as the database holds it; none for a new one.
     pub revision: Option<Remote>,
+    /// When what is shown of it was fetched, in seconds since 1970
+    /// (`phab::fetched_at`), which the review says how long ago was, as it
+    /// is drawn; none for a new revision.
+    pub fetched: Option<i64>,
     /// How its latest diff is a version of the patch: none for a revision
     /// not in work whose latest diff is no version of it.
     pub known: Option<Known>,
@@ -736,10 +750,12 @@ impl Prepared {
     }
 
     /// Whether Changes Planned is asked for: in the edit that sends the
-    /// rest, for a new revision or one that is a draft; in an edit after
-    /// it, for a revision in Changes Planned that takes a new diff, which
-    /// puts it back in Needs Review, as moz-phab says. Never for a revision
-    /// not in work: its status stays as it is.
+    /// rest, for a new revision or one that is a draft; in an edit of its
+    /// own after it, for a revision in Changes Planned that takes a new
+    /// diff, which Phabricator puts in Needs Review then, and refuses
+    /// Changes Planned in the edit that gives it the diff, as it is Changes
+    /// Planned still when that edit starts, as moz-phab says. Never for a
+    /// revision not in work: its status stays as it is.
     fn plan_changes(&self) -> (bool, bool) {
         match &self.revision {
             None => (true, false),
@@ -749,14 +765,15 @@ impl Prepared {
         }
     }
 
-    /// Whether the edit that sends the rest is made.
+    /// Whether the edit that sends the rest is made: one edit holds all of
+    /// it, the parent too, as moz-phab's `edit_revision` holds it.
     fn main_edit(&self) -> bool {
-        self.new_diff || self.message_changes() || self.plan_changes().0
+        self.new_diff || self.message_changes() || self.plan_changes().0 || self.parent_changes()
     }
 
     /// Whether nothing at all is to be sent.
     pub fn nothing(&self) -> bool {
-        !self.main_edit() && !self.parent_changes()
+        !self.main_edit()
     }
 
     /// Whether the parent changes: what the review lists under what else
@@ -933,6 +950,23 @@ pub enum Below {
     Found { phid: String, open: bool, status: String },
 }
 
+impl Below {
+    /// The revision at `link` as `db` holds it, as the last read of it
+    /// stored it: not on Phabricator; or its PHID, whether it is open, and
+    /// its status, by its name, as the Phabricator line names it. None
+    /// while nothing of it is stored. As the parent's rule reads the
+    /// revision below wherever it reads what is stored: the submit, the
+    /// Phabricator line, a fetch naming the parents a submit sets.
+    pub fn stored(db: &Db, link: &str) -> Option<Below> {
+        let (st, _) = db.revision_state(link)?;
+        if st.missing {
+            return Some(Below::Missing);
+        }
+        let status = crate::phab::Status::from_value(&st.status);
+        Some(Below::Found { phid: st.phid.clone(), open: status.open(), status: status.name().to_string() })
+    }
+}
+
 /// The parent the revision of the patch at `at` (from 0) of stack `s` is
 /// given, as a submit gives it: the revision of the patch below, when it
 /// is open, read with `below` by its `D123` and its link, unless the rule
@@ -968,42 +1002,44 @@ pub fn parent_with<E>(db: &Db, s: &Stack, at: usize, now: Option<(&str, &[String
 }
 
 /// The parent the revision of the patch at `at` of stack `s` is given: the
-/// revision of the patch below, read with `call`, when it is open. `now`,
-/// the revision as it is; none for a new one.
-fn parent(db: &Db, s: &Stack, at: usize, call: &mut Call, now: Option<&Remote>) -> Parent {
-    let read = |d: &str, _: &str| -> Result<Below, std::convert::Infallible> {
-        let n: u64 = d.trim_start_matches('D').parse().unwrap_or_default();
-        Ok(match crate::phab::revision_by(call, json!({ "ids": [n] })) {
-            Err(e) => Below::Unread(e),
-            Ok(None) => Below::Missing,
-            Ok(Some(r)) => Below::Found {
-                phid: r.get("phid").and_then(Value::as_str).unwrap_or_default().to_string(),
-                open: crate::phab::open(&r),
-                status: r.pointer("/fields/status/name").and_then(Value::as_str).unwrap_or("closed").to_string(),
-            },
-        })
-    };
+/// revision of the patch below, as `db` holds it (`Below::stored`), when it
+/// is open. `now`, the revision as it is; none for a new one. What the
+/// database lacks of the revision below is fetched first (`lacking`).
+fn parent(db: &Db, s: &Stack, at: usize, now: Option<&Remote>) -> Parent {
+    let read = |_: &str, link: &str| -> Result<Below, std::convert::Infallible> { Ok(Below::stored(db, link).unwrap_or_else(|| Below::Unread("nothing of it is stored".into()))) };
     let Ok(p) = parent_with(db, s, at, now.map(|r| (r.id.as_str(), r.parents.as_slice())), read);
     p
 }
 
-/// The revisions `phids`, read with `call`, as `D123`; each not found, its
-/// PHID.
-fn revision_names(call: &mut Call, phids: &[String]) -> Vec<String> {
-    if phids.is_empty() {
-        return Vec::new();
+/// The revisions that what the submit of the patch at `at` of stack `s`
+/// sends is worked out from, and that `db` lacks, each `D123` and its link:
+/// what a fetch stores first (`phab::fetch_with`). The patch's own, while
+/// nothing of it is stored; or, open, while its latest diff is not stored
+/// raw, or what is stored of it was stored before stacked read whether it
+/// is a draft (`State::draft`). And the revision of the patch below, where
+/// the parent's rule reads it (`parent_with`), while nothing of it is
+/// stored. None of a revision Phabricator did not have when it was last
+/// fetched, nor of one that landed or was abandoned: refused, nothing more
+/// is needed of it.
+pub fn lacking(db: &Db, s: &Stack, at: usize) -> Vec<(String, String)> {
+    let Some(p) = s.patches.get(at).map(|id| db.patch(id)) else { return Vec::new() };
+    let mine = crate::phab::revision_of(&p.message);
+    let mut out = Vec::new();
+    if let Some((d, link)) = &mine {
+        match db.revision_state(link).map(|(st, _)| st) {
+            Some(st) if st.missing || !crate::phab::Status::from_value(&st.status).open() => return out,
+            Some(st) if st.draft.is_some() && (st.diff == 0 || db.raw_diff(link, st.diff).is_some()) => {}
+            _ => out.push((d.clone(), link.clone())),
+        }
     }
-    let found = call("differential.revision.search", json!({"constraints": {"phids": phids}})).unwrap_or(Value::Null);
-    let id_of = |p: &String| {
-        found
-            .get("data")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|r| r.get("phid").and_then(Value::as_str) == Some(p.as_str()))
-            .and_then(|r| r.get("id").and_then(Value::as_u64))
-    };
-    phids.iter().map(|p| id_of(p).map_or(p.clone(), |n| format!("D{n}"))).collect()
+    let none: &[String] = &[];
+    let _ = parent_with(db, s, at, mine.as_ref().map(|(d, _)| (d.as_str(), none)), |d, link| {
+        if db.revision_state(link).is_none() {
+            out.push((d.to_string(), link.to_string()));
+        }
+        Ok::<Below, std::convert::Infallible>(Below::Missing)
+    });
+    out
 }
 
 /// The code from `theirs` to `mine`, two diffs of the patch at `at` of
@@ -1097,44 +1133,51 @@ fn sendable(p: &Patch, n: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// What submitting the patch at `at` of stack `s` sends, read from
-/// Phabricator at `url` with `call`: or why nothing can be, said. `arc`,
-/// the `.arcconfig` of the stack's checkout. The revision it names, as it
-/// was read, put in `read`, whatever comes of the rest. For a revision in
-/// work, the patch must be one Phabricator can be sent (`sendable`), as
-/// for a new one (`prepare` checks that before anything is read). A
-/// revision open but not in work gets the title, the summary, the bug and
-/// the parent alone: its title `WIP: ` first only if it has it
-/// (`title_against`), its latest diff left as it is, of whatever version,
-/// so that neither its repository nor the patch's files are looked at.
-fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut Call, read: &mut Option<Remote>) -> Result<Prepared, String> {
+/// What submitting the patch at `at` of stack `s` to Phabricator at `url`
+/// sends, worked out from what `db` holds of Phabricator: or why nothing
+/// can be, said. `arc`, the `.arcconfig` of the stack's checkout. The
+/// revision the patch names as the last fetch of it stored it, its latest
+/// diff raw, and the revision of the patch below, all of which a fetch
+/// stores first where the database lacks them (`lacking`). For a revision
+/// in work, the patch must be one Phabricator can be sent (`sendable`), as
+/// for a new one (`prepare` checks that first). Where a new diff is made,
+/// its repository, as the database holds it, else as `read` reads it, by
+/// its PHID or its callsign (`repository_for`). A revision open but not in
+/// work gets the title, the summary, the bug and the parent alone: its
+/// title `WIP: ` first only if it has it (`title_against`), its latest diff
+/// left as it is, of whatever version, so that neither its repository nor
+/// the patch's files are looked at; and so does a revision in work whose
+/// latest diff is the patch as it is, which gets no new diff.
+fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, read: &mut dyn FnMut(&str, &str) -> Result<Repository, String>) -> Result<Prepared, String> {
     let p = db.patch(&s.patches[at]);
     let n = at + 1;
     let titled = wip_title(p.title());
     let summary = summary_of(&p.message, &trailer());
-    let (revision, known, repository) = match crate::phab::revision_of(&p.message) {
-        Some((d, _)) => {
-            let r = read_remote(call, &d, true).map_err(|e| format!("{d} could not be read from Phabricator, so nothing was sent: {e}"))?;
-            *read = Some(r.clone());
+    let named = crate::phab::revision_of(&p.message);
+    let (revision, known, repository, fetched) = match &named {
+        Some((d, link)) => {
+            let r = Remote::stored(db, d, link)?;
             if !r.open() {
                 return Err(format!("{d} is {}, not open: only an open revision is updated, and nothing was sent.", status_said(&r)));
             }
+            if r.diff == 0 {
+                return Err(format!("{d} had no diff when it was last fetched, so nothing was sent."));
+            }
+            let fetched = crate::phab::fetched_at(db, link);
+            let kept = Repository { phid: r.repository.clone(), vcs: "git".into() };
             if !r.in_work() {
                 let k = known(db, s, at, &r.raw);
-                let repository = Repository { phid: r.repository.clone(), vcs: "git".into() };
-                (Some(r), k, repository)
+                (Some(r), k, kept, fetched)
             } else {
                 sendable(p, n)?;
                 let Some(k) = known(db, s, at, &r.raw) else {
                     return Err(format!("{d}'s latest diff is not a version of patch {n} that stacked knows: it came from elsewhere, and nothing was sent."));
                 };
-                let repository = match (&r.repository, &arc.callsign) {
-                    (Some(phid), _) => repository_by(call, "phids", phid),
-                    (None, Some(cs)) => repository_by(call, "callsigns", cs),
-                    (None, None) => Ok(Repository { phid: None, vcs: "git".into() }),
-                }
-                .map_err(|e| format!("The repository of {d} could not be read from Phabricator, so nothing was sent: {e}"))?;
-                (Some(r), Some(k), repository)
+                let repository = match k.current {
+                    true => kept,
+                    false => repository_for(db, r.repository.as_deref(), arc, read).map_err(|e| format!("The repository of {d} could not be read from Phabricator, so nothing was sent: {e}"))?,
+                };
+                (Some(r), Some(k), repository, fetched)
             }
         }
         None => {
@@ -1144,9 +1187,8 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
                     s.repo.as_deref().unwrap_or_default()
                 ));
             };
-            let repository =
-                repository_by(call, "callsigns", cs).map_err(|e| format!("The repository {cs} could not be read from Phabricator, so nothing was sent: {e}"))?;
-            (None, None, repository)
+            let repository = repository_for(db, None, arc, read).map_err(|e| format!("The repository {cs} could not be read from Phabricator, so nothing was sent: {e}"))?;
+            (None, None, repository, None)
         }
     };
     let in_work = revision.as_ref().is_none_or(Remote::in_work);
@@ -1155,8 +1197,8 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
         Some(r) if !in_work => title_against(p.title(), &r.title),
         _ => titled.title,
     };
-    let parent = parent(db, s, at, call, revision.as_ref());
-    let parents_now = revision.as_ref().map_or_else(Vec::new, |r| revision_names(call, &r.parents));
+    let parent = parent(db, s, at, revision.as_ref());
+    let parents_now = named.map_or_else(Vec::new, |(_, link)| parents_named(db, &link));
     let (code, code_said, code_files) = match (&revision, &known) {
         (Some(r), Some(k)) if new_diff => code_change(db, s, at, k, &r.raw, &p.diff),
         _ => (None, None, false),
@@ -1169,6 +1211,7 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
         url: url.to_string(),
         from: None,
         revision,
+        fetched,
         known,
         title,
         summary,
@@ -1198,11 +1241,11 @@ fn base_url(link: Option<&str>, arc: &Arc, via: &Via) -> String {
 }
 
 /// What submitting the patch at `at` of stack `name`, in the database at
-/// `path`, to Phabricator sends, read and checked: as work in progress, as
-/// a new revision or to one in work; to one open but not in work, its
-/// title, summary and parent alone. Or why nothing can be, said. Nothing
-/// is sent. What it read of the revision is stored, whatever came of the
-/// rest (`store_read`).
+/// `path`, to Phabricator sends, worked out and checked from what the
+/// database holds of Phabricator (`prepare_with`), what it lacks fetched
+/// into it first (`prepare_over`): as work in progress, as a new revision
+/// or to one in work; to one open but not in work, its title, summary and
+/// parent alone. Or why nothing can be, said. Nothing is sent.
 pub fn prepare(path: &Path, name: &str, at: usize) -> Result<Prepared, String> {
     let db = Db::load(path).map_err(|e| e.0)?;
     let s = db.stack(name).map_err(|e| e.0)?.clone();
@@ -1224,17 +1267,55 @@ pub fn prepare(path: &Path, name: &str, at: usize) -> Result<Prepared, String> {
     let via = Via::to(from.as_deref()).map_err(|e| format!("{e}, so nothing was sent."))?;
     let url = base_url(named.as_ref().map(|(_, l)| l.as_str()), &arc, &via);
     let mut call = |m: &str, v: Value| via.call(m, v);
-    let mut read = None;
-    let out = prepare_with(&db, &s, at, &url, &arc, &mut call, &mut read);
-    // Stored as any read of Phabricator, the parents named as the submit
-    // named them: the submit goes on whether that is written or not.
-    if let (Some(r), Some((_, link))) = (&read, &named) {
-        let names = out.as_ref().ok().map(|p| p.parents_now.clone());
-        let _ = Db::edit(path, |d| store_read(d, link, r, names.as_deref(), true));
-    }
-    let mut out = out?;
+    let mut out = prepare_over(path, &db, &s, at, &url, &arc, &mut call)?;
     out.from = from;
     Ok(out)
+}
+
+/// As `prepare`, `db` the database at `path` as it was read, stack `s` in
+/// it, Conduit called with `call`: what the database lacks for the submit
+/// of the patch at `at` (`lacking`) fetched into it first, as Fetch the
+/// latest fetches those revisions alone, and stored as it stores them
+/// (`phab::fetch_with`); then all of it worked out from what the database
+/// holds then (`prepare_with`), a repository a new diff is made in that it
+/// does not hold read once, and stored, as none of it changes. Nothing is
+/// read of Phabricator when the database holds all of it. A fetch that
+/// fails sends nothing, and says why, Phabricator turning this machine away
+/// said as such.
+fn prepare_over(path: &Path, db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut Call) -> Result<Prepared, String> {
+    let n = at + 1;
+    let wanted = lacking(db, s, at);
+    let fetched;
+    let (db, s) = match wanted.is_empty() {
+        true => (db, s),
+        false => {
+            let named = |all: &[(String, String)]| and(&all.iter().map(|(d, _)| d.clone()).collect::<Vec<_>>());
+            let links: Vec<String> = wanted.iter().map(|(_, link)| link.clone()).collect();
+            crate::phab::fetch_with(path, &s.name, &links, call).map_err(|e| format!("{} could not be fetched from Phabricator, so nothing was sent: {e}", named(&wanted)))?;
+            fetched = Db::load(path).map_err(|e| e.0)?;
+            let now = fetched.stack(&s.name).map_err(|e| e.0)?;
+            if now.patches.get(at) != s.patches.get(at) {
+                return Err(format!("Patch {n} changed while {} was fetched, so nothing was sent. Submit it again to see what is sent now.", named(&wanted)));
+            }
+            // Once fetched, nothing it needs is lacking, unless the stack
+            // changed below the patch meanwhile.
+            let still = lacking(&fetched, now, at);
+            if !still.is_empty() {
+                return Err(format!("What submitting patch {n} needs of {} is not stored, so nothing was sent: submit patch {n} again.", named(&still)));
+            }
+            (&fetched, now)
+        }
+    };
+    // A repository read is stored, as any read of Phabricator: the submit
+    // goes on whether that is written or not.
+    let mut read = |constraint: &str, value: &str| -> Result<Repository, String> {
+        let r = repository_by(call, constraint, value)?;
+        if !r.phid.is_empty() {
+            let _ = Db::edit(path, |d| d.store_repository(r.clone()).map(|_| ()));
+        }
+        Ok(Repository::from(&r))
+    };
+    prepare_with(db, s, at, url, arc, &mut read)
 }
 
 // -- sending -------------------------------------------------------------- //
@@ -1591,11 +1672,12 @@ fn sentence(s: String) -> String {
     if t.ends_with(['.', '!', '?']) { t.to_string() } else { format!("{t}.") }
 }
 
-/// Sends what `p` says, with `call`, once the stack and the revision are
-/// seen to be as they were when it was read: the stack in the database at
-/// `path`, the commit it makes the workspace's when HEAD of the checkout
-/// at `here` has it (`made`). What came of it, said: what was done and what
-/// was not, when a call fails partway.
+/// Sends what `p` says, with `call`, once the stack is seen to be as it
+/// was when what is sent was worked out, nothing read of Phabricator
+/// first: the stack in the database at `path`, the commit it makes the
+/// workspace's when HEAD of the checkout at `here` has it (`made`). What
+/// came of it, said: what was done and what was not, when a call fails
+/// partway.
 fn send_with(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> String {
     sentence(sent(path, p, here, call))
 }
@@ -1619,20 +1701,6 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
         && let Some(why) = crate::ask::blocked(&db, &p.stack)
     {
         return format!("Nothing was sent: a new revision's link goes into the stack, but {why}.");
-    }
-    if let Some(r) = &p.revision {
-        let read = read_remote(call, &r.id, false);
-        // Stored as any read of Phabricator: its parents named as the review
-        // named them, while they are the same.
-        if let (Ok(now), Some((_, link))) = (&read, crate::phab::revision_of(&patch.message)) {
-            let names = (now.parents == r.parents).then_some(p.parents_now.as_slice());
-            let _ = Db::edit(path, |d| store_read(d, &link, now, names, false));
-        }
-        match read {
-            Ok(now) if now.same_as(r) => {}
-            Ok(_) => return format!("{} changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.", r.id),
-            Err(e) => return format!("{} could not be read from Phabricator again, so nothing was sent: {e}", r.id),
-        }
     }
     // What a failure before the revision is touched leaves of it.
     let left = match &p.revision {
@@ -1683,7 +1751,12 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
             Some(phid)
         }
     };
-    // The revision, made or edited.
+    // The revision, made or edited, in one edit that holds every
+    // transaction, as moz-phab's `edit_revision` makes it: the title, the
+    // summary and the bug, where they differ from what is stored; the new
+    // diff; the parent, where it changes (added to a new revision, which
+    // has none); and Changes Planned, where it is asked now. No reviewers
+    // are set, as moz-phab sets none with `--wip`.
     let mut txns = Vec::new();
     let r = p.revision.as_ref();
     if r.is_none_or(|r| r.title != p.title) {
@@ -1697,6 +1770,10 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
     }
     if let Some(phid) = &diff {
         txns.push(json!({"type": "update", "value": phid}));
+    }
+    if let Parent::Set { phid: parent, .. } = &p.parent {
+        let kind = if r.is_none() { "parents.add" } else { "parents.set" };
+        txns.push(json!({"type": kind, "value": [parent]}));
     }
     let (plan_now, plan_after) = p.plan_changes();
     if plan_now {
@@ -1715,8 +1792,8 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
                 && let Err(e) = call("differential.revision.edit", json!({"objectIdentifier": r.phid, "transactions": txns}))
             {
                 return match diff {
-                    Some(_) => format!("The new diff of patch {n} was made on Phabricator, but {} was not updated with it: {e}", r.id),
-                    None => format!("{} was not updated with the title and summary of patch {n}: {e}", r.id),
+                    Some(_) => format!("The new diff of patch {n} was made on Phabricator, but the edit of {} that takes it failed, so nothing of {} changed: {e}", r.id, r.id),
+                    None => format!("The edit of {} failed, so nothing of {} changed: {e}", r.id, r.id),
                 };
             }
             (r.id.clone(), r.phid.clone())
@@ -1731,6 +1808,8 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
         Some(_) if plan_now => format!("{d} is Changes Planned now."),
         Some(_) => format!("{d} keeps its diff, title and summary."),
     }];
+    // The one write Phabricator does not take in that edit: Changes
+    // Planned again, after the new diff put the revision in Needs Review.
     if plan_after {
         said.push(match edit(call, &phid, json!({"type": "plan-changes", "value": true})) {
             Ok(_) => format!("{d} stays Changes Planned."),
@@ -1745,25 +1824,25 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
             Err(e) => format!("But the message of patch {n} could not take the link to {d}: {}.", e.0),
         });
     }
-    // Best effort, on its own: the parent. No reviewers are set, as
-    // moz-phab sets none with `--wip`.
+    // The parent, set in the edit, or why none is.
     match &p.parent {
-        Parent::Set { id, phid: parent, .. } => {
-            let kind = if r.is_none() { "parents.add" } else { "parents.set" };
-            said.push(match edit(call, &phid, json!({"type": kind, "value": [parent]})) {
-                Ok(_) => format!("The parent of {d} is {id} now."),
-                Err(e) => format!("But the parent of {d} was not set to {id}: {e}"),
-            });
-        }
+        Parent::Set { id, .. } => said.push(format!("The parent of {d} is {id} now.")),
         Parent::Already { .. } => {}
         Parent::Nothing(why) => said.push(why.replace("the new revision", &d)),
     }
+    // Nothing is read after: what stacked shows of the revision is what was
+    // fetched before, until the next fetch.
+    said.push(match r {
+        Some(_) => format!("What is shown of {d} was fetched before this submit."),
+        None => format!("Nothing of {d} is fetched from Phabricator yet."),
+    });
     said.into_iter().map(sentence).collect::<Vec<_>>().join(" ")
 }
 
-/// Sends what `p` says to Phabricator, once the stack and the revision are
-/// seen to be as they were when it was read, in the database at `path`,
-/// HEAD looked at in the checkout at `here`: what came of it, said.
+/// Sends what `p` says to Phabricator, once the stack is seen to be as it
+/// was when what is sent was worked out, in the database at `path`, HEAD
+/// looked at in the checkout at `here`, nothing read of Phabricator first:
+/// what came of it, said.
 pub fn send(path: &Path, p: &Prepared, here: &Path) -> String {
     let via = match Via::to(p.from.as_deref()) {
         Ok(v) => v,
@@ -1921,9 +2000,11 @@ mod tests {
     /// Phabricator as the tests have it: revisions by number, diffs by id,
     /// and the commits each diff says it is of (`local:commits`); each call
     /// made, and those to refuse (a method, or a method and a transaction's
-    /// type: `edit:parents.set`). As Mozilla's Phabricator, it makes no
-    /// revision of a diff whose commits lack their tree. It knows no users
-    /// nor groups, nor reviewers: a submit in work asks nothing of them.
+    /// type: `edit:parents.set`). It answers the reads of a fetch, as Fetch
+    /// the latest makes them, its revisions with no comments, and the
+    /// writes of a submit; as Mozilla's Phabricator, it makes no revision of
+    /// a diff whose commits lack their tree. It knows no users nor groups,
+    /// nor reviewers: a submit in work asks nothing of them.
     #[derive(Default)]
     struct Fake {
         revisions: BTreeMap<u64, Rev>,
@@ -1962,6 +2043,12 @@ mod tests {
             }).collect()
         }
 
+        /// The calls that read, each its method: those of a fetch, and of a
+        /// repository.
+        fn reads(&self) -> Vec<String> {
+            self.calls.iter().filter(|(m, _)| !WRITES.contains(&m.as_str())).map(|(m, _)| m.clone()).collect()
+        }
+
         fn revision(&self, n: u64) -> Value {
             let r = &self.revisions[&n];
             let name = match r.status.as_str() {
@@ -1992,14 +2079,26 @@ mod tests {
                     let ns: Vec<u64> = c["ids"].as_array().or(c["phids"].as_array()).into_iter().flatten().filter_map(num).collect();
                     json!({"data": ns.iter().filter(|n| self.revisions.contains_key(n)).map(|n| self.revision(*n)).collect::<Vec<_>>()})
                 }
+                // The parents of each revision asked, as edges from it.
                 "edge.search" => {
-                    let n = num(&p["sourcePHIDs"][0]).unwrap();
-                    json!({"data": self.revisions[&n].parents.iter().map(|d| json!({"destinationPHID": d})).collect::<Vec<_>>()})
+                    let from: Vec<u64> = p["sourcePHIDs"].as_array().into_iter().flatten().filter_map(num).collect();
+                    let edges: Vec<Value> = from
+                        .iter()
+                        .filter_map(|n| self.revisions.get(n).map(|r| (n, r)))
+                        .flat_map(|(n, r)| r.parents.iter().map(move |d| json!({"sourcePHID": format!("PHID-DREV-{n}"), "destinationPHID": d})))
+                        .collect();
+                    json!({"data": edges, "cursor": {"after": null}})
                 }
-                "differential.querydiffs" => {
-                    let n = p["revisionIDs"][0].as_u64().unwrap();
-                    Value::Object(self.revisions[&n].diffs.iter().map(|d| (d.to_string(), json!({}))).collect())
+                // The diffs of the revisions asked, the newest first, each
+                // saying its revision.
+                "differential.diff.search" => {
+                    let of: Vec<u64> = p["constraints"]["revisionPHIDs"].as_array().into_iter().flatten().filter_map(num).collect();
+                    let mut diffs: Vec<(u64, u64)> = of.iter().filter_map(|n| self.revisions.get(n).map(|r| (n, r))).flat_map(|(n, r)| r.diffs.iter().map(move |id| (*id, *n))).collect();
+                    diffs.sort_by(|a, b| b.cmp(a));
+                    let data: Vec<Value> = diffs.iter().map(|(id, n)| json!({"id": id, "fields": {"revisionPHID": format!("PHID-DREV-{n}"), "refs": []}})).collect();
+                    json!({"data": data, "cursor": {"after": null}})
                 }
+                "transaction.search" => json!({"data": [], "cursor": {"after": null}}),
                 "differential.getrawdiff" => json!(self.diffs[&p["diffID"].as_u64().unwrap()]),
                 "diffusion.repository.search" => json!({"data": [{"phid": "PHID-REPO-1", "fields": {"vcs": "git"}}]}),
                 "differential.creatediff" => {
@@ -2074,6 +2173,9 @@ mod tests {
         out
     }
 
+    /// The Phabricator the tests submit to.
+    const URL: &str = "https://phabricator.example.com";
+
     /// Prepares the submit of patch `at` of `s` with `fake`, then sends it:
     /// what was prepared, and what came of it. HEAD is looked at in no
     /// checkout.
@@ -2081,20 +2183,33 @@ mod tests {
         submit_in(db, at, None, fake)
     }
 
-    /// As `submit`, HEAD looked at in the checkout at `here`.
+    /// As `submit`, HEAD looked at in the checkout at `here`. Whatever is
+    /// sent, the send reads nothing: each call it makes is a write.
     fn submit_in(db: &Path, at: usize, here: Option<&Path>, fake: &mut Fake) -> (Result<Prepared, String>, Option<String>) {
         let ready = prepared(db, at, fake);
+        let before = fake.calls.len();
         let sent = ready.as_ref().ok().map(|p| send_with(db, p, here, &mut |m, v| fake.call(m, v)));
+        let read: Vec<&String> = fake.calls[before..].iter().map(|(m, _)| m).filter(|m| !WRITES.contains(&m.as_str())).collect();
+        assert!(read.is_empty(), "the send read {read:?}");
         (ready, sent)
     }
 
-    /// What submitting patch `at` of `s` sends, read with `fake`: nothing is
+    /// What submitting patch `at` of `s` sends, worked out from what the
+    /// database holds, what it lacks fetched first from `fake`: nothing is
     /// sent.
     fn prepared(db: &Path, at: usize, fake: &mut Fake) -> Result<Prepared, String> {
         let d = Db::load(db).unwrap();
         let s = d.stack("s").unwrap().clone();
         let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
-        prepare_with(&d, &s, at, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v), &mut None)
+        prepare_over(db, &d, &s, at, URL, &arc, &mut |m, v| fake.call(m, v))
+    }
+
+    /// Fetch the latest from Phabricator, as its item does, of the
+    /// revisions the patches of `s` name, `fake` answering.
+    fn fetch(db: &Path, fake: &mut Fake) {
+        let d = Db::load(db).unwrap();
+        let links: Vec<String> = crate::phab::named_by(&d, d.stack("s").unwrap()).into_iter().map(|(_, link)| link).collect();
+        crate::phab::fetch_with(db, "s", &links, &mut |m, v| fake.call(m, v)).unwrap();
     }
 
     /// Patch `at` of `s` given its next version at once, of diff `diff`.
@@ -2118,8 +2233,24 @@ mod tests {
 
     const LINK: &str = "Differential Revision: https://phabricator.example.com";
 
+    /// The link of revision D`n` on the tests' Phabricator.
+    fn link(n: u64) -> String {
+        format!("{URL}/D{n}")
+    }
+
+    /// The reads of a fetch of revisions that hold one diff each, never
+    /// fetched, `n` of them: their search, their parents, their latest
+    /// diffs, then each one's raw diff and comments.
+    fn fetch_reads(n: usize) -> Vec<String> {
+        let mut out: Vec<String> = ["differential.revision.search", "edge.search", "differential.diff.search"].map(String::from).to_vec();
+        for _ in 0..n {
+            out.extend(["differential.getrawdiff".to_string(), "transaction.search".to_string()]);
+        }
+        out
+    }
+
     #[test]
-    fn a_new_revision_is_made_in_changes_planned_its_parent_set_and_its_link_goes_into_the_patch() {
+    fn a_new_revision_is_made_in_changes_planned_its_parent_set_and_its_link_goes_into_the_patch_in_three_writes() {
         let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}/D12"), "Bug 3 - three r=alice,#build! r?bob\n\nBecause."]);
         let mut fake = Fake::default().with(12, "needs-review", "", "Bug 2");
         let (ready, sent) = submit(&db, 2, &mut fake);
@@ -2133,17 +2264,21 @@ mod tests {
                 "Its parent is set to D12, the revision of patch 2.",
             ]
         );
+        // Nothing of D12, the revision below, was stored: fetched first, as
+        // Fetch the latest fetches it alone; then the repository the
+        // checkout's .arcconfig names, read once.
+        assert_eq!(fake.reads(), [fetch_reads(1), vec!["diffusion.repository.search".to_string()]].concat());
+        // Three writes, nothing read: the diff, its commit, then one edit,
+        // the parent added with the rest, as moz-phab's edit_revision adds it.
         assert_eq!(
             fake.writes(),
-            [
-                "differential.creatediff",
-                "differential.setdiffproperty",
-                "differential.revision.edit title,summary,bugzilla.bug-id,update,plan-changes",
-                "differential.revision.edit parents.add",
-            ]
+            ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit title,summary,bugzilla.bug-id,update,parents.add,plan-changes"]
         );
         assert!(fake.of_reviewers().is_empty(), "{:?}", fake.of_reviewers());
-        assert_eq!(sent.unwrap(), "Patch 3 is D201 on Phabricator now, in Changes Planned. The message of patch 3 names D201 now. The parent of D201 is D12 now.");
+        assert_eq!(
+            sent.unwrap(),
+            "Patch 3 is D201 on Phabricator now, in Changes Planned. The message of patch 3 names D201 now. The parent of D201 is D12 now. Nothing of D201 is fetched from Phabricator yet."
+        );
         let made = &fake.revisions[&201];
         assert_eq!((made.status.as_str(), made.title.as_str(), made.summary.as_str(), made.bug.as_str()), ("changes-planned", "WIP: Bug 3 - three r?bob r=alice,#build!", "Because.", "3"));
         assert_eq!(made.parents, ["PHID-DREV-12"]);
@@ -2161,20 +2296,23 @@ mod tests {
         let s = d.stack("s").unwrap();
         assert_eq!(s.op, "submitted patch 3 as D201, in work");
         assert_eq!(d.versions(&d.patch(&s.patches[2]).change).len(), 2);
+        // Nothing of D201 stored: nothing was read after the send. The
+        // repository is: another new revision reads nothing of it again.
+        assert!(d.revision_state(&link(201)).is_none());
+        assert!(d.repository_called("TEST").is_some_and(|r| (r.phid.as_str(), r.vcs.as_str()) == ("PHID-REPO-1", "git")));
+        fake.calls.clear();
+        assert!(prepared(&db, 0, &mut fake).unwrap().revision.is_none());
+        assert!(fake.calls.is_empty(), "{:?}", fake.calls);
     }
 
     #[test]
-    fn a_revision_in_work_takes_a_new_diff_and_stays_changes_planned() {
+    fn a_revision_in_work_takes_a_new_diff_and_stays_changes_planned_in_four_writes() {
         let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
         // Its latest diff is the version of the patch before the one in the
         // stack.
         let earlier = diff_of(&db, 2);
         let mine = earlier.replace("+LINE 20", "+Line twenty");
-        Db::edit(&db, |d| {
-            let old = d.patch(&d.stack("s")?.patches[2]).clone();
-            crate::ops::replace(d, "s", 2, crate::mbox::Draft { diff: mine.clone(), ..crate::mbox::Draft::from(&old) }, "edit").map(|_| ())
-        })
-        .unwrap();
+        new_code(&db, 2, &mine);
         let mut fake = Fake::default().with(13, "changes-planned", &earlier, "WIP: Bug 3 - three");
         let (ready, sent) = submit(&db, 2, &mut fake);
         let p = ready.unwrap();
@@ -2185,11 +2323,17 @@ mod tests {
         let code = p.code.clone().unwrap();
         assert!(code.contains("-LINE 20\n+Line twenty\n") && code.starts_with("diff --git a/a.txt b/a.txt\n"), "{code}");
         assert_eq!(p.known.as_ref().map(|k| k.version), Some(1));
+        // Four writes, nothing read: the diff, its commit, the edit that
+        // gives D13 the diff, then Changes Planned again, which Phabricator
+        // does not take in that edit, as D13 is Changes Planned as it starts.
         assert_eq!(
             fake.writes(),
             ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update", "differential.revision.edit plan-changes"]
         );
-        assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
+        assert_eq!(
+            sent.unwrap(),
+            "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit."
+        );
         assert_eq!(fake.revisions[&13].status, "changes-planned");
         // The diff the review compares with Phabricator's as the one sent,
         // the patch's, is the one sent: the new diff of D13 does what it does.
@@ -2199,18 +2343,184 @@ mod tests {
         assert!(p.code_files);
         let made = *fake.revisions[&13].diffs.last().unwrap();
         assert!(made != 1000 && crate::ops::same_effect(&fake.diffs[&made], &p.diff), "{}", fake.diffs[&made]);
-        // Sent again: nothing changed, nothing is sent.
+        // Nothing fetched after it: the next review shows D13 as it was
+        // fetched before, its latest diff the one before, so a new diff
+        // again, and reads nothing.
         fake.calls.clear();
-        let (ready, _) = {
-            let d = Db::load(&db).unwrap();
-            let s = d.stack("s").unwrap().clone();
-            let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
-            (prepare_with(&d, &s, 2, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v), &mut None), ())
-        };
-        let p = ready.unwrap();
+        let again = prepared(&db, 2, &mut fake).unwrap();
+        assert!(fake.calls.is_empty(), "{:?}", fake.calls);
+        assert!(again.new_diff && again.fetched == p.fetched && again.fetched.is_some(), "{again:?}");
+        // Fetched: D13 as Phabricator has it, the patch as it is, and
+        // nothing to send.
+        fetch(&db, &mut fake);
+        let p = prepared(&db, 2, &mut fake).unwrap();
         assert!(p.nothing(), "{p:?}");
         assert_eq!(p.nothing_said(), "D13 is patch 3 as it is already, with its title and summary, so nothing was sent. Patch 2 has no revision, so D13 gets no parent.");
         assert!(fake.writes().is_empty());
+    }
+
+    #[test]
+    fn a_draft_with_a_new_diff_and_a_new_parent_takes_them_in_one_edit_in_three_writes() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}/D12"), &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        let earlier = diff_of(&db, 2);
+        new_code(&db, 2, &earlier.replace("+LINE 20", "+Line twenty"));
+        // D13, a draft never sent for review, on no revision.
+        let mut fake = Fake::default().with(12, "needs-review", "", "Bug 2 - two").with(13, "draft", &earlier, "WIP: Bug 3 - three");
+        fake.revisions.get_mut(&13).unwrap().draft = true;
+        let (ready, sent) = submit(&db, 2, &mut fake);
+        let p = ready.unwrap();
+        assert_eq!(
+            p.said(),
+            [
+                "D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and goes from Draft to Changes Planned.",
+                "Its parent is set to D12, the revision of patch 2.",
+            ]
+        );
+        // Both fetched first, nothing of either stored; then D13's
+        // repository, as a new diff is made in it.
+        assert_eq!(fake.reads(), [fetch_reads(2), vec!["diffusion.repository.search".to_string()]].concat());
+        // Three writes, nothing read: the diff, its commit, then one edit of
+        // the diff, the parent and Changes Planned, which a draft takes in it.
+        assert_eq!(fake.writes(), ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update,parents.set,plan-changes"]);
+        assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now, in Changes Planned. The parent of D13 is D12 now. What is shown of D13 was fetched before this submit.");
+        let r = &fake.revisions[&13];
+        assert_eq!((r.status.as_str(), r.parents.clone(), r.diffs.len()), ("changes-planned", vec!["PHID-DREV-12".to_string()], 2));
+    }
+
+    #[test]
+    fn a_review_reads_nothing_of_phabricator_where_the_database_holds_what_it_needs_and_fetches_what_it_lacks_first() {
+        // Patch 3 has a new version since D13's latest diff; D12 is the
+        // revision below, D11 below it.
+        let setup = || {
+            let (tmp, db, r) = stack([&format!("Bug 1 - one\n\n{LINK}/D11"), &format!("Bug 2 - two\n\n{LINK}/D12"), &format!("Bug 3 - three\n\n{LINK}/D13")]);
+            let earlier = diff_of(&db, 2);
+            new_code(&db, 2, &earlier.replace("+LINE 20", "+Line twenty"));
+            let fake = Fake::default()
+                .with(11, "needs-review", &diff_of(&db, 0), "Bug 1 - one")
+                .with(12, "needs-review", &diff_of(&db, 1), "Bug 2 - two")
+                .with(13, "changes-planned", &earlier, "WIP: Bug 3 - three");
+            (tmp, db, r, fake, earlier)
+        };
+        let stored = |db: &Path, n: u64| Db::load(db).unwrap().revision_state(&link(n)).map(|(s, _)| s.clone());
+        // Nothing stored: D13 and D12 fetched first, in the calls Fetch the
+        // latest makes of them alone, D11 not; then D13's repository, as a
+        // new diff is made in it. Stored as a fetch stores them, and when.
+        let (_tmp, db, _r, mut fake, earlier) = setup();
+        let p = prepared(&db, 2, &mut fake).unwrap();
+        assert!(p.new_diff && p.parent_changes(), "{p:?}");
+        assert_eq!(fake.reads(), [fetch_reads(2), vec!["diffusion.repository.search".to_string()]].concat());
+        assert_eq!(fake.calls[0].1, json!({"constraints": {"ids": [12, 13]}}));
+        assert!(stored(&db, 13).is_some_and(|s| (s.draft, s.repository.as_str()) == (Some(false), "PHID-REPO-1")), "{:?}", stored(&db, 13));
+        assert!(stored(&db, 12).is_some() && stored(&db, 11).is_none());
+        let d = Db::load(&db).unwrap();
+        assert!(d.fetched(&link(12)).is_some() && d.fetched(&link(13)).is_some());
+        assert_eq!(p.fetched, crate::phab::fetched_at(&d, &link(13)));
+        assert!(p.fetched.is_some());
+        // All of it stored: the same, and no call made at all.
+        fake.calls.clear();
+        assert_eq!(prepared(&db, 2, &mut fake).unwrap(), p);
+        assert!(fake.calls.is_empty(), "{:?}", fake.calls);
+        // Its raw latest diff not stored: D13 fetched again first, alone.
+        let (_tmp, db, _r, mut fake, _) = setup();
+        let state = crate::db::State { status: "changes-planned".into(), title: "WIP: Bug 3 - three".into(), phid: "PHID-DREV-13".into(), diff: 1002, draft: Some(false), repository: "PHID-REPO-1".into(), ..Default::default() };
+        Db::edit(&db, |d| {
+            d.store_revision(&link(12), "D12", Some(crate::db::State { status: "needs-review".into(), phid: "PHID-DREV-12".into(), ..Default::default() }), None)?;
+            d.store_revision(&link(13), "D13", Some(state.clone()), None).map(|_| ())
+        })
+        .unwrap();
+        prepared(&db, 2, &mut fake).unwrap();
+        assert_eq!(fake.reads(), [fetch_reads(1), vec!["diffusion.repository.search".to_string()]].concat());
+        assert_eq!(fake.calls[0].1, json!({"constraints": {"ids": [13]}}));
+        assert_eq!(Db::load(&db).unwrap().raw_diff(&link(13), 1002), Some(earlier.as_str()));
+        fake.calls.clear();
+        prepared(&db, 2, &mut fake).unwrap();
+        assert!(fake.calls.is_empty(), "{:?}", fake.calls);
+        // A state stored before stacked read whether a revision is a draft,
+        // its raw diff with it: fetched again, its raw diff not read again.
+        let (_tmp, db, _r, mut fake, earlier) = setup();
+        Db::edit(&db, |d| {
+            d.store_revision(&link(12), "D12", Some(crate::db::State { status: "needs-review".into(), phid: "PHID-DREV-12".into(), ..Default::default() }), None)?;
+            d.store_revision(&link(13), "D13", Some(crate::db::State { draft: None, repository: String::new(), ..state.clone() }), None)?;
+            d.store_raw_diff(&link(13), 1002, &earlier).map(|_| ())
+        })
+        .unwrap();
+        prepared(&db, 2, &mut fake).unwrap();
+        assert_eq!(fake.reads(), ["differential.revision.search", "edge.search", "differential.diff.search", "transaction.search", "diffusion.repository.search"]);
+        assert_eq!(stored(&db, 13).map(|s| s.draft), Some(Some(false)));
+        fake.calls.clear();
+        prepared(&db, 2, &mut fake).unwrap();
+        assert!(fake.calls.is_empty(), "{:?}", fake.calls);
+        // The revision below not stored, D13 all stored: D12 fetched first,
+        // alone, as the parent's rule reads it.
+        let (_tmp, db, _r, mut fake, _) = setup();
+        crate::phab::fetch_with(&db, "s", &[link(13)], &mut |m, v| fake.call(m, v)).unwrap();
+        fake.calls.clear();
+        let p = prepared(&db, 2, &mut fake).unwrap();
+        assert_eq!(fake.reads(), [fetch_reads(1), vec!["diffusion.repository.search".to_string()]].concat());
+        assert_eq!(fake.calls[0].1, json!({"constraints": {"ids": [12]}}));
+        assert_eq!(p.parent, Parent::Set { id: "D12".into(), phid: "PHID-DREV-12".into(), below: 2 });
+        // The repository alone not stored: read once, by D13's PHID, and
+        // stored; then nothing.
+        let (_tmp, db, _r, mut fake, _) = setup();
+        fetch(&db, &mut fake);
+        fake.calls.clear();
+        prepared(&db, 2, &mut fake).unwrap();
+        assert_eq!(fake.reads(), ["diffusion.repository.search"]);
+        assert_eq!(fake.calls[0].1, json!({"constraints": {"phids": ["PHID-REPO-1"]}, "limit": 1}));
+        fake.calls.clear();
+        prepared(&db, 2, &mut fake).unwrap();
+        assert!(fake.calls.is_empty(), "{:?}", fake.calls);
+        // A revision in work whose latest diff is the patch as it is, or one
+        // not in work: no new diff, so no repository read.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}/D13")]);
+        let mut fake = Fake::default().with(13, "changes-planned", &diff_of(&db, 2), "WIP: Bug 3 - three");
+        assert!(!prepared(&db, 2, &mut fake).unwrap().new_diff);
+        assert_eq!(fake.reads(), fetch_reads(1));
+    }
+
+    #[test]
+    fn a_fetch_or_a_read_that_fails_sends_nothing_and_says_why_phabricator_turning_this_machine_away_as_such() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}/D12"), &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        let earlier = diff_of(&db, 2);
+        new_code(&db, 2, &earlier.replace("+LINE 20", "+Line twenty"));
+        let fake = || Fake::default().with(12, "needs-review", "", "Bug 2 - two").with(13, "changes-planned", &earlier, "WIP: Bug 3 - three");
+        // The fetch refused partway: nothing stored, nothing sent.
+        let mut refused = Fake { refuse: vec!["differential.diff.search"], ..fake() };
+        assert_eq!(prepared(&db, 2, &mut refused), Err("D13 and D12 could not be fetched from Phabricator, so nothing was sent: differential.diff.search: refused".to_string()));
+        assert!(Db::load(&db).unwrap().revision_state(&link(13)).is_none() && refused.writes().is_empty());
+        // Turned away, as Phabricator turns away a machine (HTTP 429): said
+        // so, as such.
+        let d = Db::load(&db).unwrap();
+        let s = d.stack("s").unwrap().clone();
+        let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
+        let mut away = |_: &str, _: Value| -> Result<Value, String> { Err(crate::phab::Error::TurnedAway.into()) };
+        assert_eq!(
+            prepare_over(&db, &d, &s, 2, URL, &arc, &mut away),
+            Err(format!("D13 and D12 could not be fetched from Phabricator, so nothing was sent: {}", crate::phab::TURNED_AWAY))
+        );
+        // Its repository not read: nothing sent, said; the revision fetched
+        // stays stored.
+        let mut refused = Fake { refuse: vec!["diffusion.repository.search"], ..fake() };
+        assert_eq!(
+            prepared(&db, 2, &mut refused),
+            Err("The repository of D13 could not be read from Phabricator, so nothing was sent: diffusion.repository.search: refused".to_string())
+        );
+        assert!(Db::load(&db).unwrap().revision_state(&link(13)).is_some());
+        // That of a new revision, by the checkout's callsign.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", "Bug 3 - three"]);
+        let mut refused = Fake { refuse: vec!["diffusion.repository.search"], ..Default::default() };
+        assert_eq!(
+            prepared(&db, 2, &mut refused),
+            Err("The repository TEST could not be read from Phabricator, so nothing was sent: diffusion.repository.search: refused".to_string())
+        );
+        // A revision Phabricator does not have, or with no diff, when it is
+        // fetched: said so.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        assert_eq!(prepared(&db, 2, &mut Fake::default()), Err("Phabricator had no revision D13 when it was last fetched, so nothing was sent.".to_string()));
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        let mut no_diff = Fake::default().with(13, "changes-planned", "", "WIP: Bug 3 - three");
+        no_diff.revisions.get_mut(&13).unwrap().diffs.clear();
+        assert_eq!(prepared(&db, 2, &mut no_diff), Err("D13 had no diff when it was last fetched, so nothing was sent.".to_string()));
     }
 
     #[test]
@@ -2224,7 +2534,7 @@ mod tests {
         assert_eq!(p.code, None);
         assert_eq!(p.message_before().unwrap(), "WIP: Bug 3 - three\n\nWhy.");
         assert_eq!(fake.writes(), ["differential.revision.edit summary"]);
-        assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+        assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
     }
 
     #[test]
@@ -2294,9 +2604,13 @@ mod tests {
             fake.writes(),
             ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update", "differential.revision.edit plan-changes"]
         );
-        assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
-        // That diff, made on the new base, is the patch as it is: nothing is
-        // sent again.
+        assert_eq!(
+            sent.unwrap(),
+            "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit."
+        );
+        // That diff, made on the new base, once fetched, is the patch as it
+        // is: nothing is sent again.
+        fetch(&db, &mut fake);
         fake.calls.clear();
         let (ready, _) = submit(&db, 2, &mut fake);
         let p = ready.unwrap();
@@ -2328,7 +2642,10 @@ mod tests {
         assert!(code.starts_with("diff --git a/d.txt b/d.txt\nnew file mode 100644\n") && !code.contains("a.txt"), "{code}");
         assert_eq!(p.code_said.as_deref(), Some("Each file as version 1 of patch 3 leaves it, then as patch 3 leaves it, both on the patches below patch 3."));
         assert_eq!(fake.writes()[0], "differential.creatediff");
-        assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
+        assert_eq!(
+            sent.unwrap(),
+            "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit."
+        );
     }
 
     #[test]
@@ -2343,24 +2660,28 @@ mod tests {
 
     #[test]
     fn a_revision_landed_or_abandoned_is_refused_and_a_draft_is_put_in_changes_planned() {
-        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
         // Its title otherwise, its code another version: nothing is sent all
-        // the same, nor read beyond the revision.
-        for (status, name) in [("published", "Closed"), ("abandoned", "Abandoned")] {
+        // the same; the revision fetched first, nothing of it stored, then
+        // nothing more read, not even its repository.
+        for (status, name) in [("published", "Landed"), ("abandoned", "Abandoned")] {
+            let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
             let mut fake = Fake::default().with(13, status, &diff_of(&db, 2).replace("+LINE 20", "+Line twenty"), "Bug 3 - an older title");
             let (ready, _) = submit(&db, 2, &mut fake);
             assert_eq!(ready.unwrap_err(), format!("D13 is {name}, not open: only an open revision is updated, and nothing was sent."));
             assert!(fake.writes().is_empty());
-            let read: Vec<&str> = fake.calls.iter().map(|(m, _)| m.as_str()).collect();
-            assert_eq!(read, ["differential.revision.search", "edge.search", "differential.querydiffs", "differential.getrawdiff"], "{status}");
+            assert_eq!(fake.reads(), fetch_reads(1), "{status}");
+            // Stored so: refused again, nothing read, nothing more lacking.
+            fake.calls.clear();
+            assert!(prepared(&db, 2, &mut fake).is_err() && fake.calls.is_empty(), "{status}");
         }
         // A draft is in work, as moz-phab takes it: it goes to Changes Planned.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
         let mut fake = Fake::default().with(13, "draft", &diff_of(&db, 2), "WIP: Bug 3 - three");
         fake.revisions.get_mut(&13).unwrap().draft = true;
         let (ready, sent) = submit(&db, 2, &mut fake);
         assert_eq!(ready.unwrap().said()[0], "D13, at https://phabricator.example.com/D13, keeps its diff, title and summary, as they are those of patch 3 already, and goes from Draft to Changes Planned.");
         assert_eq!(fake.writes(), ["differential.revision.edit plan-changes"]);
-        assert_eq!(sent.unwrap(), "D13 is Changes Planned now. Patch 2 has no revision, so D13 gets no parent.");
+        assert_eq!(sent.unwrap(), "D13 is Changes Planned now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
     }
 
     #[test]
@@ -2379,12 +2700,12 @@ mod tests {
             p.said(),
             ["D13, at https://phabricator.example.com/D13, gets the title and summary of patch 3, and stays Needs Review.", "Patch 2 has no revision, so D13 gets no parent."]
         );
-        // The title and summary alone: no diff made, so no repository read,
-        // and no Changes Planned.
+        // The title and summary alone, in one write: no diff made, so no
+        // repository read, and no Changes Planned.
         assert_eq!(fake.writes(), ["differential.revision.edit title,summary"]);
         assert!(!fake.calls.iter().any(|(m, _)| m == "diffusion.repository.search"), "{:?}", fake.calls);
         assert!(fake.of_reviewers().is_empty(), "{:?}", fake.of_reviewers());
-        assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+        assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
         let r = &fake.revisions[&13];
         assert_eq!((r.status.as_str(), r.title.as_str(), r.summary.as_str(), r.diffs.len()), ("needs-review", "Bug 3 - three", "Because.", 1));
     }
@@ -2397,19 +2718,19 @@ mod tests {
             let (ready, sent) = submit(&db, 2, &mut fake);
             let p = ready.unwrap();
             // The reviewers the title names stay in it, as moz-phab writes
-            // them; none is read or set.
+            // them; none is read or set. The title alone: one write.
             assert_eq!(p.title, "WIP: Bug 3 - three r=alice", "{status}");
             assert_eq!(p.said()[0], format!("D13, at https://phabricator.example.com/D13, gets the title and summary of patch 3, and stays {name}."));
             assert_eq!(fake.writes(), ["differential.revision.edit title"], "{status}");
             assert!(fake.of_reviewers().is_empty(), "{:?}", fake.of_reviewers());
-            assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+            assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
             let r = &fake.revisions[&13];
             assert_eq!((r.status.as_str(), r.title.as_str()), (status, "WIP: Bug 3 - three r=alice"));
         }
     }
 
     #[test]
-    fn a_revision_in_review_whose_parent_alone_differs_gets_the_parent_edit_alone() {
+    fn a_revision_in_review_whose_parent_alone_differs_gets_the_parent_alone_in_one_write() {
         let (_tmp, db, _r) = stack([&format!("Bug 1 - one\n\n{LINK}/D11"), &format!("Bug 2 - two\n\n{LINK}/D12"), "Bug 3 - three"]);
         let mut fake = Fake::default().with(11, "needs-review", "", "Bug 1 - one").with(12, "needs-review", &diff_of(&db, 1), "Bug 2 - two");
         fake.revisions.get_mut(&12).unwrap().parents = vec!["PHID-DREV-99".into()];
@@ -2423,8 +2744,11 @@ mod tests {
                 "Its parent is set to D11, the revision of patch 1.",
             ]
         );
+        // D12's parent that is no revision of the stack named as a fetch
+        // names it, here not found: its PHID.
+        assert_eq!(p.parents_now, ["PHID-DREV-99"]);
         assert_eq!(fake.writes(), ["differential.revision.edit parents.set"]);
-        assert_eq!(sent.unwrap(), "D12 keeps its diff, title and summary. The parent of D12 is D11 now.");
+        assert_eq!(sent.unwrap(), "D12 keeps its diff, title and summary. The parent of D12 is D11 now. What is shown of D12 was fetched before this submit.");
         let r = &fake.revisions[&12];
         assert_eq!((r.status.as_str(), r.parents.clone()), ("needs-review", vec!["PHID-DREV-11".to_string()]));
     }
@@ -2450,6 +2774,8 @@ mod tests {
         );
         // Its latest diff from elsewhere, no version of the patch: left as it
         // is, as no code is sent, and nothing is sent either.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        new_code(&db, 2, &earlier.replace("+LINE 20", "+Line twenty"));
         let mut fake = Fake::default().with(13, "needs-review", &earlier.replace("+LINE 20", "+Someone else's 20"), "Bug 3 - three");
         let p = prepared(&db, 2, &mut fake).unwrap();
         assert!(p.known.is_none() && p.nothing() && p.kept_said().is_some(), "{p:?}");
@@ -2466,22 +2792,25 @@ mod tests {
     }
 
     #[test]
-    fn a_revision_in_review_changed_since_it_was_read_is_sent_nothing() {
+    fn a_send_reads_nothing_so_that_what_changed_on_phabricator_since_the_fetch_is_not_seen() {
         let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}/D13")]);
-        // Retitled meanwhile, or accepted.
-        for change in ["title", "status"] {
-            let mut fake = Fake::default().with(13, "needs-review", &diff_of(&db, 2), "Bug 3 - three");
-            let p = prepared(&db, 2, &mut fake).unwrap();
-            assert!(!p.in_work() && !p.nothing(), "{p:?}");
-            let r = fake.revisions.get_mut(&13).unwrap();
-            match change {
-                "title" => r.title = "Someone's title".into(),
-                _ => r.status = "accepted".into(),
-            }
-            let sent = send_with(&db, &p, None, &mut |m, v| fake.call(m, v));
-            assert_eq!(sent, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.", "{change}");
-            assert!(fake.writes().is_empty(), "{change}");
-        }
+        let mut fake = Fake::default().with(13, "needs-review", &diff_of(&db, 2), "Bug 3 - three");
+        let p = prepared(&db, 2, &mut fake).unwrap();
+        assert!(!p.in_work() && !p.nothing(), "{p:?}");
+        // Retitled and accepted on Phabricator meanwhile: not read. The
+        // summary is sent all the same, and not the title, which was the
+        // patch's when D13 was fetched: Phabricator keeps the other title.
+        let r = fake.revisions.get_mut(&13).unwrap();
+        (r.title, r.status) = ("Someone's title".into(), "accepted".into());
+        fake.calls.clear();
+        let sent = send_with(&db, &p, None, &mut |m, v| fake.call(m, v));
+        assert_eq!(sent, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
+        assert_eq!((fake.writes(), fake.reads()), (vec!["differential.revision.edit summary".to_string()], vec![]));
+        let r = &fake.revisions[&13];
+        assert_eq!((r.title.as_str(), r.summary.as_str(), r.status.as_str()), ("Someone's title", "New.", "accepted"));
+        // Nothing stored of what was sent: D13 as it was fetched.
+        let d = Db::load(&db).unwrap();
+        assert_eq!(d.revision_state(&link(13)).map(|(s, _)| (s.summary.clone(), s.status.clone())), Some((String::new(), "needs-review".to_string())));
     }
 
     #[test]
@@ -2499,6 +2828,43 @@ mod tests {
         let mut fake = Fake { refuse: vec!["differential.creatediff"], ..Default::default() };
         let (_, sent) = submit(&db, 2, &mut fake);
         assert_eq!(sent.unwrap(), "Phabricator refused the diff of patch 3, so nothing changed there: differential.creatediff: refused.");
+        // A revision in work: its one edit refused, the diff made, nothing
+        // of the revision changed, its title, summary and parent with it.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}/D12"), &format!("Bug 3 - three\n\nNew.\n\n{LINK}/D13")]);
+        let earlier = diff_of(&db, 2);
+        new_code(&db, 2, &earlier.replace("+LINE 20", "+Line twenty"));
+        let mut fake = Fake { refuse: vec!["edit:update"], ..Default::default() }.with(12, "needs-review", "", "Bug 2 - two").with(13, "changes-planned", &earlier, "WIP: Bug 3 - three");
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert_eq!(sent.unwrap(), "The new diff of patch 3 was made on Phabricator, but the edit of D13 that takes it failed, so nothing of D13 changed: differential.revision.edit: refused.");
+        assert_eq!(fake.writes(), ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit summary,update,parents.set"]);
+        let r = &fake.revisions[&13];
+        assert_eq!((r.diffs.len(), r.summary.as_str(), r.parents.is_empty()), (1, "", true));
+        // That edit made, Changes Planned again refused: said after what was
+        // done.
+        fake.refuse = vec!["edit:plan-changes"];
+        fake.calls.clear();
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert_eq!(
+            sent.unwrap(),
+            "D13 has the new diff of patch 3 now. But D13 was not put back in Changes Planned, and may be Needs Review now: differential.revision.edit: refused. The parent of D13 is D12 now. What is shown of D13 was fetched before this submit."
+        );
+        assert_eq!(fake.revisions[&13].status, "needs-review");
+        // No new diff: the edit of the title and summary refused, nothing of
+        // the revision changed.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}/D13")]);
+        let mut fake = Fake { refuse: vec!["edit:summary"], ..Default::default() }.with(13, "changes-planned", &diff_of(&db, 2), "WIP: Bug 3 - three");
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert_eq!(sent.unwrap(), "The edit of D13 failed, so nothing of D13 changed: differential.revision.edit: refused.");
+        // The patch changed since what is sent was worked out: nothing sent,
+        // nothing read.
+        let p = prepared(&db, 2, &mut fake).unwrap();
+        new_code(&db, 2, &diff_of(&db, 2).replace("+LINE 20", "+Line twenty"));
+        fake.calls.clear();
+        assert_eq!(
+            send_with(&db, &p, None, &mut |m, v| fake.call(m, v)),
+            "Patch 3 changed since what is sent was read, so nothing was sent. Submit it again to see what is sent now."
+        );
+        assert!(fake.calls.is_empty(), "{:?}", fake.calls);
     }
 
     #[test]
@@ -2509,26 +2875,32 @@ mod tests {
         let (ready, _) = submit(&db, 0, &mut fake);
         assert_eq!(ready.unwrap().said()[1], "Patch 1 is at the bottom of the stack, so D11 gets no parent.");
         assert!(!fake.writes().iter().any(|w| w.contains("parents")));
-        // Its parent is D11 already: none is sent.
+        // Its parent is D11 already: none is sent. D11 stored already, D12
+        // alone fetched.
         let mut fake = Fake::default().with(11, "needs-review", "", "Bug 1").with(12, "changes-planned", &diff_of(&db, 1), "WIP: Bug 2 - two");
         fake.revisions.get_mut(&12).unwrap().parents = vec!["PHID-DREV-11".into()];
         let (ready, _) = submit(&db, 1, &mut fake);
         let p = ready.unwrap();
         assert_eq!((p.said()[1].as_str(), p.nothing()), ("Its parent is D11, the revision of patch 1, already.", true));
+        assert_eq!(fake.calls[0].1, json!({"constraints": {"ids": [12]}}));
         assert!(fake.writes().is_empty());
-        // Another parent: set to D11, in a call of its own; refused, the
-        // rest is kept, and said.
+        // Another parent, once fetched: set to D11, in the one edit; refused,
+        // nothing of D12 changed, and said.
         fake.revisions.get_mut(&12).unwrap().parents = vec!["PHID-DREV-99".into()];
+        fetch(&db, &mut fake);
         fake.refuse = vec!["edit:parents.set"];
+        fake.calls.clear();
         let (ready, sent) = submit(&db, 1, &mut fake);
         assert_eq!(ready.unwrap().parents_now, ["PHID-DREV-99"], "not found: its PHID");
         assert_eq!(fake.writes(), ["differential.revision.edit parents.set"]);
-        assert_eq!(sent.unwrap(), "D12 keeps its diff, title and summary. But the parent of D12 was not set to D11: differential.revision.edit: refused.");
-        // A closed revision below: none, its parents left as they are.
+        assert_eq!(sent.unwrap(), "The edit of D12 failed, so nothing of D12 changed: differential.revision.edit: refused.");
+        // A closed revision below, once fetched: none, its parents left as
+        // they are, its status said as the Phabricator line says it.
         fake.revisions.get_mut(&11).unwrap().status = "published".into();
+        fetch(&db, &mut fake);
         fake.refuse.clear();
         let (ready, _) = submit(&db, 1, &mut fake);
-        assert_eq!(ready.unwrap().said()[1], "D11, the revision of patch 1, is Closed, so the parents of D12 are left as they are.");
+        assert_eq!(ready.unwrap().said()[1], "D11, the revision of patch 1, is Landed, so the parents of D12 are left as they are.");
     }
 
     #[test]
@@ -2573,15 +2945,24 @@ mod tests {
         assert_eq!(parent_with(&d, s, 2, None, below(Below::Unread("refused".into()))), Ok(Parent::Nothing(refused.into())));
         // Naming the same revision: none, nothing read.
         assert_eq!(parent_with(&d, s, 2, Some(("D12", none)), unread), Ok(Parent::Nothing("Patch 2 names D12 too, so D12 gets no parent.".into())));
+        // What is stored of the revision below, as the submit and the
+        // Phabricator line read it: nothing, not on Phabricator, or found,
+        // its status by the line's name for it.
+        assert_eq!(Below::stored(&d, &link(12)), None);
+        Db::edit(&db, |d| {
+            d.store_revision(&link(11), "D11", Some(crate::db::State { missing: true, ..Default::default() }), None)?;
+            d.store_revision(&link(12), "D12", Some(crate::db::State { status: "published".into(), phid: "PHID-DREV-12".into(), ..Default::default() }), None).map(|_| ())
+        })
+        .unwrap();
+        let d = Db::load(&db).unwrap();
+        assert_eq!((Below::stored(&d, &link(11)), Below::stored(&d, &link(12))), (Some(Below::Missing), Some(Below::Found { phid: "PHID-DREV-12".into(), open: false, status: "Landed".into() })));
     }
 
     #[test]
     fn a_submit_in_work_asks_nothing_of_reviewers_whatever_the_title_names() {
         // The title names some, asked and given, a group and one blocking;
         // the revision has the title as moz-phab writes it, and one reviewer.
-        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three r=alice,bob! r?#build
-
-{LINK}/D13")]);
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three r=alice,bob! r?#build\n\n{LINK}/D13")]);
         let title = "WIP: Bug 3 - three r?#build r=alice,bob!";
         let mut fake = Fake::default().with(13, "changes-planned", &diff_of(&db, 2), title);
         let (ready, _) = submit(&db, 2, &mut fake);
@@ -2598,7 +2979,10 @@ mod tests {
         })
         .unwrap();
         let (_, sent) = submit(&db, 2, &mut fake);
-        assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
+        assert_eq!(
+            sent.unwrap(),
+            "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit."
+        );
         assert!(fake.of_reviewers().is_empty(), "{:?}", fake.of_reviewers());
         let search = fake.calls.iter().find(|(m, _)| m == "differential.revision.search").unwrap().1.clone();
         assert_eq!(search, json!({"constraints": {"ids": [13]}}), "its reviewers not asked for");
@@ -2637,39 +3021,36 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_parent_keeps_the_new_diff_and_says_so() {
-        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two
-
-{LINK}/D12"), &format!("Bug 3 - three
-
-{LINK}/D13")]);
+    fn a_refused_parent_refuses_the_one_edit_and_the_new_diff_made_is_said() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}/D12"), &format!("Bug 3 - three\n\n{LINK}/D13")]);
         let earlier = diff_of(&db, 2);
-        Db::edit(&db, |d| {
-            let old = d.patch(&d.stack("s")?.patches[2]).clone();
-            let draft = crate::mbox::Draft { diff: earlier.replace("+LINE 20", "+Line twenty"), ..crate::mbox::Draft::from(&old) };
-            crate::ops::replace(d, "s", 2, draft, "edit").map(|_| ())
-        })
-        .unwrap();
+        new_code(&db, 2, &earlier.replace("+LINE 20", "+Line twenty"));
         let mut fake = Fake { refuse: vec!["edit:parents.set"], ..Default::default() }
             .with(12, "needs-review", "", "Bug 2 - two")
             .with(13, "changes-planned", &earlier, "WIP: Bug 3 - three");
         let (_, sent) = submit(&db, 2, &mut fake);
+        // The parent in the edit that gives D13 the diff, as moz-phab's
+        // edit_revision puts it: refused, all of it is, and nothing is put
+        // back in Changes Planned, as nothing moved D13 out of it.
+        assert_eq!(sent.unwrap(), "The new diff of patch 3 was made on Phabricator, but the edit of D13 that takes it failed, so nothing of D13 changed: differential.revision.edit: refused.");
+        assert_eq!(fake.writes(), ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update,parents.set"]);
+        let r = &fake.revisions[&13];
+        assert_eq!((r.diffs.len(), r.status.as_str(), r.parents.is_empty()), (1, "changes-planned", true));
+        // Taken: the diff and the parent in that one edit, then Changes
+        // Planned again, in one of its own.
+        fake.refuse.clear();
+        fake.calls.clear();
+        let (_, sent) = submit(&db, 2, &mut fake);
         assert_eq!(
             sent.unwrap(),
-            "D13 has the new diff of patch 3 now. D13 stays Changes Planned. But the parent of D13 was not set to D12: differential.revision.edit: refused."
+            "D13 has the new diff of patch 3 now. D13 stays Changes Planned. The parent of D13 is D12 now. What is shown of D13 was fetched before this submit."
         );
         assert_eq!(
             fake.writes(),
-            [
-                "differential.creatediff",
-                "differential.setdiffproperty",
-                "differential.revision.edit update",
-                "differential.revision.edit plan-changes",
-                "differential.revision.edit parents.set",
-            ]
+            ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update,parents.set", "differential.revision.edit plan-changes"]
         );
         let r = &fake.revisions[&13];
-        assert_eq!((r.diffs.len(), r.status.as_str(), r.parents.is_empty()), (2, "changes-planned", true));
+        assert_eq!((r.diffs.len(), r.status.as_str(), r.parents.clone()), (2, "changes-planned", vec!["PHID-DREV-12".to_string()]));
     }
 
     /// What the last setdiffproperty said of its commit, by the commit, and
@@ -2755,19 +3136,5 @@ mod tests {
         let made: Vec<u64> = fake.diffs.keys().copied().filter(|d| *d >= 2000).collect();
         assert_eq!((made.len(), fake.revisions[&200].diffs.clone()), (2, vec![made[1]]), "a new diff");
         assert_eq!(message_of(&db, 2), format!("Bug 3 - three\n\nWhy.\n\nReviewed-by: ann\n{LINK}/D200"));
-    }
-
-    #[test]
-    fn a_revision_changed_since_it_was_read_is_sent_nothing() {
-        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}/D13")]);
-        let mut fake = Fake::default().with(13, "changes-planned", &diff_of(&db, 2), "WIP: Bug 3 - three");
-        let d = Db::load(&db).unwrap();
-        let s = d.stack("s").unwrap().clone();
-        let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
-        let p = prepare_with(&d, &s, 2, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v), &mut None).unwrap();
-        fake.revisions.get_mut(&13).unwrap().title = "Someone's title".into();
-        let sent = send_with(&db, &p, None, &mut |m, v| fake.call(m, v));
-        assert_eq!(sent, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.");
-        assert!(fake.writes().is_empty());
     }
 }

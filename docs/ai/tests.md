@@ -32,10 +32,11 @@ stacked built with no feature, and needs no wasm target; `--features` then
 adds the tests of each feature named. No test runs claude: a script stands
 in for it; nor a linter of yours, nor any `./mach`: a script stands in for
 the linter; none reaches Phabricator: its revisions and their comments are
-read by stand-ins, and what a submit sends is answered by one, which keeps
-every call made to it, so that a test can see that a refusal wrote
-nothing, and which, as Phabricator does, makes no revision of a diff whose
-commit has no tree; what a fetch reads of a stack's revisions is answered
+read by stand-ins, and what a submit fetches first and sends is answered
+by one, which keeps every call made to it, so that a test can see that a
+review read nothing, that a send made its writes alone, and that a
+refusal wrote nothing, and which, as Phabricator does, makes no revision
+of a diff whose commit has no tree; what a fetch reads of a stack's revisions is answered
 by one set for the test's database alone, so that no test's stand-in
 answers another's editors; and in a test's own process, which keeps
 nothing, an editor with no stand-in reads none, and shows nothing of what
@@ -116,7 +117,10 @@ on its own, its state, its comments, a raw diff once for each id, a fetch
 always, what stands each part's latest, a revision's PHID named, read from
 a checkpoint as when read whole, the raw diff no state names not read
 with it, and a checkpoint of before, with no index of them, read as one
-with none; and the edits since a state
+with none; a state saying whether its revision is a draft and its
+repository, one stored before saying neither; a repository read of
+Phabricator stored once, found by its PHID or by its callsign, read from
+a checkpoint as when read whole, a record of its own; and the edits since a state
 of a stack counted along its tree of edits by the index of the stacks
 alone (another version once an edit is undone and another made in its
 place, nothing for what is no state of it), read from a checkpoint as
@@ -582,7 +586,14 @@ wrapped otherwise a change, its break marked; the diff after the message
 painted as words as ever), the submit's review comparing the title and
 summary so, side by side too, and saying at its top why a new diff is
 sent when the latest diff makes the patch's changes on the patches below
-as they were before a rebase, no code under it, then sending one; its
+as they were before a rebase, no code under it, then sending one; how
+long ago what it shows of the revision was fetched, said as the
+Phabricator line says it, at its top and on Phabricator's diff, from a
+fetch stored eleven minutes ago, nothing read, then from one found as
+stored a moment ago, just now, and a minute ago as the review stays open
+and the minute goes by, nothing read nor written; a submit whose fetch
+first is turned away (HTTP 429) sending nothing, said as such, no call
+made after the one turned away, nothing stored; its
 code drawn in the view the dialog of 1 sets there: compared as two diffs,
 as the view of what differs from Phabricator draws its code, the
 interdiff of the latest diff and the diff sent, named so, a sign before
@@ -1036,9 +1047,11 @@ the reading mode that the `✓` at a line's end is another, nothing of
 them while there is no column; the stack's revisions fetched in one
 search when asked, no other call made but the rest of the fetch, not again
 as the editor goes on, nor once its patches name others, until a fetch is
-asked again; a submit fetching the revision it sent to again, alone, once
-it is done, a new revision's status shown at once; Changes Planned shown
-as such though Phabricator says it is a draft; a fetch that fails keeping
+asked again; a submit fetching nothing once it is done, all it needed
+stored and nothing read, its revision's line and letter as they were
+fetched before it, the bottom line saying so, a new revision not fetched
+yet, until a fetch, which shows Changes Planned as such though Phabricator
+says it is a draft; a fetch that fails keeping
 what is stored and saying why, each time it is asked, a first one showing
 no status; none read nor offered while reviews come from nowhere; built
 without moz-phab, none shown, nor a Phabricator line), the Phabricator
@@ -1050,8 +1063,9 @@ parent, and those together, listed plainly; a summary wrapped otherwise, every w
 showing the lines of both versions, Phabricator's taken out and this
 version's put in, no word in the colours for words, and saying so, `?`
 saying that in sync is to the letter and what Space shows, the submit's
-review showing them so too, and in sync once it is submitted; a patch
-submitted and unchanged since in sync, Phabricator
+review showing them so too, and in sync once it is submitted and
+fetched; a patch submitted and unchanged since in sync once fetched, its
+line as it was fetched before until then, Phabricator
 giving back its title and summary as they were sent, white space ending
 a line and all; a status stacked does not know, and a revision
 Phabricator does not have; the comments to pull, none once a pull holds
@@ -1105,8 +1119,8 @@ the one the pull read among them; a revision whose search says when it was last
 modified not read again while that stays the same, only its parents and
 its latest diff read, with the others', and no record of it written again,
 only the fetch's; one modified since read again, alone, its new comment
-counted; one submitted, fetched again alone once the submit is done, its
-comments read again though its search says it was not modified since;
+counted; one submitted, all it needed stored, nothing read, before the
+send nor after it;
 one commented on and pulled alone, read whole by the pull, its raw diff
 stored already, and not by the next fetch, as the pull stored its
 comments with when it was modified; a fetch that fails partway
@@ -1130,8 +1144,12 @@ naming none, with its submit and the fetch, its items not on the patch's
 menu itself, `?` saying what it opens and what the fetch does, the fetch
 one at a time, the bars saying it is fetching, the line's menu offering
 the same items directly, the stack's menu the fetch after the pull; what a
-submit reads stored, its revision's state and raw diff, though nothing is
-sent, and what it reads again before it would send, and what a pull
+submit fetches first, nothing of its revision stored, the bottom line
+saying so, stored as a fetch stores it, its state, whether it is a draft
+and its repository with it, its raw diff, its comments, and when, though
+nothing is sent; reviewed again, nothing read; retitled on Phabricator,
+then sent, nothing read, the summary sent as the review showed it, and
+nothing stored of what was sent; and what a pull
 reads, its comments with no time of when the revision was modified, as
 its search says none, its title and summary, which no version of the
 patch has, a new version, and, accepted and pulled again, nothing new,
@@ -1243,8 +1261,9 @@ run failed; the
 parent: a reordered stack's revisions differing by their parents alone,
 nothing read for it, Space and the menu's item showing the parent first,
 Phabricator's then the one a submit sets, and nothing under it, `?`
-saying so, a submit setting it and nothing else, then in sync, its
-parents fetched again with the rest, Space naming the parent; none
+saying so, a submit setting it and nothing else, in one write, nothing
+read, the line as it was fetched before until a fetch, then in sync, its
+parents fetched with the rest, Space naming the parent; none
 differing at the bottom of the stack, over a patch with no revision, a
 landed revision, or a patch naming the same revision, Space saying why a
 submit sets none as a submit does, no parent named; a parent that is
@@ -1264,9 +1283,9 @@ not sent and why, the status staying as it is, no code under it, so no
 view to set: 1, Enter and Space doing nothing, the bottom bar naming no
 1, its menu no view of the code; `Send it to Phabricator` in that menu
 sending the summary alone, no diff, no Changes Planned and no reviewers,
-the bottom line saying what came of it, and once it is fetched again
-after the submit, the diff alone differing, the update grayed, the menu
-saying why), and the comments pane's states (expanded,
+nothing read, the bottom line saying what came of it, the line as it was
+fetched before, and once it is fetched, the diff alone differing, the
+update grayed, the menu saying why), and the comments pane's states (expanded,
 compact, hidden) and the compact view of the code as they were; and the
 notices of `stacked web`, kept once it asks for them (`keep_notices`): of
 every stack, an answer asked at max landed for review on the stack not
@@ -1926,25 +1945,54 @@ its own version's diff pairs it, none in a line both have nor in a
 file's header; and two diffs on other bases told by the files they read
 before the patch, a line otherwise at the same place, the same hunk
 elsewhere, a file one makes and the other finds, but not by more of a
-file around a hunk, nor by another file; those in `submit.rs`, that a latest diff with ten
+file around a hunk, nor by another file; those in `submit.rs`, with a
+stand-in for Phabricator that answers a fetch's reads and a submit's
+writes, every send checked to read nothing, that a review reads nothing
+where the database holds all it needs, the same review again, and fetches
+first what it lacks, and then nothing: the revision and the one below,
+nothing of either stored, in the calls Fetch the latest makes of them
+alone, then the repository a new diff is made in, once; the revision's
+raw latest diff not stored, or a state stored before stacked kept
+whether it is a draft, its raw diff not read again; the revision below
+alone; the repository alone, by its PHID; and no repository read where no
+new diff is made; how long ago what it shows was fetched, as stored; a
+fetch refused partway, or turned away (HTTP 429), said as such, nothing
+stored, nothing sent; a repository not read, the revision's or the
+callsign's, said; a revision Phabricator did not have, or with no diff,
+when it was fetched, said; that a new revision is made in three writes,
+the diff, its commit, and one edit of its title, summary, bug, diff,
+parent added and Changes Planned, its link into the patch, nothing of it
+fetched, its repository stored for the next; a draft taking a new diff and
+a new parent in three, the parent in the edit; a revision in Changes
+Planned taking a new diff in four, Changes Planned again in an edit of its
+own, the next review, nothing fetched since, showing it as it was fetched
+before, and none once it is fetched; that a latest diff with ten
 lines of context, as moz-phab sends it, is the patch as it is on the base
 it was made on, and nothing is sent; that once upstream has changed a line
 within those ten and not within three, and the stack is rebased onto it,
 the diff is known by its changes alone, never as the patch as it is, the
-review saying why, and a new diff is sent, which a submit after it finds
-to be the patch as it is; that once the patch is edited too, its code is
+review saying why, and a new diff is sent, which a submit after a fetch
+finds to be the patch as it is; that once the patch is edited too, its code is
 compared from the version whose changes the diff makes; that a latest
 diff of other changes is still refused, nothing written; that a revision
 in review, accepted or needing revision is sent its title and summary
-alone in one edit, `WIP: ` first only where its title has it, the
+alone in one write, `WIP: ` first only where its title has it, the
 reviewers its title names kept and none read, its status kept, no diff
-made and its repository not read; its parent alone, in an edit of its
-own, when only that differs; and nothing when only its diff differs, said
+made and its repository not read; its parent alone, in one write, when
+only that differs; and nothing when only its diff differs, said
 so, its latest diff left as it is whatever version it is, one known by
-its changes alone with no new diff said to be sent, nor once it changed
-on Phabricator since it was read, retitled or accepted; and that a
-revision landed or abandoned is refused, nothing read but the revision and
-nothing written; those
+its changes alone with no new diff said to be sent; that a send reads
+nothing, a revision retitled and accepted on Phabricator since it was
+fetched sent the summary the review showed, and not the title, nothing
+stored of it; that each failure says what was done and what was not: a
+new revision's edit, its commit or its diff refused, a revision's one
+edit refused with a new diff made or with none, nothing of it changed,
+the parent with the rest, Changes Planned again refused after the rest,
+and the patch changed since the review, nothing read; that a refused
+parent refuses the one edit, and taken, it is set with the diff; and
+that a revision landed or abandoned is refused, fetched first, nothing
+read but the fetch and nothing written, and refused again, nothing
+read; those
 in `history.rs`, what the history leaves out (comments, runs, a move to
 where the stack is, a branch put straight back), how a stack diff follows
 each patch by its change, a move told from a shift, and a new version
@@ -2211,7 +2259,8 @@ none, none, and edited, its version before known by both its ids, saying
 what a stacked of before said. They show a revision's status read from its
 value alone, whatever Phabricator says of drafts, with its letter and its
 name; the statuses of revisions read in one search, those it does not
-find not known, each with its title, summary and PHID, and a search
+find not known, each with its title, summary and PHID, whether it is a
+draft and its repository, and a search
 refused said; an editor's read by the stand-in for its database alone, one
 search for each Phabricator the links name, never from a process that
 keeps nothing without one; and what a fetch reads of the revisions, in a
@@ -2230,12 +2279,15 @@ read as before; by the stand-in for the editor's database, the calls of
 each Phabricator on their own, and a read turned away said as such,
 whatever its calls make of it; a fetch storing what it reads, each
 revision's state, comments and raw latest diff, one Phabricator does not
-have as such, and the fetch, never from a process that keeps nothing; one
-finding all as stored writing nothing of it but the fetch, one finding a
-revision modified since reading and writing its comments alone, one of a
-revision alone, as after a submit, reading its comments again whatever
-its search says, its parent named as stored; and one turned away writing
-nothing. They show what a pull reads: the revisions asked, down their
+have as such, and the fetch, never from a process that keeps nothing,
+each state saying whether its revision is a draft and its repository, as
+the search said; one finding all as stored writing nothing of it but the
+fetch, one finding a revision modified since reading and writing its
+comments alone, one of a revision alone, as a submit fetches what it
+lacks, reading no more than its search, its parents and its latest diff,
+as it was not modified since, its parent named as stored, and the same
+through a submit's own calls, the database's stand-in asked nothing; and
+one turned away writing nothing. They show what a pull reads: the revisions asked, down their
 open parents the stack does not hold, and up through the open ones
 stacked on the top, each named with its parents, the older diffs of one
 whose latest is no version stacked knows, to the first that is one;

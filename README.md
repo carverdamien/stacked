@@ -358,7 +358,8 @@ moz-phab (or arc) keeps in `~/.arcrc`; curl makes the calls.
 stacked reads Phabricator only when you ask, never by itself:
 `Fetch the latest from Phabricator`, on the stack's menu or in a patch's
 `Phabricator` menu, reads every revision of the stack and stores what it
-found in the database; a submit and a pull read it too. Each patch then
+found in the database; a pull reads it too, and a submit what the
+database lacks of its revision. Each patch then
 shows its revision's status after its number, a letter (`[R]` Needs
 Review, `[A]` Accepted, `[W]` Changes Planned, and so on), then `✓` when
 Phabricator has this exact version of the patch, or `✗` when something
@@ -394,7 +395,11 @@ Space on that line shows what differs, and Enter opens its menu.
 - **Submitting.** `Submit to Phabricator as WIP`, in a patch's
   `Phabricator` menu, sends that one patch as work in progress (Changes
   Planned, which asks no one for a review), once you have seen what it
-  sends. For a revision already in review, the menu offers to update its
+  sends. What you see is worked out from what was last fetched of the
+  revision, and says how long ago that was (`fetched 11 minutes ago`):
+  nothing is read again before it is sent, nor after, so fetch the latest
+  first when that matters. It is sent in the writes moz-phab makes, four
+  at most. For a revision already in review, the menu offers to update its
   title, summary and parent alone. Sending a whole stack for review, with
   its reviewers, is still moz-phab's work: put the stack in your checkout
   with `Move HEAD…`, and run moz-phab there.

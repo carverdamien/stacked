@@ -398,8 +398,8 @@ on a screen of its own, in the view of the interdiffs that `1` sets there,
 every line or only what the patches changed (as an interdiff, in a column
 per version, or side by side, or the change
 from the latest diff, on the commit it is on, to the patch as it is, as a
-patch of its own, a fetch, a pull and a submit storing that commit as
-Phabricator names it), and its menu
+patch of its own, a fetch, the one a submit makes first, and a pull
+storing that commit as Phabricator names it), and its menu
 holds every item of the patch about Phabricator (The editor, above).
 
 ## Submitting a patch
@@ -409,16 +409,43 @@ on the menu of its Phabricator line (not while reviews come from nowhere,
 `reviews.source = "none"`), sends that patch alone to Phabricator as work
 in progress, as `moz-phab submit --wip` sends a single commit: in Changes
 Planned, a status that asks no one for a review. In the browser (`stacked
-web`) and in StackED, the same. Nothing is sent before it is read and
-seen. First, away from the screen, the patch's revision is read, and what
-is read of it stored, as a fetch stores it (The editor, above), whatever
-comes of the rest: the revision its trailer names (`Differential
-Revision:`), or none, and the submit makes a new one. A revision there already in work, Changes
+web`) and in StackED, the same. Nothing is sent before it is worked out
+and seen. First, away from the screen, what is sent is worked out from
+what the database holds of Phabricator, as the last fetch stored it (The
+editor, above), nothing read: the revision the patch's trailer names
+(`Differential Revision:`), or none, and the submit makes a new one; the
+revision of the patch below, for the parent; and the repository a new
+diff is made in. What the database lacks of them is fetched into it
+first, the bottom line saying so (`fetching D123 from Phabricator first,
+as nothing of it is stored yet: nothing is sent yet`; `as what is stored
+of it is not all that a submit needs` where some of it is), as Fetch the
+latest from Phabricator fetches those revisions alone, and stored as it
+stores them, with when: the revision, while nothing of it is stored, or,
+open, while its latest diff is not stored raw, or what is stored of it
+was stored by a stacked that did not keep whether it is a draft (the
+search's `isDraft`, which a fetch and a pull store now, with its
+`repositoryPHID`, no call added); and the revision of the patch below,
+while nothing of it is stored. A repository is read once, with
+diffusion.repository.search, by its PHID, the revision's, or for a new
+revision by the callsign the checkout's `.arcconfig` names
+(`repository.callsign`), and stored, as none of it changes; only where a
+new diff is made in it. When the database holds all of it, nothing is
+read of Phabricator (`working out what submitting patch 3 sends: nothing
+is sent yet`). A fetch that fails sends nothing, and the bottom line says
+why, Phabricator turning this machine away said as such (`D123 could not
+be fetched from Phabricator, so nothing was sent: Phabricator is turning
+away requests from this machine for now (HTTP 429, too many requests)`);
+a repository not read too (`The repository of D123 could not be read from
+Phabricator, so nothing was sent: …`). A revision Phabricator did not have
+when it was fetched, or that had no diff, is said so (`Phabricator had no
+revision D123 when it was last fetched, so nothing was sent.`). A revision
+there already in work, Changes
 Planned or a draft, as moz-phab takes it, is sent the patch as work in
 progress; one open but not in work, Needs Review, Needs Revision or
 Accepted, only the patch's title, summary and parent (below); one that
-landed or was abandoned refuses (`D123 is Closed, not open: only an open
-revision is updated, and nothing was sent.`). In work, its latest diff
+landed or was abandoned refuses, its status said as the Phabricator line
+says it (`D123 is Landed, not open: only an open revision is updated, and
+nothing was sent.`). In work, its latest diff
 must be a version of the
 patch the database holds, the one in the stack or an earlier one: of the
 same effect, or leaving the same files once both are applied on the
@@ -447,8 +474,12 @@ For a new revision, a dialog then says what is sent and where (`Patch 3 is
 sent to Phabricator, at https://phabricator.services.mozilla.com, as a new
 revision, with the status Changes Planned.`), with its title and its
 parent. For a revision there already, a screen of its own shows what
-replaces what, for your review: what is sent and where; then, of what
-changes, the title and summary, Phabricator's then what is sent, compared
+replaces what, for your review: what is sent and where, and how long ago
+what it shows of the revision was fetched, in the Phabricator line's
+words, worked out as it is drawn, so that it grows while the screen
+stays open (`What is shown of D123 here was fetched 11 minutes ago.`);
+then, of what changes, the title and summary, Phabricator's then what is
+sent, compared
 as an interdiff compares two messages (History, above: a paragraph
 only wrapped otherwise once, as it is sent; a section that differs,
 Phabricator's lines then those sent, what only one has in the colours for
@@ -479,8 +510,9 @@ line, the heading after a hunk's `@@`), under `the code: the two diffs,
 Phabricator's then what is sent` (side by side, `the code: the two
 diffs, Phabricator's on the left, what is sent on the right`), said so
 (`The code is shown as an interdiff of the latest diff of D13 and this
-version's diff.`), and named `D13 on Phabricator` (or `version 2 of
-patch 3`) and `what is sent`: as an interdiff, in a column per version,
+version's diff.`), and named `D13 on Phabricator, fetched 11 minutes ago`,
+with how long ago it was fetched, as the screen says it (or `version 2 of
+patch 3`), and `what is sent`: as an interdiff, in a column per version,
 or side by side, as there, with every line or only what the patches
 changed, which leaves out the lines both have alike, the context lines
 and the index lines, and so what the move of a base made in the lines
@@ -515,38 +547,56 @@ says `↑↓: scroll · esc: menu · 1: view · ?: what can I do here`, and `?`
 says the same. When no code is sent, as when the code is the patch's
 already, there is no view to set: 1 does nothing, the bottom bar names
 no 1, the menu has no view of the code, and what the screen says is
-unified. Before anything
-is sent, the revision is read again, and what is read stored: if its
-latest diff, its status, its title, summary or bug, or its parents changed
-meanwhile, nothing is (`D123 changed on Phabricator since you reviewed it,
-so nothing was sent. Submit again to review it as it is now.`). Once the
-submit is done, sent or not, the revision it sent to is fetched again,
-alone, as the patch names it then, a new revision too (The editor,
-above).
+unified. Nothing of Phabricator is read before it is sent, nor after: it
+is sent as the screen shows it, against the revision as it was fetched,
+and what changed on Phabricator since is not seen, which the age the
+screen says is there for; Fetch the latest from Phabricator, before the
+submit, reads it again. Only the patch is seen to be as it was (`Patch 3
+changed since what is sent was read, so nothing was sent. Submit it again
+to see what is sent now.`). Once it is sent, what stacked shows of the
+revision, its Phabricator line, the patches pane's letter and mark and
+the next submit's review, is what was fetched before the submit, with
+how long ago that was, until the next fetch, as the bottom line says
+after what was sent (`What is shown of D123 was fetched before this
+submit.`; for a new revision, `Nothing of D124 is fetched from Phabricator
+yet.`).
 
-Only what changed is sent, as moz-phab sends it: a new diff of the patch
-(differential.creatediff, its commit's author, message, parent and tree
-set with differential.setdiffproperty), unless the latest diff is the patch as it
-is; the title (`WIP: ` and the patch's first line, its reviewers and its
-bug written as moz-phab writes them), the summary (the rest of the
-message, without the line naming the revision) and the bug (`Bug 123` in
-the title), where they differ; and Changes Planned, kept, or put back after
-a new diff, which Phabricator takes as a request for review
-(differential.revision.edit). When the latest diff is the patch as it is
-and nothing else changes, nothing is sent, and the bottom line says so.
-Then, in an edit of its own, so that a refusal undoes none of the rest:
-the parent, the revision of the patch below, when it is open (none for
-the bottom patch, or when the patch below has no revision, and a
-revision's parents are then left as they are). The Phabricator line takes
-the parent by this same rule: it differs exactly where a submit would set
-one (The editor, above). A submit as work in
+Only what changed is sent, in the writes moz-phab makes, and nothing
+else: a new diff of the patch (differential.creatediff), unless the latest
+diff is the patch as it is, then its commit's author, message, parent and
+tree (differential.setdiffproperty, `local:commits`); then one edit
+(differential.revision.edit) that holds every transaction, as moz-phab's
+`edit_revision` makes it: the title (`WIP: ` and the patch's first line,
+its reviewers and its bug written as moz-phab writes them), the summary
+(the rest of the message, without the line naming the revision) and the
+bug (`Bug 123` in the title), where they differ from what is stored; the
+new diff; the parent, the revision of the patch below, when it is open
+(none for the bottom patch, or when the patch below has no revision, and
+a revision's parents are then left as they are), set where it changes,
+added to a new revision; and Changes Planned, for a new revision or a
+draft. A revision in Changes Planned that takes a new diff is put in
+Needs Review by Phabricator, which refuses Changes Planned in that same
+edit, as the revision is Changes Planned still when it starts: Changes
+Planned goes back in an edit of its own, after it. So a submit makes four
+writes at most: three for a new revision, or for a draft taking a new
+diff; four for a revision in Changes Planned taking a new diff; one for a
+revision that gets its title and summary alone, or its parent alone. A
+refused edit leaves the revision as it was, the parent with the rest
+(`The new diff of patch 3 was made on Phabricator, but the edit of D123
+that takes it failed, so nothing of D123 changed: …`; with no new diff,
+`The edit of D123 failed, so nothing of D123 changed: …`). When the
+latest diff is the patch as it is and nothing else changes, nothing is
+sent, and the bottom line says so. The Phabricator line takes the parent
+by this same rule: it differs exactly where a submit would set one (The
+editor, above). A submit as work in
 progress sets no reviewers, as `moz-phab submit --wip` sets none: those
 the title names (`r=alice,bob!`, `r?#build`) stay in the title, written
 as moz-phab writes them, and nothing of the revision's reviewers is read,
 said or changed. While it is sent, the top bar says `submitting…`; then
 the bottom line says what came of it, and what was done and what was not
-when a call failed partway (`D123 has the new diff of patch 3 now. D123
-stays Changes Planned. But the parent of D123 was not set to D122: …`). A new revision's link goes into the patch, as a
+when a call failed partway (`D123 has the new diff of patch 3 now. But
+D123 was not put back in Changes Planned, and may be Needs Review now: …`),
+then that what stacked shows of the revision was fetched before (above). A new revision's link goes into the patch, as a
 new version taken at once, which the history says (`submitted patch 3 as
 D124, in work`). Its trailer goes where moz-phab puts one: at the end of
 the message's last paragraph when that paragraph is trailers
@@ -562,7 +612,7 @@ the files as the patch leaves them on the patches below it, is written in
 a check index of its own, the repository only read; when that tree cannot
 be written, nothing is sent, and the bottom line says why. The diff is in
 the repository the checkout's `.arcconfig` names (`repository.callsign`;
-a revision there already keeps its own).
+a revision there already keeps its own), as the database holds it (above).
 
 For a revision open but not in work (Needs Review, Needs Revision,
 Accepted), the patch's `Phabricator` menu, and the menu of its Phabricator
@@ -575,9 +625,9 @@ its title, summary and parent`. It sends no new diff, as only a revision
 in work gets one, and no status, so the revision stays as it is. The
 title is written as a submit in work writes it, but for `WIP: `, which
 goes first only when the revision's title has it now, as the Phabricator
-line compares it; it goes with the summary and the bug, where they differ,
-in one edit (differential.revision.edit); then the parent, in an edit of
-its own, by the same rule as a submit in work's. As a submit in work, it
+line compares it; it goes with the summary, the bug and the parent, the
+parent by the same rule as a submit in work's, where they differ, in one
+edit (differential.revision.edit), one write. As a submit in work, it
 reads and changes no reviewers: those the title names stay in it, written
 as moz-phab writes them. The revision's latest diff is left as it is,
 whatever version of the patch it is, and its repository is not read. The
@@ -590,12 +640,13 @@ yet (`D123 is Needs Review, so only its title, summary and parent would be
 sent, and they are not read from Phabricator and compared with patch 3
 yet.`). `?` on the item says what it sends.
 
-Chosen, it reads the revision away from the screen, as a submit does
-(`reading Phabricator to show what updating D123 sends: nothing is sent
-yet`), then shows what is sent on the same screen as a submit's review:
-what is sent and where (`D123, at
-https://phabricator.services.mozilla.com/D123, gets the title and summary
-of patch 3, and stays Needs Review.`), then the title and summary
+Chosen, it works out what is sent away from the screen, as a submit does,
+from what the database holds, what it lacks fetched first (`working out
+what updating D123 sends: nothing is sent yet`), then shows what is sent
+on the same screen as a submit's review: what is sent and where (`D123,
+at https://phabricator.services.mozilla.com/D123, gets the title and
+summary of patch 3, and stays Needs Review.`), and how long ago what it
+shows of the revision was fetched, then the title and summary
 compared, the parent and the bug before and after, and the status, said to
 stay as it is (`status: stays Needs Review`). It shows no code. When the
 code differs too, the screen says so at its top, and why it is not sent
@@ -606,13 +657,12 @@ the bottom bar names no 1 (`↑↓: scroll · esc: menu · ?: what can I do
 here`). `Send it to Phabricator`, in the menu Esc or a right click opens,
 sends it, the bottom line saying `updating D123 on Phabricator…`
 meanwhile; `Cancel: send nothing` sends nothing; that menu has no view of
-the code. Before anything is sent, the
-revision is read again, as for a submit in work: if its latest diff, its
-status, its title, summary or bug, or its parents changed meanwhile,
-nothing is. When nothing differs, nothing is sent, and the bottom line
-says so. Once it is sent, the bottom line says what came of it, as after a
-submit (`D123 has the title and summary of patch 3 now.`), and the
-revision is fetched again, alone. While the revision's status is not
+the code. Nothing of Phabricator is read before it is sent, nor after, as
+for a submit in work. When nothing differs, nothing is sent, and the
+bottom line says so. Once it is sent, the bottom line says what came of
+it, as after a submit (`D123 has the title and summary of patch 3 now.
+What is shown of D123 was fetched before this submit.`), and nothing is
+fetched. While the revision's status is not
 fetched yet, or is one stacked does not know, the menu has `Submit to
 Phabricator as WIP`, and the status the submit reads decides what is
 sent. For a revision that landed or was abandoned, `Submit

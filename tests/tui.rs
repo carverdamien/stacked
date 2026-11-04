@@ -21945,8 +21945,8 @@ fn a_patch_with_no_revision_is_sent_as_a_new_one_once_the_dialog_says_what_is_se
     let _one = phab_stand_in(&phab);
     let mut app = open(&db).unwrap();
     phab_choose(&mut app, "Submit to Phabricator as WIP");
-    // Read first, away from the screen: nothing is sent yet.
-    assert_eq!(app.status, "reading Phabricator to show what submitting patch 1 sends: nothing is sent yet");
+    // Worked out first, away from the screen: nothing is sent yet.
+    assert_eq!(app.status, "working out what submitting patch 1 sends: nothing is sent yet");
     assert!(draw(&mut app).lines().next().unwrap().contains("submitting…"));
     app.settle();
     assert_eq!(menu_title(&app), "send patch 1 to Phabricator as a new revision?");
@@ -21971,12 +21971,17 @@ fn a_patch_with_no_revision_is_sent_as_a_new_one_once_the_dialog_says_what_is_se
     app.settle();
     assert_eq!(
         app.status,
-        "Patch 1 is D124 on Phabricator now, in Changes Planned. The message of patch 1 names D124 now. Patch 1 is at the bottom of the stack, so D124 gets no parent."
+        "Patch 1 is D124 on Phabricator now, in Changes Planned. The message of patch 1 names D124 now. Patch 1 is at the bottom of the stack, so D124 gets no parent. Nothing of D124 is fetched from Phabricator yet."
     );
     assert_eq!(
         phab.lock().unwrap().writes(),
         ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit title,summary,bugzilla.bug-id,update,plan-changes"]
     );
+    // Of all that, one read: the repository the checkout's .arcconfig
+    // names, for the first review, which stored it; nothing for the second,
+    // nor at the send, nor after it.
+    let calls: Vec<String> = phab.lock().unwrap().calls.iter().map(|(m, _)| m.clone()).collect();
+    assert_eq!(calls, ["diffusion.repository.search", "differential.creatediff", "differential.setdiffproperty", "differential.revision.edit"]);
     assert!(phab.lock().unwrap().of_reviewers().is_empty(), "no call of reviewers at all");
     assert_eq!(phab.lock().unwrap().revisions[&124].title, "WIP: Bug 1 - one r?#build r=alice");
     // Its commit, HEAD not on the stack where the editor runs: the patch's
@@ -22023,11 +22028,13 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     // what differs from Phabricator draws that revision's code: the
     // interdiff of its latest diff and the diff sent, a.txt's line 20 as each
     // says it, c.txt only Phabricator's adds. Of reviewers, nothing else is
-    // said.
+    // said. D13 fetched first, nothing of it stored: how long ago, said, and
+    // with Phabricator's diff.
     let order = [
         "what is sent",
         "   D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and stays Changes Planned.",
         "   Its parent is set to D12, the revision of patch 2.",
+        "   What is shown of D13 here was fetched just now.",
         "the title and summary: Phabricator's, then what is sent",
         "-WIP: Bug 3 - three",
         "+WIP: Bug 3 - three r?bob r=alice",
@@ -22039,7 +22046,7 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
         " status: stays Changes Planned",
         "the code: the two diffs, Phabricator's then what is sent",
         "   The code is shown as an interdiff of the latest diff of D13 and this version's diff.",
-        "--- D13 on Phabricator",
+        "--- D13 on Phabricator, fetched just now",
         "+++ what is sent",
         "-+LINE 20",
         "++Line twenty",
@@ -22068,21 +22075,24 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "nothing was sent to Phabricator"));
     assert!(phab.lock().unwrap().writes().is_empty());
     // Reviewed again, Send it to Phabricator sends it: the diff, then the
-    // parent in an edit of its own; no reviewers.
+    // title, the summary, the diff and the parent in one edit, then Changes
+    // Planned again, in an edit of its own; no reviewers.
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     submit_menu(&mut app, "Send it to Phabricator");
     assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "sending patch 3 to Phabricator…"));
     app.settle();
-    assert_eq!(app.status, "D13 has the new diff of patch 3 now. D13 stays Changes Planned. The parent of D13 is D12 now.");
+    assert_eq!(
+        app.status,
+        "D13 has the new diff of patch 3 now. D13 stays Changes Planned. The parent of D13 is D12 now. What is shown of D13 was fetched before this submit."
+    );
     assert_eq!(
         phab.lock().unwrap().writes(),
         [
             "differential.creatediff",
             "differential.setdiffproperty",
-            "differential.revision.edit title,summary,update",
+            "differential.revision.edit title,summary,update,parents.set",
             "differential.revision.edit plan-changes",
-            "differential.revision.edit parents.set",
         ]
     );
     assert!(phab.lock().unwrap().of_reviewers().is_empty(), "no call of reviewers at all");
@@ -22141,7 +22151,7 @@ fn esc_on_what_a_submit_sends_opens_its_menu_a_right_click_too_and_enter_and_spa
     assert_eq!(
         help[1..],
         [
-            "Press Esc for the menu, or click with the right button: Send it to Phabricator sends it, D13 read again first, and if it changed on Phabricator since this was read, nothing is sent; Cancel: send nothing sends nothing.",
+            "Press Esc for the menu, or click with the right button: Send it to Phabricator sends it as this review shows it, against D13 as it was fetched, nothing read of Phabricator first; Cancel: send nothing sends nothing.",
             "Press ↑↓ (pgup pgdn home end) to scroll, and 1 to pick how the code is drawn: compared as two diffs, Phabricator's and the one sent, as an interdiff, in a column per version or side by side, as what differs from Phabricator draws them; or as the code, each file as both leave it, unified, side by side, or side by side and compact. Side by side, the title and summary, and what else changes, are side by side too.",
         ],
         "{help:#?}"
@@ -22169,7 +22179,7 @@ fn one_on_what_a_submit_sends_opens_the_dialog_of_the_views_and_its_code_follows
     // compared. The cursor on the line a.txt has sent.
     let rows = submitted(&mut app);
     let at = rows.iter().position(|r| r == "++Line twenty").unwrap_or_else(|| panic!("{rows:#?}"));
-    assert!(rows.contains(&"the code: the two diffs, Phabricator's then what is sent".to_string()) && rows.contains(&"--- D13 on Phabricator".to_string()), "{rows:#?}");
+    assert!(rows.contains(&"the code: the two diffs, Phabricator's then what is sent".to_string()) && rows.contains(&"--- D13 on Phabricator, fetched just now".to_string()), "{rows:#?}");
     for _ in 0..at {
         key(&mut app, KeyCode::Down);
     }
@@ -22397,7 +22407,10 @@ fn a_latest_diff_of_the_patch_s_changes_made_before_a_rebase_is_reviewed_saying_
     // Sent from the menu: a new diff.
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
+    assert_eq!(
+        app.status,
+        "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit."
+    );
     assert_eq!(
         phab.lock().unwrap().writes(),
         ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update", "differential.revision.edit plan-changes"]
@@ -22407,7 +22420,7 @@ fn a_latest_diff_of_the_patch_s_changes_made_before_a_rebase_is_reviewed_saying_
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn a_revision_changed_on_phabricator_since_its_review_opened_is_sent_nothing() {
+fn a_revision_changed_on_phabricator_since_it_was_fetched_is_sent_what_its_review_showed_nothing_read_at_send() {
     let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}13")]);
     let p = Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
     let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
@@ -22417,12 +22430,23 @@ fn a_revision_changed_on_phabricator_since_its_review_opened_is_sent_nothing() {
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     assert_eq!(app.screen, Screen::Submit);
-    // Someone retitles it meanwhile.
+    // Someone retitles it meanwhile: nothing of it read again, the summary
+    // sent as the review showed it, and the title not, as it was the patch's
+    // when D13 was fetched, so that Phabricator keeps the other; the bottom
+    // line says that what is shown of D13 was fetched before.
     phab.lock().unwrap().revisions.get_mut(&13).unwrap().title = "Someone's title".into();
+    let calls = phab.lock().unwrap().calls.len();
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.");
-    assert!(phab.lock().unwrap().writes().is_empty());
+    assert_eq!(
+        app.status,
+        "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit."
+    );
+    let p = phab.lock().unwrap();
+    assert_eq!(p.calls[calls..].iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), ["differential.revision.edit"]);
+    assert_eq!(p.writes(), ["differential.revision.edit summary"]);
+    assert_eq!((p.revisions[&13].title.as_str(), p.revisions[&13].summary.as_str()), ("Someone's title", "New."));
+    drop(p);
     stacked::submit::stand_in(None);
 }
 
@@ -22433,25 +22457,30 @@ fn a_revision_landed_or_whose_latest_diff_came_from_elsewhere_opens_no_review() 
     let diff = patch_of(&db, 2).diff;
     let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(13, "published", "WIP: Bug 3 - three", &diff)));
     let _one = phab_stand_in(&phab);
-    // Its status not read yet: the submit offered, and what it reads
-    // refuses.
+    statuses_from(&db, &phab);
+    // Nothing of it stored yet: the submit offered, D13 fetched first, then
+    // refused, its status said as the Phabricator line says it.
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     assert_eq!((app.screen, app.mode.clone()), (Screen::Main, Mode::Normal));
-    assert_eq!(app.status, "D13 is Closed, not open: only an open revision is updated, and nothing was sent.");
-    // In work, but its latest diff is no version of patch 3.
+    assert_eq!(app.status, "D13 is Landed, not open: only an open revision is updated, and nothing was sent.");
+    // In work since, its latest diff a new one that is no version of patch
+    // 3, once fetched: refused so.
     let mut p = phab.lock().unwrap();
     p.revisions.get_mut(&13).unwrap().status = "changes-planned".into();
-    let id = p.revisions[&13].diffs[0];
+    let id = 1000 + p.diffs.len() as u64;
     p.diffs.insert(id, diff.replace("+LINE 20", "+Someone else's 20"));
+    p.revisions.get_mut(&13).unwrap().diffs.push(id);
     drop(p);
+    fetched(&mut app);
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     assert_eq!(app.screen, Screen::Main);
     assert_eq!(app.status, "D13's latest diff is not a version of patch 3 that stacked knows: it came from elsewhere, and nothing was sent.");
     assert!(phab.lock().unwrap().writes().is_empty());
+    stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
 }
 
@@ -22480,15 +22509,18 @@ fn a_revision_whose_code_is_the_patch_s_already_is_reviewed_for_its_message_alon
     assert_eq!(app.mode, Mode::Normal);
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 has the title and summary of patch 3 now.");
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. What is shown of D13 was fetched before this submit.");
     assert_eq!(phab.lock().unwrap().writes(), ["differential.revision.edit summary"]);
-    // Submitted again, nothing has changed: nothing is sent, and no review
-    // opens.
+    // Fetched, then submitted again, nothing has changed: nothing is sent,
+    // and no review opens.
+    statuses_from(&db, &phab);
+    fetched(&mut app);
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     assert_eq!(app.screen, Screen::Main);
     assert_eq!(app.status, "D13 is patch 3 as it is already, with its title and summary, so nothing was sent.");
     assert_eq!(phab.lock().unwrap().writes().len(), 1);
+    stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
 }
 
@@ -22777,26 +22809,36 @@ fn a_revision_in_review_is_offered_its_title_summary_and_parent_alone_in_the_pla
     pick_item(&mut app, update);
     assert_eq!(
         app.help()[0],
-        "Press Enter to send the title, summary and parent of this patch to its revision on Phabricator, once what is sent is read and you have seen it: only what differs is sent, and no new diff, as the revision is not in work, so its status stays as it is."
+        "Press Enter to send the title, summary and parent of this patch to its revision on Phabricator, once you have seen what is sent, against the revision as it was last fetched: only what differs is sent, and no new diff, as the revision is not in work, so its status stays as it is."
     );
-    // Read first, away from the screen; then reviewed: at the top, that the
-    // code is not sent, and why; what is sent and where, the status kept;
-    // the summary, Phabricator's then this; no code.
+    // Worked out first, away from the screen, from what was fetched, nothing
+    // read; then reviewed: at the top, that the code is not sent, and why;
+    // what is sent and where, the status kept, and how long ago D13 was
+    // fetched; the summary, Phabricator's then this; no code.
+    let calls = phab.lock().unwrap().calls.len();
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.status, "reading Phabricator to show what updating D13 sends: nothing is sent yet");
+    assert_eq!(app.status, "working out what updating D13 sends: nothing is sent yet");
     app.settle();
     assert_eq!((app.screen, app.status.as_str()), (Screen::Submit, ""));
+    assert_eq!(phab.lock().unwrap().calls.len(), calls, "nothing read");
     let rows = submitted(&mut app);
     let sent = rows.iter().position(|r| r.starts_with("   D13, at ")).unwrap_or_else(|| panic!("{rows:#?}"));
     let top: Vec<&str> = rows[1..sent].iter().map(|r| r.trim_start()).collect();
     assert_eq!(top.join(" "), "The code of patch 3 is not sent: D13 is Needs Review, not in work, and only a revision in work gets a new diff.");
     assert_eq!(rows[sent], "   D13, at https://phabricator.example.com/D13, gets the title and summary of patch 3, and stays Needs Review.");
-    let order = ["the title and summary: Phabricator's, then what is sent", "-Old why.", "+New why.", "what else changes", " status: stays Needs Review"];
+    let order = [
+        "   What is shown of D13 here was fetched just now.",
+        "the title and summary: Phabricator's, then what is sent",
+        "-Old why.",
+        "+New why.",
+        "what else changes",
+        " status: stays Needs Review",
+    ];
     let places: Vec<usize> = order.iter().map(|t| rows.iter().position(|r| r == t).unwrap_or_else(|| panic!("no {t:?} in {rows:#?}"))).collect();
     assert!(places.windows(2).all(|w| w[0] < w[1]), "{rows:#?}");
     assert!(!rows.iter().any(|r| r.starts_with("the code") || r.starts_with("-status") || r.contains("The code does not change")), "{rows:#?}");
     assert!(
-        app.help().contains(&"This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where; then, of what changes, the title and summary, Phabricator's then what is sent; and the parent and the bug, before then after, and the status, which stays as it is. No code is sent: D13 is Needs Review, not in work, and only a revision in work gets a new diff.".to_string()),
+        app.help().contains(&"This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where, and how long ago what is shown of D13 was fetched; then, of what changes, the title and summary, Phabricator's then what is sent; and the parent and the bug, before then after, and the status, which stays as it is. No code is sent: D13 is Needs Review, not in work, and only a revision in work gets a new diff.".to_string()),
         "{:?}",
         app.help()
     );
@@ -22816,13 +22858,16 @@ fn a_revision_in_review_is_offered_its_title_summary_and_parent_alone_in_the_pla
     submit_menu(&mut app, "Send it to Phabricator");
     assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "updating D13 on Phabricator…"));
     app.settle();
-    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
     assert_eq!(phab.lock().unwrap().writes(), ["differential.revision.edit summary"]);
     assert!(phab.lock().unwrap().of_reviewers().is_empty(), "no call of reviewers at all");
     let r = phab.lock().unwrap().revisions[&13].clone();
     assert_eq!((r.status.as_str(), r.summary.as_str(), r.diffs.len()), ("needs-review", "New why.", 1));
-    // Fetched again, alone, once it is sent: only the diff differs, so the
-    // update is grayed, and the menu says why.
+    // Nothing fetched once it is sent: the line says what was fetched
+    // before. Fetched: only the diff differs, so the update is grayed, and
+    // the menu says why.
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Needs Review · the diff and the title or summary differ · no new comments"));
+    fetched(&mut app);
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Needs Review · the diff differs · no new comments"));
     open_phab_menu(&mut app);
     assert!(items(&app).contains(&("Update D13 on Phabricator: its title, summary and parent".to_string(), false)), "{:?}", items(&app));
@@ -23112,7 +23157,7 @@ fn the_stack_s_revisions_are_fetched_in_one_search_when_asked_and_not_again_unti
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn a_submit_fetches_the_revision_it_sent_to_again_once_it_is_done() {
+fn a_submit_fetches_nothing_once_it_is_done_its_line_showing_what_was_fetched_before() {
     let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
     // D13, a draft never sent for review: in work, as moz-phab takes it.
     let mut p = Phab { next: 124, ..Default::default() }.with(13, "draft", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
@@ -23124,39 +23169,153 @@ fn a_submit_fetches_the_revision_it_sent_to_again_once_it_is_done() {
     fetched(&mut app);
     // In sync, as its Phabricator line says below: ✓.
     assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [D]✓ Bug 3 - three");
-    // Submitted, it is Changes Planned, though Phabricator still says it
-    // is a draft, never sent for review: fetched again at once, alone,
-    // `[W]`, the rest of what its line says read again with it.
     keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
     app.refresh();
     app.settle();
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Draft · in sync · no new comments"));
-    let comments_read = |phab: &std::sync::Arc<std::sync::Mutex<Phab>>| line_calls(phab).iter().filter(|m| *m == "transaction.search").count();
+    let comments_read = |phab: &std::sync::Arc<std::sync::Mutex<Phab>>| phab.lock().unwrap().calls.iter().filter(|(m, _)| m == "transaction.search").count();
     assert_eq!(comments_read(&phab), 1);
+    // Submitted, it is Changes Planned on Phabricator. All the submit
+    // needed was stored: nothing read, before nor after the send, which made
+    // its one write; so its line, and the pane, show D13 as it was fetched
+    // before, a draft, as the bottom line says.
+    let calls = phab.lock().unwrap().calls.len();
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 is Changes Planned now. Patch 2 has no revision, so D13 gets no parent.");
+    assert_eq!(app.status, "D13 is Changes Planned now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
     let r = phab.lock().unwrap().revisions[&13].clone();
     assert_eq!((r.status.as_str(), r.draft), ("changes-planned", true));
+    assert_eq!(phab.lock().unwrap().calls[calls..].iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), ["differential.revision.edit"]);
+    assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([13])]);
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [D]✓ Bug 3 - three");
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Draft · in sync · no new comments"));
+    assert_eq!(comments_read(&phab), 1);
+    // Fetched: `[W]`, the rest of what its line says read again with it.
+    fetched(&mut app);
     assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([13]), serde_json::json!([13])]);
     assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [W]✓ Bug 3 - three");
-    assert_eq!(comments_read(&phab), 2);
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
-    // A new revision, of patch 1: its status at once, with its link, it
-    // alone fetched. Its latest diff as the stand-in keeps a diff made,
-    // empty, is not the patch's: ✗, as its line says.
+    // A new revision, of patch 1: its link taken at once, nothing of it
+    // fetched, as its line says, until it is fetched. Its latest diff as
+    // the stand-in keeps a diff made, empty, is not the patch's: ✗, as its
+    // line says.
     keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     choose(&mut app, "Send it to Phabricator");
     app.settle();
-    assert!(app.status.starts_with("Patch 1 is D124 on Phabricator now"), "{}", app.status);
-    assert_eq!(phab.lock().unwrap().searched.last(), Some(&serde_json::json!([124])));
+    assert_eq!(
+        app.status,
+        "Patch 1 is D124 on Phabricator now, in Changes Planned. The message of patch 1 names D124 now. Patch 1 is at the bottom of the stack, so D124 gets no parent. Nothing of D124 is fetched from Phabricator yet."
+    );
+    assert_eq!(phab.lock().unwrap().searched.len(), 2);
+    assert_eq!(pane_lines(&draw(&mut app))[0], "  1      Bug 1 - one");
+    assert_eq!(phab_line(&mut app), Some(format!("Phabricator: D124 · {NOT_FETCHED}")));
+    fetched(&mut app);
+    assert_eq!(phab.lock().unwrap().searched.last(), Some(&serde_json::json!([124, 13])));
     assert_eq!(pane_lines(&draw(&mut app))[0], "  1 [W]✗ Bug 1 - one");
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D124 · Changes Planned · the diff differs · no new comments"));
     stacked::phab::statuses_stand_in(&db, None);
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_review_of_a_submit_says_how_long_ago_what_it_shows_was_fetched_as_it_is_drawn_reading_nothing() {
+    let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
+    let earlier = patch_of(&db, 2).diff;
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}13"), &earlier.replace("+LINE 20", "+Line twenty"));
+    // What a fetch stored of D13 eleven minutes ago, its latest diff the
+    // version of patch 3 before; and its repository, as a submit read it.
+    let link = "https://phabricator.example.com/D13";
+    let at = stacked::db::now() - 11 * 60;
+    let state = stacked::db::State {
+        status: "changes-planned".into(),
+        title: "WIP: Bug 3 - three".into(),
+        bug: "3".into(),
+        phid: "PHID-DREV-13".into(),
+        diff: 1000,
+        draft: Some(false),
+        repository: "PHID-REPO-1".into(),
+        ..Default::default()
+    };
+    let revision = stacked::db::Revision { link: link.into(), d: "D13".into(), state: Some(state), comments: Some(Default::default()), time: at };
+    let raw = stacked::db::Record::RawDiff { link: link.into(), diff: 1000, raw: earlier.clone() };
+    let fetched_at = |at: i64| stacked::db::Record::Fetched { links: vec![link.into()], time: at };
+    Db::append(&db, &[stacked::db::Record::Revision(revision), raw, fetched_at(at)]).unwrap();
+    Db::edit(&db, |d| d.store_repository(stacked::db::Repository { phid: "PHID-REPO-1".into(), vcs: "git".into(), ..Default::default() }).map(|_| ())).unwrap();
+    // A stand-in that knows nothing: any read of it would fail the review.
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default()));
+    let _one = phab_stand_in(&phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    phab_choose(&mut app, "Submit to Phabricator as WIP");
+    assert_eq!(app.status, "working out what submitting patch 3 sends: nothing is sent yet");
+    app.settle();
+    assert_eq!(app.screen, Screen::Submit);
+    assert!(phab.lock().unwrap().calls.is_empty(), "nothing read");
+    // Said where the review speaks of D13, whatever view the code is drawn
+    // in, and on Phabricator's diff, in the Phabricator line's words.
+    let rows = submitted(&mut app);
+    let said = |age: &str| format!("   What is shown of D13 here was fetched {age}.");
+    let named = |age: &str| format!("--- D13 on Phabricator, fetched {age}");
+    let at = |rows: &[String], line: &str| rows.iter().position(|r| r == line).unwrap_or_else(|| panic!("no {line:?} in {rows:#?}"));
+    assert!(at(&rows, "   Patch 2 has no revision, so D13 gets no parent.") < at(&rows, &said("11 minutes ago")), "{rows:#?}");
+    at(&rows, &named("11 minutes ago"));
+    inter_view(&mut app, InterLayout::ChangeUnified);
+    let rows = submitted(&mut app);
+    at(&rows, &said("11 minutes ago"));
+    assert!(!rows.iter().any(|r| r.starts_with("--- D13")), "{rows:#?}");
+    inter_view(&mut app, InterLayout::Interdiff);
+    submit_menu(&mut app, "Cancel: send nothing");
+    // Found as it was stored by a fetch fifty seconds ago: just now; then,
+    // as the review stays open, a minute ago, worked out as it is drawn,
+    // nothing written, nothing read.
+    Db::append(&db, &[fetched_at(stacked::db::now() - 50)]).unwrap();
+    app.refresh();
+    phab_choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    let rows = submitted(&mut app);
+    at(&rows, &said("just now"));
+    at(&rows, &named("just now"));
+    let bytes = std::fs::read(&db).unwrap();
+    until(&mut app, |app| submitted(app).contains(&named("1 minute ago")).then_some(()), |app| format!("still {:#?}", submitted(app)));
+    at(&submitted(&mut app), &said("1 minute ago"));
+    assert_eq!(app.screen, Screen::Submit);
+    assert_eq!(std::fs::read(&db).unwrap(), bytes, "nothing written");
+    assert!(phab.lock().unwrap().calls.is_empty(), "nothing read");
+    submit_menu(&mut app, "Cancel: send nothing");
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_submit_whose_fetch_first_fails_sends_nothing_and_says_why_phabricator_turning_this_machine_away_as_such() {
+    let (_tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\n{LINK}13")]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default()));
+    let _one = phab_stand_in(&phab);
+    // Phabricator turning this machine away (HTTP 429), as Conduit says it.
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = asked.clone();
+    stacked::submit::stand_in(Some(Box::new(move |m, _| {
+        seen.lock().unwrap().push(m.to_string());
+        Err(stacked::phab::TURNED_AWAY.to_string())
+    })));
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    phab_choose(&mut app, "Submit to Phabricator as WIP");
+    assert_eq!(app.status, "fetching D13 and D12 from Phabricator first, as nothing of them is stored yet: nothing is sent yet");
+    app.settle();
+    // Nothing sent, nor stored, no review open; the bottom line says why.
+    assert_eq!((app.screen, app.mode.clone()), (Screen::Main, Mode::Normal));
+    assert_eq!(
+        app.status,
+        "D13 and D12 could not be fetched from Phabricator, so nothing was sent: Phabricator is turning away requests from this machine for now (HTTP 429, too many requests)"
+    );
+    assert_eq!(*asked.lock().unwrap(), ["differential.revision.search"], "no call after the one turned away");
+    assert!(Db::load(&db).unwrap().stored_revisions().is_empty());
     stacked::submit::stand_in(None);
 }
 
@@ -23776,11 +23935,13 @@ fn a_summary_wrapped_otherwise_differs_space_showing_the_lines_of_both_until_a_s
     let said = rows[from..].iter().take_while(|r| r.starts_with("   ")).count();
     assert!(said > 0, "{rows:#?}");
     assert_eq!(rows[from + said..from + said + 7], [" WIP: Bug 3 - three", " ", old, new, "+before it checks the header.", " ", " Because."], "{rows:#?}");
-    // Sent, the summary as this version writes it: given back so, in sync.
+    // Sent, the summary as this version writes it: given back so, in sync,
+    // once fetched.
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
     assert_eq!(phab.lock().unwrap().revisions[&13].summary, "The parser reads the whole file\nbefore it checks the header.\n\nBecause.");
+    fetched(&mut app);
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
     stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
@@ -23808,15 +23969,18 @@ fn a_patch_submitted_and_unchanged_since_is_in_sync_phabricator_giving_back_what
     app.settle();
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
     // Phabricator keeps them as they were sent: the title as moz-phab
     // writes it, the summary without the trailer, its lines as the
     // message's, the white space ending one too.
     let r = phab.lock().unwrap().revisions[&13].clone();
     assert_eq!(r.title, "WIP: Bug 3 - three r?bob r=alice");
     assert_eq!(r.summary, "The parser reads the whole file\nbefore it checks the header.  \n\n    $ ./mach build --foo\n\nBecause.");
-    // Fetched again as they are given back: in sync, and Space says that
-    // Phabricator has this exact version.
+    // Nothing fetched after the submit: the line says what was fetched
+    // before it. Fetched as they are given back: in sync, and Space says
+    // that Phabricator has this exact version.
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · the title or summary differs · no new comments"));
+    fetched(&mut app);
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
     keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
     assert_eq!(
@@ -24241,17 +24405,16 @@ fn a_revision_not_modified_since_it_was_stored_is_read_no_more_and_one_found_as_
     assert_eq!(comments_read(&phab)[3..], ["D12"]);
     next_patch(&mut app);
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D12 · Changes Planned · the diff differs · 3 new comments to pull"));
-    // The title of D13 submitted, which Phabricator's stand-in does not take
-    // as a modification: D13 fetched again once it is sent all the same,
-    // alone, its comments read again, as the submit changed it.
+    // The title of D13 submitted, all it needs stored: nothing read, before
+    // nor after it is sent.
     next_patch(&mut app);
     phab_choose(&mut app, "Update D13 on Phabricator: its title and summary");
     app.settle();
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 has the title and summary of patch 3 now.");
-    assert_eq!(since(), ["edge.search", "differential.diff.search", "transaction.search"]);
-    assert_eq!(comments_read(&phab)[4..], ["D13"]);
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. What is shown of D13 was fetched before this submit.");
+    assert!(since().is_empty());
+    assert_eq!(comments_read(&phab).len(), 4);
     // D11 commented on, so modified since, and pulled alone: its diffs read,
     // the latest stored already, and its comments, with the names of their
     // authors; the comments stored with when D11 was modified, as its
@@ -24269,7 +24432,7 @@ fn a_revision_not_modified_since_it_was_stored_is_read_no_more_and_one_found_as_
     assert_eq!(since(), ["edge.search", "differential.querydiffs", "transaction.search", "user.search"]);
     fetched(&mut app);
     assert_eq!(since(), ["edge.search", "differential.diff.search"]);
-    assert_eq!(comments_read(&phab)[5..], ["D11"]);
+    assert_eq!(comments_read(&phab)[4..], ["D11"]);
     stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
 }
@@ -24449,7 +24612,7 @@ fn the_patch_s_phabricator_menu_holds_its_items_about_phabricator_and_the_line_s
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn a_submit_and_a_pull_store_what_they_read() {
+fn a_submit_fetches_what_it_lacks_first_stored_as_a_fetch_stores_it_and_a_pull_stores_what_it_reads() {
     // D13 in work, never fetched, another summary than patch 3's.
     let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nWhy, said again.\n\n{LINK}13")]);
     let mut p = Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
@@ -24461,40 +24624,47 @@ fn a_submit_and_a_pull_store_what_they_read() {
     let link = "https://phabricator.example.com/D13";
     let state = || Db::load(&db).unwrap().revision_state(link).map(|(s, _)| s.clone());
     assert_eq!(state(), None);
-    // What the submit reads before anything is sent, stored: the state of
-    // D13 and its raw latest diff, though nothing is sent; the line says
-    // it, its comments not read.
+    // Nothing of D13 stored: fetched first, the bottom line saying so, as
+    // Fetch the latest fetches it alone, and stored as it stores it: its
+    // state, its raw latest diff, its comments, and when, though nothing is
+    // sent; the line says it.
     keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
     phab_choose(&mut app, "Submit to Phabricator as WIP");
+    assert_eq!(app.status, "fetching D13 from Phabricator first, as nothing of it is stored yet: nothing is sent yet");
+    assert!(draw(&mut app).lines().next().unwrap().contains("submitting…"));
     app.settle();
     assert_eq!(app.screen, Screen::Submit);
     let s = state().expect("stored");
     assert_eq!((s.status.as_str(), s.title.as_str(), s.summary.as_str(), s.phid.as_str(), s.diff), ("changes-planned", "WIP: Bug 3 - three", "Why.", "PHID-DREV-13", 1000));
-    assert_eq!(Db::load(&db).unwrap().raw_diff(link, 1000), Some(patch_of(&db, 2).diff.as_str()));
+    assert_eq!((s.draft, s.repository.as_str()), (Some(false), "PHID-REPO-1"));
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.raw_diff(link, 1000), Some(patch_of(&db, 2).diff.as_str()));
+    assert!(d.fetched(link).is_some() && d.revision_comments(link).is_some());
+    drop(d);
     submit_menu(&mut app, "Cancel: send nothing");
     assert_eq!(app.status, "nothing was sent to Phabricator");
-    app.refresh();
-    app.settle();
-    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · the title or summary differs · …"));
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · the title or summary differs · no new comments"));
     assert_eq!(phab_age(&mut app).as_deref(), Some("fetched just now"));
-    // Reviewed again, then retitled by someone on Phabricator: what the
-    // submit reads again before it would send, stored too, and nothing
-    // sent. (No fetch after it: the database's stand-in is gone.)
+    // Reviewed again: nothing read, all of it stored. Then retitled by
+    // someone on Phabricator: not read either; sent, the summary as the
+    // review showed it, and nothing stored of what was sent.
+    let calls = phab.lock().unwrap().calls.len();
     phab_choose(&mut app, "Submit to Phabricator as WIP");
+    assert_eq!(app.status, "working out what submitting patch 3 sends: nothing is sent yet");
     app.settle();
     assert_eq!(app.screen, Screen::Submit);
+    assert_eq!(phab.lock().unwrap().calls.len(), calls, "nothing read");
     phab.lock().unwrap().revisions.get_mut(&13).unwrap().title = "Someone's title".into();
-    stacked::phab::statuses_stand_in(&db, None);
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.");
-    assert_eq!(state().map(|s| s.title), Some("Someone's title".to_string()));
-    assert!(phab.lock().unwrap().writes().is_empty());
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
+    assert_eq!(state(), Some(s));
+    assert_eq!(phab.lock().unwrap().writes(), ["differential.revision.edit summary"]);
     // D13 commented on, and pulled: its comments stored, as the count of
     // those not pulled yet reads them, with no time of when D13 was
-    // modified, as its search says none; its title and summary, which no
-    // version of patch 3 has, taken as a new version of it.
-    statuses_from(&db, &phab);
+    // modified, as its search says none; its state, whether it is a draft
+    // with it; its title and summary, which no version of patch 3 has,
+    // taken as a new version of it.
     phab.lock().unwrap().revisions.get_mut(&13).unwrap().comments = vec![said("c1", None), said("c2", Some("c1"))];
     phab_choose(&mut app, "Pull D13 from Phabricator");
     app.settle();
@@ -24503,13 +24673,14 @@ fn a_submit_and_a_pull_store_what_they_read() {
     let (c, _) = d.revision_comments(link).expect("stored");
     assert_eq!((c.modified, c.list.iter().map(|s| (s.id.as_str(), s.reply_to.as_deref())).collect::<Vec<_>>()), (None, vec![("c1", None), ("c2", Some("c1"))]));
     drop(d);
+    assert_eq!(state().map(|s| (s.title, s.draft)), Some(("Someone's title".to_string(), Some(false))));
     assert_eq!(phab_line(&mut app).unwrap().rsplit(" · ").next(), Some("no new comments"));
     // Accepted, then pulled again, the same revision: nothing new, and
     // nothing of it written again, but when it was read.
     let run = Db::load(&db).unwrap().runs().into_iter().rev().find(|r| stacked::held::pulled(r)).map(|r| r.id.clone()).unwrap();
     Db::edit(&db, |d| stacked::held::close(d, &run, &Default::default(), Some(true))).unwrap();
     app.refresh();
-    assert_eq!(patch_of(&db, 2).message, format!("Someone's title\n\nWhy.\n\n{LINK}13"));
+    assert_eq!(patch_of(&db, 2).message, format!("Someone's title\n\nWhy, said again.\n\n{LINK}13"));
     let n = phab_records(&db);
     phab_choose(&mut app, "Pull D13 from Phabricator");
     app.settle();
@@ -24615,8 +24786,9 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     choose(&mut app, "What differs from D13 on Phabricator…");
     assert_eq!(differs_seen(&mut app).map(|(t, l)| (t, differs_said(&l))), Some((title, said)));
     keys(&mut app, &[KeyCode::Esc, KeyCode::Left]);
-    // Submitted: its parent set, nothing else sent; fetched again once it
-    // is sent, the parents with the rest, in sync.
+    // Submitted: its parent set, nothing else sent, in one write; nothing
+    // read, nor fetched once it is sent, the line saying what was fetched
+    // before; fetched, the parents with the rest, in sync.
     let edges = |phab: &Shared| line_calls(phab).iter().filter(|m| *m == "edge.search").count();
     assert_eq!(edges(&phab), 1);
     phab_choose(&mut app, "Submit to Phabricator as WIP");
@@ -24626,8 +24798,11 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     assert!(rows.contains(&"   Its parent is set to D11, the revision of patch 1.".to_string()), "{rows:#?}");
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D13 keeps its diff, title and summary. The parent of D13 is D11 now.");
+    assert_eq!(app.status, "D13 keeps its diff, title and summary. The parent of D13 is D11 now. What is shown of D13 was fetched before this submit.");
     assert_eq!(phab.lock().unwrap().writes(), ["differential.revision.edit parents.set"]);
+    assert_eq!(edges(&phab), 1);
+    assert_eq!(line_of(&mut app, 2).as_deref(), Some("Phabricator: D13 · Changes Planned · the parent differs · no new comments"));
+    fetched(&mut app);
     assert_eq!(edges(&phab), 2);
     assert_eq!(line_of(&mut app, 2).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
     assert_eq!(
@@ -24641,7 +24816,8 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     app.settle();
     submit_menu(&mut app, "Send it to Phabricator");
     app.settle();
-    assert_eq!(app.status, "D12 keeps its diff, title and summary. The parent of D12 is D13 now.");
+    assert_eq!(app.status, "D12 keeps its diff, title and summary. The parent of D12 is D13 now. What is shown of D12 was fetched before this submit.");
+    fetched(&mut app);
     assert_eq!(edges(&phab), 3);
     assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D12 · Changes Planned · in sync · no new comments"));
     assert_eq!(marks_agree(&mut app), ['✓', '✓', '✓']);

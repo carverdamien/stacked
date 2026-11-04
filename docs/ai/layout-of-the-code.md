@@ -71,10 +71,14 @@
   versions, the patches it adds, those it makes again on what it changed
   under them, and the reviewers' comments (`review.rs`); a patch submitted
   as work in progress, or its title, summary and parent alone to a
-  revision in review; Fetch the latest from Phabricator, every revision of
+  revision in review, worked out from what is stored of Phabricator, what
+  it lacks fetched first, and sent in the writes moz-phab makes, nothing
+  read (`submit.rs`); Fetch the latest from Phabricator, every revision of
   a stack read in a few calls, and stored, only what differs from what is
-  stored, as what a submit and a pull read is stored; and what the
-  Phabricator line over a patch's message counts;
+  stored, as what a pull reads is stored, and the fetch a submit makes
+  first, its calls the submit's own; and what the Phabricator line over a
+  patch's message counts, and when what it says was fetched, as the
+  review of a submit says it too (`phab::fetched_at`);
   Conduit called by curl, the token on its standard input, what
   Phabricator answered said, and its refusals of this machine (HTTP 429)
   an error of their own.
@@ -165,8 +169,9 @@
   its screens for reviewing what the agent brought back, and for
   searching;
   `tui/submitting.rs`, what a submit to Phabricator sends, said in a
-  dialog, or reviewed on a screen of its own, before it is sent, its code
-  in the view of the interdiffs that 1 sets, its menu on Esc;
+  dialog, or reviewed on a screen of its own, before it is sent, with how
+  long ago what it shows of the revision was fetched, its code in the view
+  of the interdiffs that 1 sets, its menu on Esc;
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
   which the patches pane shows, and the Phabricator line over the message
   of the patch the middle shows, from what is stored, with how long ago it
@@ -178,7 +183,7 @@
   and the stack's pull under way, reading Phabricator, waiting its turn
   or being made, its line's menu and its drop, the submit item as
   its revision's status has it, the patch's `Phabricator` menu, and the
-  fetch, asked from a menu, or after a submit; `tui/compared.rs`, two
+  fetch, asked from a menu; `tui/compared.rs`, two
   versions of a text compared word by word where their lines wrap aside,
   as rows: a title and summary in the review of a submit, a reviewer's
   comment edited on Phabricator, or read again with its suggested edit,

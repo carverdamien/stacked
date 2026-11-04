@@ -121,23 +121,33 @@ bytes long, padded with spaces.
   (`{"t":"revision","link":"https://…/D123","d":"D123","state":{…},"comments":{…},"time":…}`):
   its state, its status as Phabricator writes its value (`needs-review`),
   its title, summary and bug, its PHID, its parents, each its PHID and its
-  `D123`, the id of its latest diff, and the commit that diff is on as
+  `D123`, the id of its latest diff, the commit that diff is on as
   Phabricator names it (`"base"`, none in a state a stacked of before
-  wrote, or where Phabricator says none), or that Phabricator does not
-  have it (`"state":{"missing":true}`); and its comments, each the id of its
+  wrote, or where Phabricator says none), whether it is a draft
+  (`"draft"`, its search's `isDraft`, none in a state a stacked of before
+  wrote, which a submit fetches again first) and the PHID of its
+  repository (`"repository"`, its search's `repositoryPHID`), or that
+  Phabricator does not have it (`"state":{"missing":true}`); and its comments, each the id of its
   version as it was last edited, those of its versions before and the
   comment it replies to, which the Phabricator line counts those not
   pulled yet by, with when the revision was last modified as they were
   read (`dateModified`; none from a pull of a stacked of before). A read
   writes only the parts that differ from what is stored, and nothing for a
-  revision it found as it was stored: `Fetch the latest from Phabricator`
-  and a pull write both, a submit the state alone. The latest record with
+  revision it found as it was stored: `Fetch the latest from Phabricator`,
+  the fetch a submit makes first and a pull write both; a submit writes
+  nothing else of a revision. The latest record with
   each part is what stands. A rawdiff record holds a revision's raw diff
   (`{"t":"rawdiff","link":…,"diff":456,"raw":"…"}`), its latest, or an
   older one a pull read, written once for each diff id, as a diff never
   changes; and a fetched record says when a fetch, or a pull, read
   revisions (`{"t":"fetched","links":[…],"time":…}`), the latest that
-  names a revision what stands of it. A file a stacked of before wrote
+  names a revision what stands of it. A repository record holds a
+  repository on Phabricator a submit read once to make a new diff in it
+  (`{"t":"repository","phid":"PHID-REPO-…","callsign":"MOZILLACENTRAL","vcs":"hg","time":…}`):
+  its PHID, its callsign, as the search gave it or as it was asked by,
+  and what holds it, `git` or `hg`; none of it changes, so it is written
+  once, and every submit after takes it from there, the latest of a PHID
+  what stands. A file a stacked of before wrote
   has none of them, and reads as if nothing had been fetched yet; a
   stacked of before passes over these lines as lines it cannot read, with
   its warning (`stacked check` lists them), and reads the rest of the file
@@ -169,9 +179,10 @@ bytes long, padded with spaces.
   the comments open, the asks going or waiting for your review and what
   they need, what is chosen and marked read, where stacked last left HEAD
   of each checkout, what stands of each revision read from Phabricator,
-  the raw diff its state names and when it was last fetched), and how the
-  indexes stood; a checkpoint of before, with no index of where stacked
-  left HEAD, or of what was read of Phabricator, reads as one with none.
+  the raw diff its state names and when it was last fetched, and each
+  repository read from it), and how the indexes stood; a checkpoint of
+  before, with no index of where stacked left HEAD, or of what was read of
+  Phabricator, or of its repositories, reads as one with none.
   stacked reads the header, that checkpoint, the records it says, and the
   lines after it: not the whole file. What needs the history (an older
   stack, the log and the tree, the versions of a patch, a comment's

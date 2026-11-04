@@ -1,11 +1,15 @@
 //! A patch sent to Phabricator as work in progress, from its menu, or its
 //! title, summary and parent alone to its revision, open but not in work:
-//! what is sent read first, away from the screen, nothing sent yet. For a
-//! new revision, a dialog then says what is sent and where. For a revision
+//! what is sent worked out first, away from the screen, from what the
+//! database holds of Phabricator, what it lacks fetched into it first, the
+//! bottom line saying so (`submit::lacking`), nothing sent yet. For a new
+//! revision, a dialog then says what is sent and where. For a revision
 //! there already, a screen of its own shows what replaces what: what is
-//! sent and where, said, and, to a revision not in work, that the code is
-//! not sent when it differs; the title and summary, Phabricator's then
-//! what is sent; what else changes (the parent, the bug, the status); and
+//! sent and where, said, how long ago what it shows of the revision was
+//! fetched, as the Phabricator line says it, and, to a revision not in
+//! work, that the code is not sent when it differs; the title and summary,
+//! Phabricator's then what is sent; what else changes (the parent, the
+//! bug, the status); and
 //! the code, when a new diff is sent, in the view of the interdiffs that 1
 //! sets (`views_dialog`): compared as two diffs, as the view of what
 //! differs from Phabricator draws its code for the revision and the patch
@@ -13,18 +17,18 @@
 //! the two on other bases, each file as each leaves it; compared as the
 //! code, each file as Phabricator's latest diff leaves it, then as the patch
 //! does, both on the patches below it, as the middle draws a patch
-//! (`change::change_stops`). Side by side, what is said over the code is
-//! side by side too. Esc opens the
-//! screen's menu, which sends it, once the revision is read again and seen
-//! to be as it was, or sends nothing; a right click opens it too. While
-//! HEAD is on the stack, a patch whose commit in the workspace names a
-//! revision it does not is held back, its item grayed, before anything is
-//! read. Built with the `moz-phab` feature.
+//! (`change::change_stops`), Phabricator's diff named with how long ago it
+//! was fetched. Side by side, what is said over the code is side by side
+//! too. Esc opens the screen's menu, which sends it, as it shows it,
+//! nothing read of Phabricator first, or sends nothing; a right click opens
+//! it too. While HEAD is on the stack, a patch whose commit in the
+//! workspace names a revision it does not is held back, its item grayed,
+//! before anything is worked out. Built with the `moz-phab` feature.
 
 use super::change::{Near, change_stops, code_view};
 use super::compared::{diff_rows, message_rows, row, said_rows};
 use super::interdiffs::{At, Seen, Two, half_of, paired};
-use super::revisions::{Shown as CodeShown, bare, files_drawn, files_heading, interdiff_drawn, named_interdiff, shown_of, shown_said};
+use super::revisions::{Shown as CodeShown, age_said, bare, files_drawn, files_heading, interdiff_drawn, named_interdiff, shown_of, shown_said};
 use super::*;
 use crate::ops::CodePlace;
 use crate::submit::{Prepared, and};
@@ -48,15 +52,16 @@ pub struct Submitting {
     /// the lines it draws, those rows then the code (`review_lines`), each
     /// with what it shows, to be found again drawn otherwise
     /// (`interdiffs::Seen`); what they were drawn for: the width, the view
-    /// of the interdiffs, every line or only what the patches changed; and,
-    /// drawn again, the line the cursor went on and the place it came with
-    /// (`interdiffs::locate`), so that switching back and forth it goes back
-    /// where it was.
+    /// of the interdiffs, every line or only what the patches changed, and
+    /// how long ago what they show of the revision was fetched, as they say
+    /// it (`revisions::age_said`); and, drawn again, the line the cursor
+    /// went on and the place it came with (`interdiffs::locate`), so that
+    /// switching back and forth it goes back where it was.
     rows: Vec<Row>,
     starts: Vec<usize>,
     lines: Vec<Parts>,
     at: Vec<Seen>,
-    built: Option<(usize, InterLayout, InterLines)>,
+    built: Option<(usize, InterLayout, InterLines, Option<String>)>,
     kept: Option<(usize, At)>,
     /// The line the cursor is on, and the first shown.
     pub cursor: usize,
@@ -91,11 +96,13 @@ impl Submitting {
 /// and where, said, and that the code does not change when it does not,
 /// that it is not sent when it differs but the revision is not in work, or
 /// why a new diff is sent of a latest diff that makes the changes of a
-/// version of the patch; then only what changes: the title and summary,
-/// Phabricator's then what is sent; the parent and the bug, before then
-/// after, and the status; when a new diff is sent, the heading of the
-/// code and what the code is, `code` (`Compared::said`).
-fn review_rows(p: &Prepared, w: usize, code: Option<(&str, &str)>) -> Vec<Row> {
+/// version of the patch; how long ago what is shown of the revision was
+/// fetched, `age` (`fetched 11 minutes ago`), as the Phabricator line says
+/// it; then only what changes: the title and summary, Phabricator's then
+/// what is sent; the parent and the bug, before then after, and the
+/// status; when a new diff is sent, the heading of the code and what the
+/// code is, `code` (`Compared::said`).
+fn review_rows(p: &Prepared, w: usize, code: Option<(&str, &str)>, age: Option<&str>) -> Vec<Row> {
     let mut rows = vec![row(Kind::File, "what is sent")];
     let n = p.number();
     let id = p.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
@@ -109,6 +116,11 @@ fn review_rows(p: &Prepared, w: usize, code: Option<(&str, &str)>) -> Vec<Row> {
     }
     for s in p.said() {
         said_rows(&mut rows, Kind::Meta, &s, w);
+    }
+    // What the review stands on: the revision as it was fetched, nothing
+    // read again before it is sent.
+    if let (Some(r), Some(age)) = (&p.revision, age) {
+        said_rows(&mut rows, Kind::Meta, &format!("What is shown of {} here was {age}.", r.id), w);
     }
     // The title and summary, as an interdiff compares two messages.
     let before = p.message_before().unwrap_or_default();
@@ -158,9 +170,10 @@ fn review_rows(p: &Prepared, w: usize, code: Option<(&str, &str)>) -> Vec<Row> {
 /// version of the patch whose changes it makes, as the review says at its
 /// top (`submit::Known::by_changes`); the other, the diff the submit sends
 /// (`Prepared::diff`). How the first is named in the views (`D13 on
-/// Phabricator`, `version 1 of patch 3`), and in what is said
-/// (`the latest diff of D13`); what the views show of them as two diffs
-/// (`revisions::shown_of`); and, where that is an interdiff, the two
+/// Phabricator, fetched 11 minutes ago`, with how long ago it was fetched,
+/// `age`, as the review says it; `version 1 of patch 3`), and in what is
+/// said (`the latest diff of D13`); what the views show of them as two
+/// diffs (`revisions::shown_of`); and, where that is an interdiff, the two
 /// versions it compares and their interdiff (`revisions::named_interdiff`),
 /// each diff without what git derives in it (`revisions::bare`), none
 /// where it is each file.
@@ -173,13 +186,17 @@ struct Compared<'a> {
 }
 
 impl<'a> Compared<'a> {
-    fn of(p: &'a Prepared, code: &'a str) -> Compared<'a> {
+    fn of(p: &'a Prepared, code: &'a str, age: Option<&str>) -> Compared<'a> {
         let n = p.number();
         let id = p.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
         let raw = p.revision.as_ref().map_or("", |r| r.raw.as_str());
+        let phabricator = match age {
+            Some(age) => format!("{id} on Phabricator, {age}"),
+            None => format!("{id} on Phabricator"),
+        };
         let (theirs, old, said) = match &p.known {
             Some(k) if k.by_changes => (k.diff.as_str(), format!("version {} of patch {n}", k.version), format!("version {} of patch {n}", k.version)),
-            _ => (raw, format!("{id} on Phabricator"), format!("the latest diff of {id}")),
+            _ => (raw, phabricator, format!("the latest diff of {id}")),
         };
         let shown = shown_of(theirs, &p.diff, Some((code, p.code_files)));
         let two_of = matches!(shown, CodeShown::Interdiff(_)).then(|| {
@@ -286,7 +303,8 @@ fn code_near(code: &str, first: usize) -> Near {
 }
 
 /// The review of `p` drawn `w` wide, its code in view `v` of the
-/// interdiffs, with only what the patches changed if `only`: what it says
+/// interdiffs, with only what the patches changed if `only`, saying how
+/// long ago what it shows of the revision was fetched, `age`: what it says
 /// over the code (`review_rows`), a row each, or, side by side where the
 /// view is side by side, as the code view pairs a diff's rows
 /// (`interdiffs::paired`), a line of the title and summary, or of what
@@ -297,12 +315,12 @@ fn code_near(code: &str, first: usize) -> Near {
 /// the review's, then the lines of the code.
 type Drawn = (Vec<Row>, Vec<usize>, Vec<Parts>, Vec<Seen>);
 
-fn review_lines(p: &Prepared, v: InterLayout, only: bool, w: usize) -> Drawn {
+fn review_lines(p: &Prepared, v: InterLayout, only: bool, w: usize, age: Option<&str>) -> Drawn {
     let sides = v.sides();
     let fold = if sides { half_of(w) } else { w };
-    let compared = p.code.as_deref().map(|code| Compared::of(p, code));
+    let compared = p.code.as_deref().map(|code| Compared::of(p, code, age));
     let said = compared.as_ref().map(|c| c.heading(p, v));
-    let rows = review_rows(p, fold.saturating_sub(1), said.as_ref().map(|(h, s)| (h.as_str(), s.as_str())));
+    let rows = review_rows(p, fold.saturating_sub(1), said.as_ref().map(|(h, s)| (h.as_str(), s.as_str())), age);
     // Each row's line, a row folded on with the line it goes on with.
     let mut starts = Vec::new();
     let mut place = Vec::with_capacity(rows.len());
@@ -339,6 +357,28 @@ fn review_lines(p: &Prepared, v: InterLayout, only: bool, w: usize) -> Drawn {
     (rows, starts, lines, at)
 }
 
+/// What the bottom line says while what submitting the patch picked, patch
+/// `n`, sends is worked out away from the screen: that what `db` lacks for
+/// it, `lacking`, each `D123` and its link (`submit::lacking`), is fetched
+/// first, and why: nothing of it is stored yet, or what is, is not all
+/// that a submit needs. Else what is worked out: the update of revision
+/// `meta`, or the submit of the patch. Nothing is sent yet.
+fn working_said(db: &crate::db::Db, lacking: &[(String, String)], meta: Option<&str>, n: usize) -> String {
+    if !lacking.is_empty() {
+        let names: Vec<String> = lacking.iter().map(|(d, _)| d.clone()).collect();
+        let of = if names.len() == 1 { "it" } else { "them" };
+        let why = match lacking.iter().all(|(_, link)| db.revision_state(link).is_none()) {
+            true => format!("nothing of {of} is stored yet"),
+            false => format!("what is stored of {of} is not all that a submit needs"),
+        };
+        return format!("fetching {} from Phabricator first, as {why}: nothing is sent yet", and(&names));
+    }
+    match meta {
+        Some(d) => format!("working out what updating {d} sends: nothing is sent yet"),
+        None => format!("working out what submitting patch {n} sends: nothing is sent yet"),
+    }
+}
+
 impl App {
     /// Why the patch at `at` is not to be submitted now, if it is not:
     /// HEAD, as last seen for the stack as it is, has its commit naming a
@@ -353,9 +393,11 @@ impl App {
 
     /// Submit to Phabricator as WIP, from the patch's menu, or the update
     /// of its revision's title, summary and parent alone (`meta`): what
-    /// sending the patch picked sends, read away from the screen; nothing
-    /// is sent. What is read decides which it is: the revision's status.
-    /// Not while its commit in the workspace names a revision it does not.
+    /// sending the patch picked sends, worked out away from the screen from
+    /// what the database holds of Phabricator, what it lacks fetched first,
+    /// the bottom line saying so (`working_said`); nothing is sent. What is
+    /// stored decides which it is: the revision's status. Not while its
+    /// commit in the workspace names a revision it does not.
     pub(super) fn submit_patch(&mut self, meta: bool) {
         if self.bg.doing.contains(&SUBMITTING) {
             self.status = "a patch is being submitted to Phabricator already: submit this one once that is done".into();
@@ -368,19 +410,20 @@ impl App {
         }
         self.bg.doing.push(SUBMITTING);
         let revision = self.shown_patch().and_then(|p| crate::phab::revision_of(&p.message)).map(|(d, _)| d);
-        self.status = match revision.filter(|_| meta) {
-            Some(d) => format!("reading Phabricator to show what updating {d} sends: nothing is sent yet"),
-            None => format!("reading Phabricator to show what submitting patch {} sends: nothing is sent yet", at + 1),
-        };
+        let lacking = self.current().map_or_else(Vec::new, |s| crate::submit::lacking(&self.db, s, at));
+        self.status = working_said(&self.db, &lacking, revision.as_deref().filter(|_| meta), at + 1);
         let (path, name) = (self.path.clone(), self.stack.clone());
         self.spawn(move || Done::Submitting(crate::submit::prepare(&path, &name, at).map(Box::new)));
     }
 
-    /// What reading what is sent came to: the dialog of a new revision, the
-    /// review of a revision there already; or, said, why nothing is sent,
-    /// or that nothing is to be.
+    /// What working out what is sent came to: the database read again, for
+    /// what was fetched first; then the dialog of a new revision, the review
+    /// of a revision there already; or, said, why nothing is sent, or that
+    /// nothing is to be.
     pub(super) fn submit_read(&mut self, read: std::result::Result<Box<Prepared>, String>) {
         self.bg.doing.retain(|d| *d != SUBMITTING);
+        self.reload();
+        self.check_line();
         let p = match read {
             Ok(p) => *p,
             Err(why) => {
@@ -429,8 +472,8 @@ impl App {
         }
     }
 
-    /// The submit seen, sent, away from the screen: the revision read
-    /// again first, and nothing sent if it changed.
+    /// The submit seen, sent, away from the screen, as it was seen: nothing
+    /// read of Phabricator first, nor after.
     pub(super) fn submit_send(&mut self) {
         let Some(sub) = self.submitting.take() else { return };
         if self.screen == Screen::Submit {
@@ -449,7 +492,6 @@ impl App {
             return;
         }
         self.bg.doing.push(SUBMITTING);
-        self.sends(&sub.ready.change);
         self.status = match sub.ready.revision.as_ref().filter(|_| !sub.ready.in_work()) {
             Some(r) => format!("updating {} on Phabricator…", r.id),
             None => format!("sending patch {} to Phabricator…", sub.ready.number()),
@@ -506,9 +548,11 @@ impl App {
 
     /// The review: its title, then its lines from the top shown, the
     /// cursor's lit. Drawn again where the width, the view of the
-    /// interdiffs or their lines changed (`review_lines`), the cursor on
-    /// the place it was on (`interdiffs::locate`, `interdiffs::find`), as
-    /// far under the top as it was.
+    /// interdiffs or their lines changed (`review_lines`), or how long ago
+    /// what it shows of the revision was fetched, as it says it, worked out
+    /// as it is drawn, so that it grows while the review stays open; the
+    /// cursor on the place it was on (`interdiffs::locate`,
+    /// `interdiffs::find`), as far under the top as it was.
     pub(super) fn draw_submit(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
         // Scrolled by the wheel: by the lines it turned, as far as the last
@@ -526,13 +570,14 @@ impl App {
             self.inter_w.set(lw);
         }
         let v = if has_code { self.inter_in(lw) } else { InterLayout::Interdiff };
-        let key = (lw, v, self.inter_lines);
         let only = self.only_changed();
         let Some(sub) = self.submitting.as_mut() else { return };
-        if sub.built != Some(key) {
-            let was = sub.built.and_then(|_| interdiffs::locate(&sub.at, sub.cursor, sub.kept));
+        let age = sub.ready.fetched.map(|t| age_said(t, crate::db::now()));
+        let key = (lw, v, self.inter_lines, age);
+        if sub.built.as_ref() != Some(&key) {
+            let was = sub.built.as_ref().and_then(|_| interdiffs::locate(&sub.at, sub.cursor, sub.kept));
             let under = sub.cursor.saturating_sub(sub.top);
-            (sub.rows, sub.starts, sub.lines, sub.at) = review_lines(&sub.ready, key.1, only, lw);
+            (sub.rows, sub.starts, sub.lines, sub.at) = review_lines(&sub.ready, key.1, only, lw, key.3.as_deref());
             sub.built = Some(key);
             sub.kept = was.map(|place| (interdiffs::find(&sub.at, place), place));
             if let Some((at, _)) = sub.kept {
@@ -603,24 +648,25 @@ impl App {
     }
 
     /// What `?` says on the review: for a revision not in work, that no
-    /// code is sent; Esc, and a right click, for the menu that sends it or
-    /// not; and, with code, 1 for its view.
+    /// code is sent; Esc, and a right click, for the menu that sends it, as
+    /// the review shows it, nothing read first, or not; and, with code, 1
+    /// for its view.
     pub(super) fn submit_help(&self) -> Vec<String> {
         let ready = self.submitting.as_ref().map(|s| &s.ready);
         let id = ready.and_then(|p| p.revision.as_ref()).map_or("the revision".to_string(), |r| r.id.clone());
         let what = match ready.filter(|p| !p.in_work()) {
             Some(p) => format!(
-                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where; then, of what changes, the title and summary, Phabricator's then what is sent; and the parent and the bug, before then after, and the status, which stays as it is. No code is sent: {id} is {}, not in work, and only a revision in work gets a new diff.",
+                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where, and how long ago what is shown of {id} was fetched; then, of what changes, the title and summary, Phabricator's then what is sent; and the parent and the bug, before then after, and the status, which stays as it is. No code is sent: {id} is {}, not in work, and only a revision in work gets a new diff.",
                 p.status_was()
             ),
             None => format!(
-                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where; then, of what changes, the title and summary, Phabricator's then what is sent; the parent and the bug, before then after, and the status; and the code, each file as the latest diff of {id} leaves it, then as the patch leaves it, both on the patches below it."
+                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where, and how long ago what is shown of {id} was fetched; then, of what changes, the title and summary, Phabricator's then what is sent; the parent and the bug, before then after, and the status; and the code, each file as the latest diff of {id} leaves it, then as the patch leaves it, both on the patches below it."
             ),
         };
         let mut out = vec![
             what,
             format!(
-                "Press Esc for the menu, or click with the right button: Send it to Phabricator sends it, {id} read again first, and if it changed on Phabricator since this was read, nothing is sent; Cancel: send nothing sends nothing."
+                "Press Esc for the menu, or click with the right button: Send it to Phabricator sends it as this review shows it, against {id} as it was fetched, nothing read of Phabricator first; Cancel: send nothing sends nothing."
             ),
         ];
         out.push(match self.submit_code() {

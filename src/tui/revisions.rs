@@ -18,8 +18,10 @@
 //! its reviews alone, and Fetch the latest from Phabricator, which reads
 //! every revision the stack's patches name, away from the screen, and
 //! stores it (`phab::fetch_latest`). Nothing of Phabricator is read by
-//! itself: only that, a submit, which reads its revision again once it is
-//! sent, and a pull. What differs in the code of each patch is worked out away from
+//! itself: only that, a pull, and a submit, which fetches what the
+//! database lacks for it first, and nothing once it is sent, so that the
+//! line shows what was fetched before it, with how long ago that was. What
+//! differs in the code of each patch is worked out away from
 //! the screen, from what is stored, one patch at a time, the one shown
 //! first, and kept in memory as long as the editor runs. Not while reviews
 //! come from nowhere, nor in the tour. Built with the `moz-phab` feature.
@@ -61,11 +63,11 @@ fn below(n: usize) -> String {
 }
 
 /// How long before `now` it was that `then` was, in seconds since 1970, as
-/// the Phabricator line says how long ago what it says was fetched: `just
-/// now` under a minute, then in minutes, then in hours, `yesterday` from a
-/// day to two, then in days. A time to come, as a clock set otherwise
-/// gives, is just now.
-fn age_said(then: i64, now: i64) -> String {
+/// the Phabricator line and the review of a submit say how long ago what
+/// they show was fetched: `just now` under a minute, then in minutes, then
+/// in hours, `yesterday` from a day to two, then in days. A time to come,
+/// as a clock set otherwise gives, is just now.
+pub(super) fn age_said(then: i64, now: i64) -> String {
     let secs = now.saturating_sub(then).max(0);
     let ago = |n: i64, unit: &str| format!("fetched {n} {unit}{} ago", if n == 1 { "" } else { "s" });
     match secs {
@@ -473,9 +475,6 @@ pub(super) struct Comparisons {
     /// How many times what the line may say changed as a comparison was
     /// worked out: the middle's rows are built again each time.
     seq: u64,
-    /// The change of the patch the submit under way sends: its revision
-    /// fetched again once the submit is done (`App::fetch_sent`).
-    sent: Option<String>,
 }
 
 impl App {
@@ -513,17 +512,11 @@ impl App {
     }
 
     /// When what the Phabricator line of the revision at `link` says was
-    /// fetched, in seconds since 1970: of its state and its comments, of
-    /// those stored, the one read longest ago, each as of the read that
-    /// stored it, or of the latest fetch that found it as it was stored.
-    /// None while its state is not stored: the line says that it is not
-    /// fetched yet.
+    /// fetched, in seconds since 1970 (`phab::fetched_at`), as the review of
+    /// a submit says it too. None while its state is not stored: the line
+    /// says that it is not fetched yet.
     fn fetched_at(&self, link: &str) -> Option<i64> {
-        let (_, state) = self.db.revision_state(link)?;
-        let fetched = self.db.fetched(link);
-        let at = |t: i64| fetched.map_or(t, |f| f.max(t));
-        let comments = self.db.revision_comments(link).map(|(_, t)| at(t));
-        Some(comments.map_or(at(state), |c| c.min(at(state))))
+        crate::phab::fetched_at(&self.db, link)
     }
 
     /// The status of patch `id`'s revision, as stored: none when it names
@@ -612,17 +605,10 @@ impl App {
     }
 
     /// The revision at `link`, the one of a patch below another, as it is
-    /// stored, for the parent's rule (`submit::parent_with`): not known
-    /// while nothing of it is.
+    /// stored, for the parent's rule (`submit::parent_with`), as the submit
+    /// reads it (`Below::stored`): not known while nothing of it is.
     fn below(&self, link: &str) -> std::result::Result<Below, ()> {
-        match self.state(link) {
-            Some(s) if s.missing => Ok(Below::Missing),
-            Some(s) => {
-                let status = Status::from_value(&s.status);
-                Ok(Below::Found { phid: s.phid.clone(), open: status.open(), status: status.name().to_string() })
-            }
-            None => Err(()),
-        }
+        Below::stored(&self.db, link).ok_or(())
     }
 
     /// What differs in the code of the next patch due a comparison,
@@ -1136,66 +1122,33 @@ impl App {
             return;
         }
         self.status = "fetching the latest from Phabricator…".into();
-        self.fetch(None);
-    }
-
-    /// The revisions of the stack read from Phabricator and stored, away
-    /// from the screen (`phab::fetch_latest`): every one its patches name,
-    /// or revision `only` alone, `D123` and its link, which a submit just
-    /// sent to.
-    fn fetch(&mut self, only: Option<(String, String)>) {
         self.bg.doing.push(FETCHING);
         let (path, name) = (self.path.clone(), self.stack.clone());
-        self.spawn(move || {
-            let links: Option<Vec<String>> = only.as_ref().map(|(_, link)| vec![link.clone()]);
-            Done::Fetched(crate::phab::fetch_latest(&path, &name, links.as_deref()), only.map(|(d, _)| d))
-        });
+        self.spawn(move || Done::Fetched(crate::phab::fetch_latest(&path, &name, None)));
     }
 
-    /// What a fetch came to, `after` the revision it read again after a
-    /// submit, if it was that: the database read again, and what the lines
+    /// What a fetch came to: the database read again, and what the lines
     /// need next. The bottom line says what was fetched; or, nothing stored,
-    /// why, Phabricator turning this machine away said plainly. After a
-    /// submit, it keeps what the submit came to, and adds why a fetch that
-    /// failed failed.
-    pub(super) fn fetched(&mut self, said: std::result::Result<String, crate::phab::Error>, after: Option<String>) {
+    /// why, Phabricator turning this machine away said plainly.
+    pub(super) fn fetched(&mut self, said: std::result::Result<String, crate::phab::Error>) {
         if let Some(k) = self.bg.doing.iter().position(|d| *d == FETCHING) {
             self.bg.doing.remove(k);
         }
         self.reload();
-        match (said, after) {
-            (Ok(said), None) => self.status = said,
-            (Ok(_), Some(_)) => {}
-            (Err(e), None) => self.status = format!("The stack's revisions could not be fetched from Phabricator, so what is stored of them stays as it was: {e}"),
-            (Err(e), Some(d)) => {
-                self.status = format!("{} {d} could not be fetched again from Phabricator after the submit, so its line shows it as it was read before: {e}", self.status)
-            }
-        }
+        self.status = match said {
+            Ok(said) => said,
+            Err(e) => format!("The stack's revisions could not be fetched from Phabricator, so what is stored of them stays as it was: {e}"),
+        };
         self.check_line();
     }
 
-    /// The submit under way sends the patch of change `change`: its
-    /// revision fetched again once the submit is done (`fetch_sent`).
-    pub(super) fn sends(&mut self, change: &str) {
-        self.comparisons.sent = Some(change.to_string());
-    }
-
     /// Right after a submit: the database read again, for the link of a new
-    /// revision; then the revision of the patch it sent, as the patch names
-    /// it now, fetched again, alone, so that its line shows what Phabricator
-    /// has once the submit is done, not what was read before it. Not while
-    /// the editor does not read Phabricator.
-    pub(super) fn fetch_sent(&mut self) {
-        let sent = self.comparisons.sent.take();
+    /// revision, and what the lines need next. Nothing is fetched: the line
+    /// shows what was fetched before the submit, with how long ago that
+    /// was, as the bottom line says.
+    pub(super) fn submitted(&mut self) {
         self.reload();
-        if !self.reads_phabricator() {
-            return;
-        }
-        let Some(change) = sent else { return };
-        let p = self.current().and_then(|s| s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == change));
-        if let Some(named) = p.and_then(|p| crate::phab::revision_of(&p.message)) {
-            self.fetch(Some(named));
-        }
+        self.check_line();
     }
 
     /// A pull from Phabricator, as `asked` asks: of every revision the
@@ -1410,7 +1363,7 @@ impl App {
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
         let n = self.sel + 1;
         let mut out = vec![format!(
-            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; how many of the comments of {d} are not pulled yet; and how long ago that was fetched. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is what stacked stored the last time it read Phabricator: stacked reads nothing of it by itself. Fetch the latest from Phabricator, in this line's menu, reads every revision of the stack again; a submit reads its revision, and a pull the revisions it pulls. Where something is not fetched yet, the line says … in its place. The patches pane says the same after the status of each patch's revision: ✓ in sync, ✗ when something differs."
+            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; how many of the comments of {d} are not pulled yet; and how long ago that was fetched. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is what stacked stored the last time it read Phabricator: stacked reads nothing of it by itself. Fetch the latest from Phabricator, in this line's menu, reads every revision of the stack again; a submit fetches its revision first only where what it needs of it is not stored, and fetches nothing once it is sent; a pull reads the revisions it pulls. Where something is not fetched yet, the line says … in its place. The patches pane says the same after the status of each patch's revision: ✓ in sync, ✗ when something differs."
         )];
         out.push(match self.synced(p, &link) {
             Synced::NotFound => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),

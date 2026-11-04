@@ -20,7 +20,8 @@
 //!   what is stored; the latest record with each is what stands. A
 //!   revision's raw latest diff is stored once for each diff id, and a
 //!   fetch that found a revision as stored writes only a small record of
-//!   when it read it.
+//!   when it read it. A repository on Phabricator a submit makes a new
+//!   diff in is read once, and stored once, as none of it changes.
 //!
 //! The records are only ever appended, so a crash can only leave a last
 //! line cut short. Such a line, or any line that cannot be read, is passed
@@ -39,8 +40,8 @@
 //! head and the stacks one undo and one redo go to, the comments open, the
 //! runs under way and what they name, what is chosen and marked read, where
 //! stacked last left HEAD of each checkout, what stands of each revision
-//! read from Phabricator and the raw diff its state names) and
-//! how the indexes stood. A reader reads the header, the checkpoint, those
+//! read from Phabricator and the raw diff its state names, the repositories
+//! read from it) and how the indexes stood. A reader reads the header, the checkpoint, those
 //! records and the lines after it, not the whole file; the records it did
 //! not read are `Unloaded`. What needs the history (an older stack, the
 //! log, versions of a patch, a comment's history, the comments closed, the
@@ -182,6 +183,11 @@ struct Checkpoint {
     raw_diffs: Vec<(String, u64, usize)>,
     #[serde(default)]
     fetched: Vec<(String, usize)>,
+    /// The rev of the latest record of each repository read from
+    /// Phabricator, by its PHID. None in a checkpoint a stacked of before
+    /// wrote, as such a stacked wrote none of them.
+    #[serde(default)]
+    repositories: Vec<(String, usize)>,
     collapsed: Vec<(String, String)>,
     reviews: Vec<(String, usize)>,
     marks: Vec<(String, Vec<usize>)>,
@@ -390,6 +396,10 @@ pub enum Record {
         #[serde(default)]
         time: i64,
     },
+    /// A repository on Phabricator, as a submit read it to make a new diff
+    /// in it: stored once, as none of it changes. A database a stacked of
+    /// before wrote has none.
+    Repository(Repository),
     /// A line of what a run's claude wrote, as it wrote it.
     Event {
         run: String,
@@ -442,8 +452,9 @@ pub struct Revision {
 }
 
 /// A revision's state on Phabricator, as a read stored it (`Revision`):
-/// its status, title, summary and bug, its PHID, its parents, and the id of
-/// its latest diff. Or that Phabricator does not have it.
+/// its status, title, summary and bug, its PHID, its parents, the id of
+/// its latest diff, whether it is a draft, and its repository. Or that
+/// Phabricator does not have it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct State {
     /// Phabricator has no such revision: the rest is empty.
@@ -474,6 +485,34 @@ pub struct State {
     /// read it did not read that.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub base: String,
+    /// Whether it is a draft, as its search said (`isDraft`): Phabricator
+    /// says so of every revision it has not sent to reviewers yet, whatever
+    /// its status. None in a state stored before stacked read that, which a
+    /// submit has fetched again first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<bool>,
+    /// The PHID of its repository, as its search said (`repositoryPHID`):
+    /// empty where it said none, and in a state stored before stacked read
+    /// that.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub repository: String,
+}
+
+/// A repository on Phabricator, as a submit read it once
+/// (diffusion.repository.search), to make a new diff in it: its PHID; its
+/// callsign, as the search gave it, or the one it was asked by, empty for
+/// none; what holds it, `git` or `hg`; and when it was read, in seconds
+/// since 1970. None of it changes, so that it is never read again.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Repository {
+    #[serde(default)]
+    pub phid: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub callsign: String,
+    #[serde(default)]
+    pub vcs: String,
+    #[serde(default)]
+    pub time: i64,
 }
 
 /// A revision's comments, as a read stored them (`Revision`): what the
@@ -1033,6 +1072,9 @@ pub struct Db {
     raw_diffs: BTreeMap<(String, u64), usize>,
     /// A revision's link to the index of the latest fetch that read it.
     fetched: BTreeMap<String, usize>,
+    /// A repository's PHID on Phabricator to the index of its latest
+    /// record.
+    repositories: BTreeMap<String, usize>,
     /// The comments collapsed: (change, comment id).
     collapsed: HashSet<(String, String)>,
     /// Run id to the index of its latest review record.
@@ -1472,6 +1514,14 @@ impl Db {
             }
             self.fetched.insert(link, i);
         }
+        // Each repository read from Phabricator, read with it.
+        for (phid, rev) in cp.repositories {
+            let i = ix(rev)?;
+            if !matches!(&self.records[i], Record::Repository(r) if r.phid == phid) {
+                return None;
+            }
+            self.repositories.insert(phid, i);
+        }
         self.collapsed = cp.collapsed.into_iter().collect();
         for (run, rev) in cp.reviews {
             let i = ix(rev)?;
@@ -1535,7 +1585,7 @@ impl Db {
         same!(len, lines, torn, torn_slot, tail, saved, version, fixed, changes, warnings, last_cp);
         same!(patches, latest, heads, stacks, on, notes, note_first, last_queued, note_lines);
         same!(views, choices, moved, collapsed, reviews, marks, runs, run_order);
-        same!(revisions, revision_comments, raw_diffs, fetched);
+        same!(revisions, revision_comments, raw_diffs, fetched, repositories);
         if self.records.len() != whole.records.len() {
             return Some(format!("{} records, read whole {}", self.records.len(), whole.records.len()));
         }
@@ -1603,6 +1653,7 @@ impl Db {
             revision_comments: BTreeMap::new(),
             raw_diffs: BTreeMap::new(),
             fetched: BTreeMap::new(),
+            repositories: BTreeMap::new(),
             collapsed: HashSet::new(),
             reviews: HashMap::new(),
             marks: HashMap::new(),
@@ -1895,6 +1946,9 @@ impl Db {
                 for link in links {
                     self.fetched.insert(link.clone(), at);
                 }
+            }
+            Record::Repository(r) => {
+                self.repositories.insert(r.phid.clone(), at);
             }
             Record::Collapse { change, id, collapsed } => {
                 let key = (change.clone(), id.clone());
@@ -2246,9 +2300,11 @@ impl Db {
     /// The records that what stands of the revisions read from Phabricator
     /// is in, by index: each one's latest with its state, its latest with
     /// its comments, the latest fetch that read it, and the raw diff its
-    /// state names, when that is stored.
+    /// state names, when that is stored; and the latest record of each
+    /// repository read from it.
     fn phab_needed(&self) -> HashSet<usize> {
-        let mut need: HashSet<usize> = self.revisions.values().chain(self.revision_comments.values()).chain(self.fetched.values()).copied().collect();
+        let mut need: HashSet<usize> =
+            self.revisions.values().chain(self.revision_comments.values()).chain(self.fetched.values()).chain(self.repositories.values()).copied().collect();
         for (link, &at) in &self.revisions {
             if let Record::Revision(Revision { state: Some(s), .. }) = &self.records[at]
                 && let Some(&k) = self.raw_diffs.get(&(link.clone(), s.diff))
@@ -2301,6 +2357,7 @@ impl Db {
             revision_comments: self.revision_comments.iter().map(|(l, i)| (l.clone(), i + 1)).collect(),
             raw_diffs: self.raw_diffs.iter().map(|((l, d), i)| (l.clone(), *d, i + 1)).collect(),
             fetched: self.fetched.iter().map(|(l, i)| (l.clone(), i + 1)).collect(),
+            repositories: self.repositories.iter().map(|(p, i)| (p.clone(), i + 1)).collect(),
             collapsed: sorted(self.collapsed.iter().cloned().collect()),
             reviews: sorted(self.reviews.iter().map(|(r, i)| (r.clone(), i + 1)).collect()),
             marks: sorted(self.marks.iter().map(|(c, at)| (c.clone(), revs(at))).collect()),
@@ -3080,6 +3137,43 @@ impl Db {
     /// at `links` now.
     pub fn store_fetched(&mut self, links: Vec<String>) -> Result<()> {
         self.push(Record::Fetched { links, time: now() }).map(|_| ())
+    }
+
+    /// The repository on Phabricator of PHID `phid`, as a submit read it:
+    /// none before one did.
+    pub fn repository(&self, phid: &str) -> Option<&Repository> {
+        match self.at(*self.repositories.get(phid)?) {
+            Record::Repository(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// The repository on Phabricator of callsign `callsign`, as a submit
+    /// read it, by that callsign or by its PHID: none before one did.
+    pub fn repository_called(&self, callsign: &str) -> Option<&Repository> {
+        self.repositories().into_iter().find(|r| !callsign.is_empty() && r.callsign == callsign)
+    }
+
+    /// Every repository on Phabricator a submit read, by PHID.
+    pub fn repositories(&self) -> Vec<&Repository> {
+        self.repositories
+            .values()
+            .filter_map(|&i| match self.at(i) {
+                Record::Repository(r) => Some(r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Stores repository `r`, as a submit read it now, unless it is stored
+    /// as it is, when it was read aside. Whether it wrote it.
+    pub fn store_repository(&mut self, r: Repository) -> Result<bool> {
+        let same = |was: &Repository| (&was.phid, &was.callsign, &was.vcs) == (&r.phid, &r.callsign, &r.vcs);
+        if self.repository(&r.phid).is_some_and(same) {
+            return Ok(false);
+        }
+        self.push(Record::Repository(Repository { time: now(), ..r }))?;
+        Ok(true)
     }
 
     /// Whether comment (change, id) is collapsed, in the middle pane.
@@ -4037,7 +4131,7 @@ mod tests {
         let good = std::fs::read(&path).unwrap();
         let ptr = serde_json::from_slice::<Header>(&good[..HEADER - 1]).unwrap().checkpoint.unwrap();
         let mut v: serde_json::Value = serde_json::from_slice(&good[ptr.at as usize..(ptr.at + ptr.len) as usize]).unwrap();
-        for k in ["revisions", "revision_comments", "raw_diffs", "fetched"] {
+        for k in ["revisions", "revision_comments", "raw_diffs", "fetched", "repositories"] {
             assert!(v.as_object_mut().unwrap().remove(k).is_some(), "{k}");
         }
         let line = serde_json::to_string(&v).unwrap();
@@ -4051,9 +4145,62 @@ mod tests {
         let db = Db::load(&path).unwrap();
         assert!(db.cp.is_some(), "read from its checkpoint");
         assert_eq!((db.differs(&whole), db.revision_state("https://p.example/D11")), (None, None));
+        assert!(db.repositories().is_empty());
         let (s, c) = revision_read(11, 5, None, &[]);
         Db::edit(&path, |db| db.store_revision("https://p.example/D11", "D11", Some(s), Some(c)).map(|_| ())).unwrap();
         assert_eq!(Db::load(&path).unwrap().revision_state("https://p.example/D11").map(|(s, _)| s.diff), Some(5));
+    }
+
+    #[test]
+    fn a_repository_read_of_phabricator_is_stored_once_found_by_its_phid_or_its_callsign_and_read_from_a_checkpoint_as_read_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        let repo = |phid: &str, callsign: &str| Repository { phid: phid.into(), callsign: callsign.into(), vcs: "hg".into(), ..Default::default() };
+        // Read by its callsign, then the same again: written once; another,
+        // with no callsign, found by its PHID alone.
+        Db::edit(&path, |db| {
+            assert!(db.store_repository(repo("PHID-REPO-1", "MOZILLACENTRAL"))?);
+            assert!(!db.store_repository(repo("PHID-REPO-1", "MOZILLACENTRAL"))?);
+            assert!(db.store_repository(repo("PHID-REPO-2", ""))?);
+            Ok(())
+        })
+        .unwrap();
+        let db = Db::load(&path).unwrap();
+        let found = |r: Option<&Repository>| r.map(|r| (r.phid.clone(), r.vcs.clone()));
+        assert_eq!(found(db.repository("PHID-REPO-1")), Some(("PHID-REPO-1".into(), "hg".into())));
+        assert_eq!(found(db.repository_called("MOZILLACENTRAL")), Some(("PHID-REPO-1".into(), "hg".into())));
+        assert_eq!((found(db.repository("PHID-REPO-3")), found(db.repository_called(""))), (None, None));
+        assert_eq!(db.repositories().len(), 2);
+        assert!(db.repository("PHID-REPO-2").is_some_and(|r| r.time > 0));
+        drop(db);
+        // Read from a checkpoint: the same, each read with it.
+        checkpoint(&path);
+        let whole = Db::from_bytes(&path, &std::fs::read(&path).unwrap()).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.cp.is_some(), "read from its checkpoint");
+        assert_eq!(db.differs(&whole), None);
+        assert!(!matches!(db.records[db.repositories["PHID-REPO-1"]], Record::Unloaded));
+        assert_eq!(found(db.repository_called("MOZILLACENTRAL")), Some(("PHID-REPO-1".into(), "hg".into())));
+        assert!(db.shadow.get().is_none(), "nothing has read the whole history");
+        // A record of its own.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#"{"t":"repository","phid":"PHID-REPO-1","callsign":"MOZILLACENTRAL","vcs":"hg","time":"#), "{text}");
+    }
+
+    #[test]
+    fn a_state_says_whether_the_revision_is_a_draft_and_its_repository_and_one_stored_before_says_neither() {
+        // As a stacked of before stored one: neither said.
+        let before: State = serde_json::from_str(r#"{"status":"changes-planned","phid":"PHID-DREV-1","diff":5}"#).unwrap();
+        assert_eq!((before.draft, before.repository.as_str()), (None, ""));
+        // As a read says them now; not a draft written as such, an empty
+        // repository not written.
+        let now = State { draft: Some(false), repository: "PHID-REPO-1".into(), ..before.clone() };
+        let text = serde_json::to_string(&now).unwrap();
+        assert_eq!(text, r#"{"status":"changes-planned","phid":"PHID-DREV-1","diff":5,"draft":false,"repository":"PHID-REPO-1"}"#);
+        assert_eq!(serde_json::from_str::<State>(&text).unwrap(), now);
+        let none = State { draft: Some(true), ..before };
+        assert_eq!(serde_json::to_string(&none).unwrap(), r#"{"status":"changes-planned","phid":"PHID-DREV-1","diff":5,"draft":true}"#);
     }
 
     #[test]

@@ -269,8 +269,9 @@ fn one_submit() -> std::sync::MutexGuard<'static, ()> {
 
 /// Stack `s` of `setup_with`, its first patch naming D11, given a version
 /// of its own after the first, which says `TWO` otherwise; and a stand-in
-/// for Phabricator as a submit reads it: D11 in work, its latest diff that
-/// first version, and its repository. What was asked of it.
+/// for Phabricator as a submit reads it, nothing of D11 stored, which it
+/// fetches first: D11 in work, its latest diff that first version, and its
+/// repository. What was asked of it.
 #[cfg(feature = "moz-phab")]
 fn d11_in_work() -> (tempfile::TempDir, PathBuf, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     let (tmp, db) = setup_with("Bug 1 - shout two\n\nDifferential Revision: https://phabricator.example.com/D11");
@@ -293,8 +294,9 @@ fn d11_in_work() -> (tempfile::TempDir, PathBuf, std::sync::Arc<std::sync::Mutex
                 "title": "WIP: Bug 1 - shout two", "summary": "", "status": {"value": "changes-planned", "name": "Changes Planned"},
                 "isDraft": false, "bugzilla.bug-id": "1", "repositoryPHID": "PHID-REPO-1"}}]}),
             "edge.search" => serde_json::json!({"data": [], "cursor": {"after": null}}),
-            "differential.querydiffs" => serde_json::json!({"5": {"sourceControlBaseRevision": "", "properties": {}}}),
+            "differential.diff.search" => serde_json::json!({"data": [{"id": 5, "fields": {"revisionPHID": "PHID-DREV-11", "refs": []}}], "cursor": {"after": null}}),
             "differential.getrawdiff" => serde_json::Value::String(raw.clone()),
+            "transaction.search" => serde_json::json!({"data": [], "cursor": {"after": null}}),
             "diffusion.repository.search" => serde_json::json!({"data": [{"phid": "PHID-REPO-1", "fields": {"vcs": "git"}}]}),
             _ => return Err(format!("{m}: not asked in this test")),
         })

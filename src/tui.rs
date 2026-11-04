@@ -1629,13 +1629,14 @@ pub enum Action {
     #[cfg(feature = "moz-phab")]
     Fetch,
     /// The patch picked sent to Phabricator as work in progress, once what
-    /// is sent is read and seen: its dialog, or its review. Then sent, or
-    /// nothing sent; the review's code side by side (true), or unified.
+    /// is sent is worked out and seen: its dialog, or its review. Then
+    /// sent, or nothing sent; the review's code side by side (true), or
+    /// unified.
     #[cfg(feature = "moz-phab")]
     Submit,
     /// The title, summary and parent of the patch picked sent alone to its
-    /// revision, open but not in work, once what is sent is read and seen
-    /// on the review of a submit.
+    /// revision, open but not in work, once what is sent is worked out and
+    /// seen on the review of a submit.
     #[cfg(feature = "moz-phab")]
     SubmitMeta,
     #[cfg(feature = "moz-phab")]
@@ -1943,11 +1944,11 @@ fn about(action: &Action) -> String {
             "fetch the latest from Phabricator: every revision the stack's patches name, read now and stored in the database, which the Phabricator lines and the patches pane then show, with how long ago it was fetched; stacked reads nothing of Phabricator by itself".into()
         }
         #[cfg(feature = "moz-phab")]
-        Action::Submit => "send this patch alone to Phabricator as work in progress, in Changes Planned: as a new revision, or as a new diff of the revision its message names, once what is sent is read and you have seen it".into(),
+        Action::Submit => "send this patch alone to Phabricator as work in progress, in Changes Planned: as a new revision, or as a new diff of the revision its message names, once you have seen what is sent, against the revision as it was last fetched, which is fetched first where it is not stored".into(),
         #[cfg(feature = "moz-phab")]
-        Action::SubmitMeta => "send the title, summary and parent of this patch to its revision on Phabricator, once what is sent is read and you have seen it: only what differs is sent, and no new diff, as the revision is not in work, so its status stays as it is".into(),
+        Action::SubmitMeta => "send the title, summary and parent of this patch to its revision on Phabricator, once you have seen what is sent, against the revision as it was last fetched: only what differs is sent, and no new diff, as the revision is not in work, so its status stays as it is".into(),
         #[cfg(feature = "moz-phab")]
-        Action::SendSubmit => "send it to Phabricator: a revision there already is read again first, and nothing is sent if it changed since it was read".into(),
+        Action::SendSubmit => "send it to Phabricator as it is shown here, nothing read of Phabricator first".into(),
         #[cfg(feature = "moz-phab")]
         Action::CancelSubmit => "send nothing to Phabricator".into(),
         #[cfg(feature = "moz-phab")]
@@ -2666,10 +2667,9 @@ enum Done {
     #[cfg(feature = "moz-phab")]
     Submitting(std::result::Result<Box<crate::submit::Prepared>, String>),
     /// The stack's revisions fetched from Phabricator and stored: what was
-    /// fetched, said, or what went wrong; and the revision, `D123`, fetched
-    /// again alone after a submit, if it was that.
+    /// fetched, said, or what went wrong.
     #[cfg(feature = "moz-phab")]
-    Fetched(std::result::Result<String, crate::phab::Error>, Option<String>),
+    Fetched(std::result::Result<String, crate::phab::Error>),
     /// What differs in the code between a revision's latest diff and a
     /// version of its patch, worked out from `0` (`revisions::compare_key`).
     #[cfg(feature = "moz-phab")]
@@ -3465,7 +3465,7 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Done::Submitting(read) => self.submit_read(read),
             #[cfg(feature = "moz-phab")]
-            Done::Fetched(said, after) => self.fetched(said, after),
+            Done::Fetched(said) => self.fetched(said),
             #[cfg(feature = "moz-phab")]
             Done::Compared(key, code) => self.code_compared(key, code),
             Done::Said(what, said) => {
@@ -3481,10 +3481,10 @@ impl App {
                     self.bg.moved += 1;
                     self.look_at_head();
                 }
-                // Submitted: the revision it sent to fetched again.
+                // Submitted: the database read again, nothing fetched.
                 #[cfg(feature = "moz-phab")]
                 if what == submitting::SUBMITTING {
-                    self.fetch_sent();
+                    self.submitted();
                 }
             }
             Done::Judged { name, rev, why } => {

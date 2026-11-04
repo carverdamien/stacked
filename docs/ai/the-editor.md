@@ -518,13 +518,12 @@ below): of each revision, only what differs from what is stored, its
 state, its comments, or both, and its raw latest diff once for each diff
 id; a revision found as it was stored is not written again, and one small
 record says when the fetch read every revision. A fetch that fails
-partway stores nothing. A submit stores what it reads of its revision
-before anything is sent, and what it reads of it again before it sends
-(Submitting a patch, below); once it is done, it fetches that revision
-again, alone, its comments with it whatever its search says, so that its
-line shows what Phabricator has once the submit is done, not what was
-read before it; should that fetch fail, the bottom line says so after
-what the submit came to. A pull stores what it reads of each revision as
+partway stores nothing. A submit reads nothing of its revision but what
+the database lacks for it, which it fetches first, alone, as this fetch
+fetches it, and stores as it stores it (Submitting a patch, below); once
+it is sent, it fetches nothing, so that its line shows what was fetched
+before the submit, with how long ago that was, until the next fetch, as
+the bottom line says after what the submit came to. A pull stores what it reads of each revision as
 a fetch stores it: its state and its comments, with when the revision
 was last modified as its search said, each only where it is not what is
 stored, the raw diffs it read, and that it read every one of them; the

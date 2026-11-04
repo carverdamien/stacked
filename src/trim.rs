@@ -9,7 +9,7 @@
 //! ask started), the patches they need, the comments as they stood, the
 //! read marks standing, each stack's filter, where stacked last left HEAD
 //! of each checkout, what stands of each revision read from Phabricator,
-//! and the runs still going (with
+//! each repository read from it, and the runs still going (with
 //! what their agent had written). Runs that had landed, earlier states no
 //! one names, earlier versions of comments: that is the history left out.
 
@@ -334,6 +334,10 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
     }
     for (time, links) in fetched {
         new.push(Record::Fetched { links, time }, None);
+    }
+    // Each repository a submit read from Phabricator, as it was read.
+    for r in before.repositories() {
+        new.push(Record::Repository(r.clone()), None);
     }
     // The runs kept, as they stood, and what their agent had written.
     for id in &kept_runs {

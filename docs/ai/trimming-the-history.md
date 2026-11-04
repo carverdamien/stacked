@@ -11,8 +11,9 @@ names (the parent of a later edit, where a later undo goes, where an ask
 started), the patches they need, the comments as they stood, the read marks
 standing, each stack's filter, what stands of each revision read from
 Phabricator (its state and its comments, each as the read that stored it
-left it, the raw diff its state names, and when it was last fetched), and
-the runs still going with what their agent had written. Runs that had
+left it, the raw diff its state names, and when it was last fetched), each
+repository a submit read from it, and the runs still going with what their
+agent had written. Runs that had
 landed, earlier states no one names, the earlier versions of comments and
 patches, the raw diffs of a revision's diffs before its latest: that is
 what is left out. Every
