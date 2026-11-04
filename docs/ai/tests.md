@@ -671,10 +671,11 @@ under the mouse marked until a key brings the pick back into sight; over
 the comments pane, by whole comments, the same; over the middle, unified,
 side by side, compact and split in two, by the lines turned, the cursor on
 the row then under the mouse, in the half under it, the other half as it
-was; over the banner open, a menu longer than its box, History…'s list
-and stack diff, the tree and what the search found, the cursor under the
-mouse, a click on it picked going to the tree with the tree's own pick in
-sight; over the text of what an edit changed, a transcript, a reference's
+was; over the banner open, a menu longer than its box and History…'s
+stack diff, the cursor under the mouse; over History…'s list, the tree and
+what the search found, what is picked kept, the line under the mouse
+marked, a click on History…'s picking it and a second going to the tree
+with the tree's own pick in sight; over the text of what an edit changed, a transcript, a reference's
 preview, what `?` says taller than its box, the review's pane on the right
 and the pane on the right of why Move HEAD does not move HEAD, each only
 scrolled, the cursor where it was; over the box of a comment written
@@ -706,7 +707,20 @@ the right pane as it was; a click picking it, the right pane following, a
 second click Enter, the operation accepted, a right click its menu; the
 wheel over the list scrolling it, what is picked kept out of sight, the
 line under the mouse marked, a key bringing what is picked back into
-sight), the scroll bar (only in the
+sight), and so the other lists: History…'s (a record marked, nothing
+picked, the stack diff beside it as it was, scrolled as it was; a click
+picking it, its stack diff following from its first line, a right click
+its menu, a second click Enter, the stack it made picked in the tree, the
+record marked on the history marked no longer there), the runs' (a run
+marked, the screen as it was; a click picking it, a second Enter, what
+its agent wrote), the list of why Move HEAD does not move HEAD (a line
+marked, the pane on the right as it was, scrolled as it was; a click
+picking it, the pane showing it from its first line, a second click Enter,
+into that pane) and what the search found (a match marked, its context as
+it was; a click picking it, the context following, a second click Enter,
+the patch at its line), each scrolled by the wheel, what is picked kept
+out of sight, the line under the mouse marked, a key bringing what is
+picked back into sight, the scroll bar (only in the
 place the cursor is in, and only while it holds more than it shows: the
 patches pane longer than it is high, its bar in the line on its right
 beside its rows under the header, the header's row keeping the line, a
@@ -1205,7 +1219,7 @@ said where they were, HEAD's row pressed, dragged
 onto patch 1 and let go there, `stacked web` run in the checkout, HEAD
 put down under patch 1, a line of the review's list marked by the mouse
 over it, underlined in the runs of its row and not reversed, then picked
-by a click, reversed,
+by a click, reversed, and so a run of `Runs…`, opened from a menu,
 the wheel's ↑ after a key, sent with the cell under the mouse, on a patch,
 listing files, going to the last file of the patch above, whatever is
 under the mouse, and the editor left, the page told, the worktree made ahead
@@ -1305,7 +1319,9 @@ the screen sent saying HEAD's row is where a press is held for a drag,
 HEAD's row pressed, dragged onto patch 1 and let go there, HEAD put down
 under patch 1, a line of the review's list marked by the mouse over it,
 underlined and not reversed on the screen the window paints, then picked
-by a click, reversed,
+by a click, reversed, and so a version of a patch, the pane beside the
+list showing what changed from the version before until the click, then
+the version whole,
 the wheel's ↑ after a key, sent with the cell under the mouse, on a
 patch, listing files, going to the last file of the patch above, whatever
 is under the mouse, the mouse over a patch then gone, a window

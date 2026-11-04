@@ -122,6 +122,16 @@ every comment and every run; the editor shows them where they belong:
   rev and time of each; a closed one's too, from `Filter comments…`,
   `closed`.
 
+In the browser and in StackED, the mouse over a line of the tree's list,
+of History…'s (a record, or a comment under it, which marks the record
+with it) or of the versions' marks it, underlined, and picks nothing, so
+that what is beside the list goes on showing the line picked: a click
+picks the line, what is beside following (History…'s stack diff from its
+first line, as the arrows show another record's), a second click on it is
+Enter, and a right click opens its menu, as Space does. The wheel over the
+list scrolls it, the line picked staying picked, in sight or not, until a
+key.
+
 `stacked log`, `tree`, `versions`, `interdiff` and `runs` say the same on
 the command line.
 

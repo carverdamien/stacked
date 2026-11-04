@@ -1859,6 +1859,45 @@ fn the_mouse_over_the_review_s_list_marks_a_line_and_a_click_picks_it_in_the_bro
 }
 
 #[test]
+fn the_mouse_over_the_runs_marks_a_run_and_a_click_picks_it_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    stacked::db::Db::edit(&db, |d| {
+        for k in 1..=3 {
+            d.add_run(stacked::db::Run {
+                id: format!("run-{k}"),
+                what: "answer".into(),
+                stack: "s".into(),
+                state: stacked::db::RunState::Done,
+                summary: format!("said {k}"),
+                ..Default::default()
+            })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the patches", |l| text(l).contains("Bug 2 - add b"));
+    // Runs…, the last item of the menu but Quit: the runs, the newest first,
+    // and picked.
+    ask(port, &host, &input, "k c 20 -\nk End -\nk Up -\nk Enter -\n");
+    let seen = until(&mut events, "the runs", |l| text(l).contains("said 2"));
+    let (x, y) = cell_of(seen.last().unwrap(), "said 2");
+    let row = format!("data: r {y} ");
+    // The modifiers of the run's row, one run of text.
+    let mods = |l: &str| runs(l).into_iter().find(|(_, t)| t.contains("said 2")).and_then(|(s, _)| s.rsplit(',').next()?.parse::<u32>().ok());
+    // The mouse over the second: underlined (8), and not picked, not
+    // reversed (64).
+    ask(port, &host, &input, &format!("v {x} {y}\n"));
+    until(&mut events, "the run marked", |l| l.starts_with(&row) && mods(l).is_some_and(|m| m & 8 != 0 && m & 64 == 0));
+    // A click: picked, under the cursor.
+    ask(port, &host, &input, &format!("m {x} {y} l\nu {x} {y}\n"));
+    until(&mut events, "the run picked", |l| l.starts_with(&row) && mods(l).is_some_and(|m| m & 64 != 0));
+}
+
+#[test]
 fn a_review_closed_in_part_closes_once_its_check_away_from_the_screen_is_done_in_the_browser_too() {
     let (tmp, db) = setup();
     work_on_two(tmp.path(), &db, "why so loud?", true, false);

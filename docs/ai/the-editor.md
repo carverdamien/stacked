@@ -216,7 +216,12 @@ keeps Move HEAD from moving HEAD, it says so, and `Move HEAD…` moves HEAD
 again. ↑↓ go from line to line, → (or Enter) into the pane on the right
 to scroll it, → again to see it wide, the list out of sight, ← back, and
 Esc goes back where the view was opened from; `?` says so. In the browser
-(`stacked web`) and in StackED, the same.
+(`stacked web`) and in StackED, the same; and the mouse over a line of the
+list marks it, underlined, and picks nothing, the pane on the right going
+on showing the line picked, scrolled as it was: a click picks the line,
+the pane on the right showing it from its first line, and a second click
+on it is Enter, into that pane. The wheel over the list scrolls it, the
+line picked staying picked, in sight or not, until a key.
 
 `Reconcile with HEAD`, in the menu of each patch marked and of HEAD's
 line, takes the commits' messages into the stack: each patch marked, `≠` or

@@ -13,6 +13,11 @@ what you look for lit. ↑↓ pick a match. Enter goes there: to the comment,
 to the patch at its line (a file's line its diff does not show: the
 patch's nearest line of that file, or with each file whole, that line), or
 to the record in the history. Esc goes back where the search was opened.
+In the browser and in StackED, the mouse over a match marks it,
+underlined, and picks nothing, the right going on showing the match
+picked in its context: a click picks the match, and a second click on it
+goes there, as Enter does. The wheel over what is found scrolls it, the
+match picked staying picked, in sight or not, until a key.
 
 Where it looks is where it was opened, and what is in sight there comes
 first. From the comments pane, the comments: those the pane shows, then

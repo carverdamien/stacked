@@ -850,21 +850,24 @@ fn the_wheel_scrolls_history_s_list_and_stack_diff_the_tree_and_a_text_each_unde
     key(&mut app, KeyCode::Home);
     choose_unseen(&mut app, "History…");
     // On a screen of 12 lines: the history, newest first, 9 records under
-    // its title; the mouse over the third, picked.
+    // its title; the mouse over the third, marked, the newest picked still.
     draw_sized(&mut app, 120, 12);
     assert_eq!((app.screen, app.pick), (Screen::History, 0));
     app.hover(5, 4);
-    assert_eq!(app.pick, 2);
-    // Three lines down: the record now under the mouse picked, the sixth; no
-    // further than the oldest on the bottom line.
+    assert_eq!((app.pick, app.hovered), (0, Some(Spot::Pick(2))));
+    // Three lines down: the record now under the mouse marked, the sixth;
+    // no further than the oldest on the bottom line. The newest picked
+    // still, out of sight.
     wheel(&mut app, (5, 4), 3);
-    assert_eq!(app.pick, 5);
+    assert_eq!((app.pick, app.hovered), (0, Some(Spot::Pick(5))));
     let n = app.history().len();
     wheel(&mut app, (5, 4), 100);
-    assert_eq!(app.pick, n - 7);
-    // A click on it, picked, goes to it in the tree, which has its own pick
-    // in sight: what the wheel did on the history is the history's.
+    assert_eq!((app.pick, app.hovered), (0, Some(Spot::Pick(n - 7))));
+    // A click picks it, and a second goes to it in the tree, which has its
+    // own pick in sight: what the wheel did on the history is the history's.
     let rev = app.history()[n - 7].to.unwrap();
+    app.click(5, 4, false);
+    assert_eq!((app.screen, app.pick), (Screen::History, n - 7));
     app.click(5, 4, false);
     assert_eq!(app.screen, Screen::Tree);
     let screen = draw_sized(&mut app, 120, 12);
@@ -885,14 +888,15 @@ fn the_wheel_scrolls_history_s_list_and_stack_diff_the_tree_and_a_text_each_unde
     wheel(&mut app, (60, 5), 100);
     assert_eq!(app.hist_cursor, lines - 8 + 2);
     // Enter on it in the list goes to it, in the tree, as ever; there, from
-    // its top, the wheel scrolls the tree, the node under the mouse picked.
+    // its top, the wheel scrolls the tree, the node under the mouse marked,
+    // the first picked still.
     keys(&mut app, &[KeyCode::Left, KeyCode::Enter]);
     key(&mut app, KeyCode::Home);
     draw_sized(&mut app, 120, 12);
     assert_eq!((app.screen, app.pick), (Screen::Tree, 0));
     app.hover(5, 3);
     wheel(&mut app, (5, 3), 3);
-    assert_eq!(app.pick, 5);
+    assert_eq!((app.pick, app.hovered), (0, Some(Spot::Pick(5))));
     // What the import changed, on a screen of its own: the wheel scrolls it,
     // as far as the arrows go, its last line the first shown.
     key(&mut app, KeyCode::End);
@@ -991,7 +995,7 @@ fn the_wheel_scrolls_what_the_question_mark_says_taller_than_its_box_and_nothing
 }
 
 #[test]
-fn the_wheel_scrolls_what_the_search_found_the_match_under_the_mouse_picked() {
+fn the_wheel_scrolls_what_the_search_found_the_match_picked_kept_and_the_one_under_the_mouse_marked() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     key(&mut app, KeyCode::Home);
@@ -1000,22 +1004,22 @@ fn the_wheel_scrolls_what_the_search_found_the_match_under_the_mouse_picked() {
     let found = searched(&mut app).len();
     assert!(found > 12, "{found}");
     // On a screen of 12 lines, 8 of the matches under the search's line; the
-    // mouse over the third, picked.
+    // mouse over the third, marked, the first picked still.
     draw_sized(&mut app, 120, 12);
     let sel = |app: &App| app.searching.as_ref().unwrap().sel;
     app.hover(5, 4);
-    assert_eq!(sel(&app), 2);
-    // Three lines down: the match now under the mouse picked; no further than
-    // the last on the bottom line.
+    assert_eq!((sel(&app), app.hovered), (0, Some(Spot::Found(2))));
+    // Three lines down: the match now under the mouse marked; no further
+    // than the last on the bottom line. The first picked still.
     wheel(&mut app, (5, 4), 3);
-    assert_eq!(sel(&app), 5);
+    assert_eq!((sel(&app), app.hovered), (0, Some(Spot::Found(5))));
     wheel(&mut app, (5, 4), 100);
-    assert_eq!(sel(&app), found - 6);
+    assert_eq!((sel(&app), app.hovered), (0, Some(Spot::Found(found - 6))));
     // Over the search's own line, which does not scroll, nothing.
     wheel(&mut app, (5, 1), -100);
-    assert_eq!(sel(&app), found - 6);
+    assert_eq!(app.hovered, Some(Spot::Found(found - 6)));
     wheel(&mut app, (5, 4), -100);
-    assert_eq!(sel(&app), 2);
+    assert_eq!((sel(&app), app.hovered), (0, Some(Spot::Found(2))));
 }
 
 #[test]
@@ -1052,16 +1056,17 @@ fn the_wheel_scrolls_the_review_s_pane_on_the_right_the_cursor_staying_on_its_li
     assert_eq!(right(&draw_sized(&mut app, 120, 10)), before);
 }
 
-/// Where `text` is in the review's list, its 48 columns of a screen drawn
-/// 120 wide: its first cell.
-fn in_review_list(screen: &str, text: &str) -> (u16, u16) {
+/// Where `text` is in the list on the left of a screen of its own drawn 120
+/// wide, its 48 columns (the review's, History…'s, what the search found,
+/// the list of why Move HEAD does not move HEAD): its first cell.
+fn in_list(screen: &str, text: &str) -> (u16, u16) {
     for (y, line) in screen.lines().enumerate() {
         let list: String = line.chars().take(48).collect();
         if let Some(b) = list.find(text) {
             return (list[..b].chars().count() as u16, y as u16);
         }
     }
-    panic!("no {text:?} in the review's list:\n{screen}");
+    panic!("no {text:?} in the list:\n{screen}");
 }
 
 #[test]
@@ -1084,7 +1089,7 @@ fn the_mouse_over_the_review_s_list_marks_a_line_and_picks_nothing_as_over_the_p
     let sel = |app: &App| app.reviewing.as_ref().map(|r| (r.sel, r.in_main)).unwrap();
     let screen = draw(&mut app);
     let (picked, shown) = (sel(&app), right(&screen));
-    let add = in_review_list(&screen, "add     2 Bug 1 - a c too");
+    let add = in_list(&screen, "add     2 Bug 1 - a c too");
     // The mouse over the line of the patch the work adds: marked, underlined,
     // and nothing picked, the right pane as it was.
     app.hover(add.0, add.1);
@@ -1128,6 +1133,235 @@ fn the_mouse_over_the_review_s_list_marks_a_line_and_picks_nothing_as_over_the_p
     assert!(matches!(app.hovered, Some(Spot::ReviewLine(_))) && buf[(5, 4)].modifier.contains(Modifier::UNDERLINED));
     key(&mut app, KeyCode::Char('x'));
     assert!(picked_at(&small(&mut app)).is_some());
+}
+
+/// Whether cell `at` of `buf` is marked as the mouse marks the line it is
+/// over: underlined, and not reversed, as the line picked is.
+fn marked_cell(buf: &Buffer, at: (u16, u16)) -> bool {
+    use ratatui::style::Modifier;
+    let m = buf[at].modifier;
+    m.contains(Modifier::UNDERLINED) && !m.contains(Modifier::REVERSED)
+}
+
+/// Whether row `y` of `buf` is the line picked, under the cursor: reversed,
+/// its columns from `x`, `w` of them.
+fn picked_row(buf: &Buffer, x: u16, w: u16, y: u16) -> bool {
+    (x..x + w).all(|x| buf[(x, y)].modifier.contains(ratatui::style::Modifier::REVERSED))
+}
+
+/// What `buf` shows of its columns from `x` to its right edge, on its rows
+/// `rows`: a pane beside a list.
+fn beside(buf: &Buffer, x: u16, rows: std::ops::Range<u16>) -> Vec<String> {
+    rows.map(|y| (x..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect()
+}
+
+#[test]
+fn the_mouse_over_history_s_list_marks_a_record_and_picks_nothing_its_stack_diff_as_it_was() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    // Twenty records more, each a patch moved: a history longer than the
+    // screen.
+    for _ in 0..20 {
+        Db::edit(&db, |d| stacked::ops::move_patch(d, "s", 1, 0).map(|_| ())).unwrap();
+    }
+    let mut app = open(&db).unwrap();
+    key(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "History…");
+    // On a screen of 12 lines: the list, 48 columns, 9 records under its
+    // title, the newest picked; beside it, from column 49, its stack diff,
+    // from its fourth line, its cursor on its eleventh, the cursor back in
+    // the list.
+    keys(&mut app, &[KeyCode::Right]);
+    for _ in 0..10 {
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    keys(&mut app, &[KeyCode::Left]);
+    let buf = drawn(&mut app, 12);
+    assert_eq!((app.pick, app.hist_focus, app.hist_cursor), (0, stacked::tui::HistFocus::List, 10));
+    let shown = beside(&buf, 49, 1..11);
+    let first = |app: &App| app.hist_rows[0].iter().map(|(t, _)| t.as_str()).collect::<String>().trim_end().to_string();
+    assert_ne!(shown[2].trim_end(), first(&app));
+    // The mouse over the third record: marked, underlined, and nothing
+    // picked, the stack diff as it was.
+    app.hover(5, 4);
+    let buf = drawn(&mut app, 12);
+    assert_eq!((app.hovered, app.pick), (Some(Spot::Pick(2)), 0));
+    assert!(marked_cell(&buf, (5, 4)) && picked_row(&buf, 0, 40, 2), "{}", text_of(&buf));
+    assert_eq!(beside(&buf, 49, 1..11), shown);
+    // A click picks it: its stack diff beside it, from its first line, as
+    // the arrows show another record's. A right click on it, its menu.
+    assert_eq!(app.click(5, 4, false), Effect::None);
+    let buf = drawn(&mut app, 12);
+    assert_eq!((app.pick, app.hist_cursor), (2, 0));
+    assert!(picked_row(&buf, 0, 40, 4), "{}", text_of(&buf));
+    assert_ne!(beside(&buf, 49, 1..11), shown);
+    assert_eq!(beside(&buf, 49, 3..4)[0].trim_end(), first(&app));
+    app.click(5, 4, true);
+    assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    // The wheel three lines down over the list scrolls it: the record picked
+    // kept, out of sight, and the record now under the mouse marked; a key
+    // brings the one picked back into sight, on the list's first row.
+    drawn(&mut app, 12);
+    app.hover(5, 4);
+    wheel(&mut app, (5, 4), 3);
+    let buf = drawn(&mut app, 12);
+    assert_eq!((app.pick, app.hovered), (2, Some(Spot::Pick(5))));
+    assert!(marked_cell(&buf, (5, 4)) && (2..11).all(|y| !picked_row(&buf, 0, 40, y)), "{}", text_of(&buf));
+    key(&mut app, KeyCode::Char('x'));
+    let buf = drawn(&mut app, 12);
+    assert!(picked_row(&buf, 0, 40, 2), "{}", text_of(&buf));
+    // A second click on it is Enter: the stack it made, picked in the tree,
+    // where the record marked on the history is marked no longer.
+    let rev = app.history()[2].to.unwrap();
+    app.click(5, 2, false);
+    assert_eq!(app.screen, Screen::Tree);
+    let buf = drawn(&mut app, 12);
+    let screen = text_of(&buf);
+    let y = (1..11).find(|&y| line_at(&screen, 0, 30, y).contains(&format!("@{rev} "))).unwrap_or_else(|| panic!("no @{rev} in the tree's list:\n{screen}"));
+    assert!(picked_row(&buf, 0, 20, y as u16), "{screen}");
+    assert_eq!(app.hovered, None);
+}
+
+#[test]
+fn the_mouse_over_the_runs_marks_a_run_and_picks_nothing_a_click_picks_it_and_a_second_is_enter() {
+    let (_tmp, db, _src) = setup();
+    // Fifteen runs, more than the screen shows.
+    Db::edit(&db, |d| {
+        for k in 1..=15 {
+            d.add_run(stacked::db::Run {
+                id: format!("run-{k}"),
+                what: "answer".into(),
+                stack: "s".into(),
+                state: stacked::db::RunState::Done,
+                summary: format!("said {k}"),
+                ..Default::default()
+            })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let mut app = open(&db).unwrap();
+    choose_unseen(&mut app, "Runs…");
+    // On a screen of 12 lines, 10 runs, the newest first, and picked.
+    let buf = drawn(&mut app, 12);
+    assert_eq!((app.screen, app.pick), (Screen::Runs, 0));
+    let screen = text_of(&buf);
+    // The mouse over the third: marked, underlined, and nothing picked, the
+    // screen as it was.
+    app.hover(5, 3);
+    let buf = drawn(&mut app, 12);
+    assert_eq!((app.hovered, app.pick), (Some(Spot::Pick(2)), 0));
+    assert!(marked_cell(&buf, (5, 3)) && picked_row(&buf, 0, 100, 1), "{}", text_of(&buf));
+    assert_eq!(text_of(&buf), screen);
+    // A click picks it. The wheel four lines down over the list scrolls it:
+    // the run picked kept, out of sight, and the run now under the mouse
+    // marked.
+    app.click(5, 3, false);
+    assert_eq!((app.screen, app.pick), (Screen::Runs, 2));
+    drawn(&mut app, 12);
+    wheel(&mut app, (5, 3), 4);
+    let buf = drawn(&mut app, 12);
+    assert_eq!((app.pick, app.hovered), (2, Some(Spot::Pick(6))));
+    assert!(marked_cell(&buf, (5, 3)) && (1..11).all(|y| !picked_row(&buf, 0, 100, y)), "{}", text_of(&buf));
+    // A key brings it back into sight, on the first row; a second click on
+    // it is Enter: what its agent wrote, on a screen of its own.
+    key(&mut app, KeyCode::Char('x'));
+    let buf = drawn(&mut app, 12);
+    assert!(picked_row(&buf, 0, 100, 1) && text_of(&buf).contains("said 13"), "{}", text_of(&buf));
+    app.click(5, 1, false);
+    assert_eq!(app.screen, Screen::Transcript);
+    assert!(draw(&mut app).contains("→ said 13"), "{}", draw(&mut app));
+}
+
+#[test]
+fn the_mouse_over_the_list_of_why_move_head_does_not_move_head_marks_a_line_and_resets_nothing() {
+    let (_tmp, db, src) = setup();
+    let titles: Vec<String> = (1..=8).map(|n| format!("Mine {n}")).collect();
+    own(&src, &titles.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut app = open_in(&db, &src);
+    open_why(&mut app);
+    // The list on the left, 48 columns, the cursor on its first line, where
+    // HEAD is; on the right, from column 49, what that line says, scrolled
+    // two lines by the wheel there.
+    let at = |app: &App| app.head_why.as_ref().map(|v| (v.sel, v.in_main, v.scroll)).unwrap();
+    drawn(&mut app, 30);
+    app.hover(70, 5);
+    wheel(&mut app, (70, 5), 2);
+    let buf = drawn(&mut app, 30);
+    assert_eq!(at(&app), (0, false, 2));
+    let shown = beside(&buf, 49, 1..29);
+    // The mouse over the line of the second commit: marked, underlined, and
+    // nothing picked, the pane on the right as it was, scrolled as it was.
+    let mine = in_list(&text_of(&buf), "Mine 2");
+    app.hover(mine.0, mine.1);
+    let buf = drawn(&mut app, 30);
+    assert_eq!((app.hovered, at(&app)), (Some(Spot::WhyLine(3)), (0, false, 2)));
+    assert!(marked_cell(&buf, mine), "{}", text_of(&buf));
+    assert_eq!(beside(&buf, 49, 1..29), shown);
+    // A click picks it: the pane on the right shows that commit, from its
+    // first line. A second click on it is Enter: the cursor in that pane.
+    app.click(mine.0, mine.1, false);
+    let buf = drawn(&mut app, 30);
+    assert_eq!(at(&app), (3, false, 0));
+    assert!(why_said(&app)[1].contains(": Mine 2 |"), "{:?}", why_said(&app));
+    assert_ne!(beside(&buf, 49, 1..29), shown);
+    app.click(mine.0, mine.1, false);
+    assert_eq!(at(&app), (3, true, 0));
+    // Back in the list, on a screen of 8 lines, 5 of its lines under its
+    // title: the wheel four lines down over it scrolls it, the line picked
+    // kept, out of sight, and the line now under the mouse marked; a key
+    // brings the line picked back into sight, on the list's first row.
+    keys(&mut app, &[KeyCode::Left]);
+    drawn(&mut app, 8);
+    app.hover(5, 4);
+    wheel(&mut app, (5, 4), 4);
+    let buf = drawn(&mut app, 8);
+    assert_eq!((at(&app), app.hovered), ((3, false, 0), Some(Spot::WhyLine(6))));
+    assert!(marked_cell(&buf, (5, 4)) && (2..7).all(|y| !picked_row(&buf, 0, 40, y)), "{}", text_of(&buf));
+    key(&mut app, KeyCode::Char('x'));
+    let buf = drawn(&mut app, 8);
+    assert!(picked_row(&buf, 0, 40, 2) && line_at(&text_of(&buf), 0, 48, 2).ends_with("Mine 2"), "{}", text_of(&buf));
+}
+
+#[test]
+fn the_mouse_over_what_the_search_found_marks_a_match_and_picks_nothing_its_context_as_it_was() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    key(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "Search");
+    typed(&mut app, "line");
+    let found = searched(&mut app).len();
+    assert!(found > 12, "{found}");
+    // On a screen of 12 lines: 8 of the matches under the search's line, the
+    // first picked; on the right, from column 49, it in its context.
+    let sel = |app: &App| app.searching.as_ref().unwrap().sel;
+    let buf = drawn(&mut app, 12);
+    let shown = beside(&buf, 49, 1..11);
+    // The mouse over the third: marked, underlined, and nothing picked, the
+    // context as it was.
+    app.hover(5, 4);
+    let buf = drawn(&mut app, 12);
+    assert_eq!((app.hovered, sel(&app)), (Some(Spot::Found(2)), 0));
+    assert!(marked_cell(&buf, (5, 4)) && picked_row(&buf, 0, 40, 2), "{}", text_of(&buf));
+    assert_eq!(beside(&buf, 49, 1..11), shown);
+    // A click picks it, in its context on the right.
+    app.click(5, 4, false);
+    let buf = drawn(&mut app, 12);
+    assert_eq!(sel(&app), 2);
+    assert_ne!(beside(&buf, 49, 1..11), shown);
+    // The wheel three lines down over the list scrolls it: the match picked
+    // kept, out of sight, and the match now under the mouse marked; a key
+    // that types nothing brings the match picked back into sight.
+    wheel(&mut app, (5, 4), 3);
+    let buf = drawn(&mut app, 12);
+    assert_eq!((sel(&app), app.hovered), (2, Some(Spot::Found(5))));
+    assert!(marked_cell(&buf, (5, 4)) && (2..10).all(|y| !picked_row(&buf, 0, 40, y)), "{}", text_of(&buf));
+    key(&mut app, KeyCode::Tab);
+    let buf = drawn(&mut app, 12);
+    assert!(picked_row(&buf, 0, 40, 2), "{}", text_of(&buf));
+    // A second click on it is Enter: the patch, at the line it found.
+    app.click(5, 2, false);
+    assert_eq!(app.screen, Screen::Main);
 }
 
 #[test]

@@ -721,7 +721,11 @@ agent works: its worktree. A worktree with work the agent did not commit, or
 that could not be filed, is left in place, and the run's summary says
 where; others are kept for the next ask. `Runs…` lists every ask and pull,
 each ask with the effort it was asked at (`answer(max) s "why so loud?"`),
-as `stacked runs` does, and shows what the agent wrote.
+as `stacked runs` does, and shows what the agent wrote. In the browser and
+in StackED, the mouse over a run marks it, underlined, and picks nothing:
+a click picks the run, and a second click on it is Enter. The wheel over
+the list scrolls it, the run picked staying picked, in sight or not, until
+a key.
 
 `Stop the agent…`, in the menu of a comment the agent works on, and on an
 ask that runs in `Runs…` (Delete does the same in both places), asks

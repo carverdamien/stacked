@@ -5,12 +5,12 @@
 //! mouse: its view moves by the lines turned, and stops at its first and
 //! its last lines, as the arrows stop it. Where the cursor follows the
 //! mouse, the cursor goes on the line then under the mouse, as the mouse
-//! over that line puts it; a side pane, where the mouse only marks the line
-//! under it, keeps what it picked, in sight or not, and the line then under
-//! the mouse is marked. Each place stays where the wheel left it until the
-//! next key, which brings what it picked back into sight. While the mouse
-//! is not in use, the wheel is ↑↓ where the cursor is, as it ever was,
-//! until the mouse moves again.
+//! over that line puts it; a side pane or a list, where the mouse only
+//! marks the line under it (`Spot::marked`), keeps what it picked, in sight
+//! or not, and the line then under the mouse is marked. Each place stays
+//! where the wheel left it until the next key, which brings what it picked
+//! back into sight. While the mouse is not in use, the wheel is ↑↓ where
+//! the cursor is, as it ever was, until the mouse moves again.
 
 use super::*;
 

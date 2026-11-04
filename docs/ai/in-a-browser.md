@@ -5,13 +5,18 @@
 stacked without it) serves the editor on this machine and opens the
 browser on it: the
 same editor, the same keys, drawn in the page as in a terminal. Over the
-side panes, the patches and the comments, and over the review's list, the
-mouse marks the line under it, underlined, and picks nothing: what is
-picked stays so (reversed in the pane the cursor is in, grey in the
-other), and so does what the pane beside shows of the line picked, until
-a click picks the line, and a second click on it is Enter. Elsewhere the cursor follows the
+side panes, the patches and the comments, and over the lists (the
+review's; those of the screens of their own, History…'s, a record's
+comments with it, the tree's, the stacks', the runs' and the versions';
+what the search found, and the list of the view of why Move HEAD does not
+move HEAD), the mouse marks the line under it, underlined, and picks
+nothing: what is picked stays so (reversed in the pane the cursor is in,
+grey in the other), and so does what the pane beside shows of the line
+picked, until a click picks the line, and a second click on it is Enter.
+A line marked on one screen is marked no longer on another, until the
+mouse moves there. Elsewhere the cursor follows the
 mouse: what is under it is picked, as the arrows would (a line of the
-patch, an item of a list or of a menu; a patch being moved goes there), so
+patch, an item of a menu; a patch being moved goes there), so
 a click is Enter on it. A right click is Space, its menu. A menu opened
 with a click opens next to the click: the top left corner of its box is
 just below and to the right of the cell clicked, or, near the right edge or
@@ -56,12 +61,10 @@ Firefox, each notch of a mouse's wheel is a line, whatever the lines
 Firefox says for it; a turn said in pixels, a trackpad's and any wheel's
 in Chrome and Safari, is a line for each 40 pixels. Where the
 cursor follows the mouse (the middle, the half of the middle split in two
-under the mouse, the banner, a menu longer than its box, the lists of the
-screens of their own, History…'s stack diff, what the search found, the
-list of the view of why Move HEAD does not move HEAD), the cursor goes on
-the line then under the mouse. A side pane, the patches or the comments,
-and the review's list keep what they picked, in sight or not, and the
-line then under the mouse is marked. So does a pane whose cursor the mouse does not
+under the mouse, the banner, a menu longer than its box, History…'s stack
+diff), the cursor goes on the line then under the mouse. A side pane, the
+patches or the comments, and a list (above) keep what they picked, in
+sight or not, and the line then under the mouse is marked. So does a pane whose cursor the mouse does not
 move: the review's pane on the right, and what a submit sends. A text, a
 transcript, a reference's preview, and what `?` says when it is taller
 than its box, have no cursor: they only scroll. Each place stays where the

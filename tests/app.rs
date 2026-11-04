@@ -1517,6 +1517,40 @@ fn the_mouse_over_the_review_s_list_marks_a_line_and_a_click_picks_it_in_the_win
 }
 
 #[test]
+fn the_mouse_over_a_patch_s_versions_marks_one_and_a_click_picks_it_in_the_window_too() {
+    let (tmp, db) = setup();
+    stacked::db::Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft { diff: old.diff.replace("+TWO", "+Two"), ..stacked::mbox::Draft::from(&old) };
+        stacked::ops::replace(d, "s", 0, draft, "edit").map(|_| ())
+    })
+    .unwrap();
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    screen(&s, "the patches", |b| text(b).contains("Bug 2 - add b"));
+    // The first patch's versions, from its menu: the second picked, the one
+    // in the stack, what changed from the first beside it.
+    press(&s, KeyCode::Char(' '));
+    let menu = screen(&s, "the patch's menu", |b| find(b, "Versions of this patch…").is_some());
+    let (x, y) = find(&menu, "Versions of this patch…").unwrap();
+    s.send(Input::Click { x, y, right: false });
+    // The first version's line, in the list's 30 columns.
+    let first = |b: &Buffer| (0..b.area.height).find(|&y| row(b, y).chars().take(30).collect::<String>().starts_with(" v1 "));
+    let b = screen(&s, "the versions", |b| first(b).is_some() && text(b).contains("what changed from the version before"));
+    let (x, y) = (2, first(&b).unwrap());
+    // The mouse over the first: underlined, and not picked, not reversed,
+    // what changed from it beside it still.
+    s.send(Input::Hover(x, y));
+    screen(&s, "the version marked", |b| {
+        let c = &b[(x, y)];
+        c.modifier.contains(Modifier::UNDERLINED) && !c.modifier.contains(Modifier::REVERSED) && text(b).contains("what changed from the version before")
+    });
+    // A click: picked, under the cursor, and beside it the version whole.
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the version picked", |b| b[(x, y)].modifier.contains(Modifier::REVERSED) && text(b).contains("the version whole"));
+}
+
+#[test]
 fn each_stack_operation_is_marked_on_its_own_in_the_window_too() {
     use stacked::paint::color;
     let (tmp, db) = setup();

@@ -654,8 +654,10 @@ impl App {
         Effect::None
     }
 
-    /// The line `i` of the view's list picked, as the arrows would: the
-    /// cursor in the list.
+    /// The line `i` of the view's list picked by a click, as the arrows
+    /// would: the cursor in the list, the pane on the right back beside it,
+    /// and from its first line for another line. The mouse going by only
+    /// marks the line (`Spot::marked`), and resets nothing.
     pub(super) fn pick_why_line(&mut self, i: usize) {
         if let Some(v) = self.head_why.as_mut()
             && v.lines.get(i).is_some_and(|l| l.why.is_some())

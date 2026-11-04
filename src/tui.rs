@@ -739,10 +739,16 @@ impl Spot {
     /// is picked, and what is shown of it beside, stays so: a click picks
     /// it, and a second click on it is Enter; the wheel over it scrolls its
     /// pane, which keeps its pick. The side panes' lines, the patches' and
-    /// the comments', their headers too, and the review's list. Another
-    /// list goes so by its spot here.
+    /// the comments', their headers too; the lists of the screens of their
+    /// own, the tree's, the stacks', the runs', the versions' and
+    /// History…'s, a record's comments with it; the review's list, what the
+    /// search found, and the list of the view of why Move HEAD does not move
+    /// HEAD. Another list goes so by its spot here.
     fn marked(&self) -> bool {
-        matches!(self, Spot::Patch(_) | Spot::File(_) | Spot::HeadRow | Spot::NotesHead | Spot::Note(_) | Spot::ReviewLine(_))
+        matches!(
+            self,
+            Spot::Patch(_) | Spot::File(_) | Spot::HeadRow | Spot::NotesHead | Spot::Note(_) | Spot::Pick(_) | Spot::ReviewLine(_) | Spot::Found(_) | Spot::WhyLine(_)
+        )
     }
 }
 
@@ -2419,10 +2425,13 @@ pub struct App {
     hidden: Option<crate::rows::Place>,
     /// The line the mouse is over and only marks, in the browser and in
     /// StackED (`Spot::marked`): a patch of the list or its header, a
-    /// comment of the comments pane or its header, a line of the review's
-    /// list. Drawn underlined (`underline_hovered`), and not picked: a
-    /// click picks it.
+    /// comment of the comments pane or its header, a line of a list. Drawn
+    /// underlined (`underline_hovered`), and not picked: a click picks it.
     pub hovered: Option<Spot>,
+    /// The screen the mouse marked `hovered` on. Drawn on another, it is
+    /// marked no longer: the lists of several screens share their spots
+    /// (`Spot::Pick`), and the line under the mouse is another one there.
+    hovered_on: Screen,
     /// The selected line of a list screen, and its top.
     pub pick: usize,
     pick_top: usize,
@@ -3003,6 +3012,7 @@ impl App {
             keep: None,
             hidden: None,
             hovered: None,
+            hovered_on: Screen::Main,
             pick: 0,
             pick_top: 0,
             hist_rev: None,
@@ -4589,17 +4599,18 @@ impl App {
 
     /// The mouse over `(x, y)` of the screen. Over a line the mouse only
     /// marks (`Spot::marked`: a side pane's, the patches' or the comments',
-    /// and the review's list's): that line marked as under it, and not
-    /// picked, the line picked staying so until a click. Elsewhere, what is
-    /// there picked, as the arrows would, so that a click does on it what
-    /// Enter does: in a menu, its item; a patch being moved goes there, and
-    /// HEAD being moved under the patch. Not the search's scope, which a
-    /// pick steps, nor while a comment is written, nor over what `?` says.
-    /// The mouse is in use from then on, until the next key (`wheel`).
+    /// and a list's): that line marked as under it, and not picked, the line
+    /// picked staying so until a click. Elsewhere, what is there picked, as
+    /// the arrows would, so that a click does on it what Enter does: in a
+    /// menu, its item; a patch being moved goes there, and HEAD being moved
+    /// under the patch. Not the search's scope, which a pick steps, nor
+    /// while a comment is written, nor over what `?` says. The mouse is in
+    /// use from then on, until the next key (`wheel`).
     pub fn hover(&mut self, x: u16, y: u16) {
         self.mouse = true;
         let spot = self.spot_at(x, y);
         self.hovered = spot.filter(|s| s.marked() && matches!(self.mode, Mode::Normal));
+        self.hovered_on = self.screen;
         let Some(spot) = spot else { return };
         let low = self.head_here().map_or(0, crate::head::Head::locked);
         // The ask dialog's buttons that can be pressed: the mouse picks
@@ -4745,11 +4756,14 @@ impl App {
                 self.note_sel = i;
             }
             Spot::Pick(i) => {
-                self.pick = i;
                 if self.screen == Screen::History {
+                    if self.pick != i {
+                        self.hist_another();
+                    }
                     self.hist_focus = HistFocus::List;
                     self.hist_rev = self.history().get(i).map(|e| e.rev);
                 }
+                self.pick = i;
             }
             Spot::HistRow(i) => {
                 self.hist_focus = HistFocus::Diff;
@@ -6944,10 +6958,7 @@ impl App {
                 let was = self.pick;
                 self.list_key(k);
                 if self.pick != was {
-                    self.hist_cursor = 0;
-                    self.hist_top = 0;
-                    // Another record's stack diff: no line of it to keep.
-                    (self.hist_keep, self.hist_line) = (None, None);
+                    self.hist_another();
                 }
             }
             (HistFocus::Diff, KeyCode::Left) => self.hist_focus = HistFocus::List,
@@ -6967,6 +6978,14 @@ impl App {
                 };
             }
         }
+    }
+
+    /// Another record of History… picked, by the arrows or by a click: its
+    /// stack diff from its first line, with no line of the record before
+    /// to keep.
+    fn hist_another(&mut self) {
+        (self.hist_cursor, self.hist_top) = (0, 0);
+        (self.hist_keep, self.hist_line) = (None, None);
     }
 
     /// The record History…'s cursor is on.
@@ -10708,6 +10727,11 @@ impl App {
         // its pick in sight.
         let screen = self.screen;
         self.wheeled.retain(|(on, _)| *on == screen);
+        // Nor is the line the mouse marked on another screen marked here,
+        // where another line is under the mouse, marked once it moves.
+        if self.hovered_on != screen {
+            self.hovered = None;
+        }
         // Where the cursor is in a list of its own screen, kept as it goes.
         self.keep_list();
         self.keep_progress();
