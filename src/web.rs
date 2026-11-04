@@ -11,7 +11,8 @@
 //! Only this machine's pages, holding the token the browser was opened
 //! with, may see it or drive it: a page from elsewhere could otherwise send
 //! it keys. What runs `$EDITOR` runs it where `stacked web` was started; the
-//! pages are told meanwhile, and say so over their screen.
+//! pages are told meanwhile, and say so over their screen, and what they do
+//! meanwhile is dropped, as StackED drops what is done in its window.
 //!
 //! It listens on the port `--port` names, else on the one the settings'
 //! `[web]` say (`listen`); the token is new each time, whatever the port.
@@ -50,12 +51,14 @@ enum Input {
 }
 
 /// What the editor's thread shares with the threads that answer the
-/// browsers' events: the browsers come whose join it has not read yet, each
-/// by its number, with where it is sent the rows; the number of the next;
-/// and, while `$EDITOR` runs, the line that says so. The editor's thread
+/// browsers: the browsers come whose join it has not read yet, each by its
+/// number, with where it is sent the rows; the number of the next; and,
+/// from when the browsers are told that `$EDITOR` runs to when they are
+/// sent the screen after it, the line that tells them. The editor's thread
 /// reads nothing until `$EDITOR` exits: a browser that comes meanwhile is
 /// told at once, and one come just before, which the editor's thread does
-/// not know yet, is told as it starts.
+/// not know yet, is told as it starts. And what the browsers send meanwhile
+/// is dropped as it is read, but a new size (`kept_while_editing`).
 #[derive(Default)]
 struct Coming {
     browsers: Vec<(usize, Sender<String>)>,
@@ -67,6 +70,16 @@ struct Coming {
 /// panicked.
 fn lock(coming: &Mutex<Coming>) -> MutexGuard<'_, Coming> {
     coming.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether `line`, read from a browser while `$EDITOR` runs, is done all
+/// the same, once it exits: a new size (`s COLS ROWS`), so that the screen
+/// sent after fits the page as it is then. All else is dropped, as StackED
+/// drops what is done in its window meanwhile: keys, clicks, the wheel,
+/// drags, the mouse going over the screen or leaving it, pastes, a notice
+/// clicked.
+fn kept_while_editing(line: &str) -> bool {
+    line.split_whitespace().next() == Some("s")
 }
 
 /// Browser `id`, come, taken out of those `coming` holds: where it is sent
@@ -256,8 +269,9 @@ fn leave(app: &App, browsers: Vec<Sender<String>>, coming: &Mutex<Coming>, answe
 /// The editor, as the terminal runs it: what the browsers send done, its
 /// screen drawn after, the rows that changed sent them, after the notices
 /// of what it learned meanwhile; while `$EDITOR` runs, the browsers told so
-/// first, those `coming` holds too, and sent the screen whole after; until
-/// it is left, once what it is `answering` is answered.
+/// first, those `coming` holds too, what they send dropped, and sent the
+/// screen whole after; until it is left, once what it is `answering` is
+/// answered.
 fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Answering) -> Result<()> {
     let mut app = App::new(path)?;
     // What it learns, told the browsers, unless the settings say not to.
@@ -286,7 +300,9 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
             return Ok(());
         }
         // All that came meanwhile, before it is drawn: a paste is many keys.
+        // And whether `$EDITOR` ran, the screen after it then to send whole.
         let mut whole = false;
+        let mut ran = false;
         for input in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
             match input {
                 Input::Join(id, cols, rows) => {
@@ -313,10 +329,12 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
                         // $EDITOR, where `stacked web` was started: the
                         // browsers told first, the program it runs named,
                         // those come whose join is not read yet among them,
-                        // as nothing is read until it exits; then sent the
-                        // screen after, whole, changed or not, which takes
-                        // the place of what they say over it, whether it ran
-                        // or not. A ctrl-c there meanwhile was the editor's.
+                        // as nothing is read until it exits; from then on,
+                        // what they send is dropped as it is read, until
+                        // they are sent the screen after, whole, changed or
+                        // not, which takes the place of what they say over
+                        // it, whether it ran or not. A ctrl-c there
+                        // meanwhile was the editor's.
                         e => {
                             let said = editing(&program(&crate::config::get().editor()));
                             {
@@ -324,15 +342,15 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
                                 for (_, b) in &c.browsers {
                                     let _ = b.send(said.clone());
                                 }
-                                c.editing = Some(said.clone());
+                                tell(&mut browsers, std::slice::from_ref(&said));
+                                c.editing = Some(said);
                             }
-                            tell(&mut browsers, &[said]);
                             if let Err(e) = app.effect(e) {
                                 app.status = e.0;
                             }
-                            lock(coming).editing = None;
                             INTERRUPTED.store(false, Ordering::SeqCst);
                             whole = true;
+                            ran = true;
                         }
                     }
                     whole |= size != was;
@@ -359,7 +377,16 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
                 sent.push(row.clone());
             }
         }
-        tell(&mut browsers, &sent);
+        if ran {
+            // The screen after `$EDITOR`, sent under the lock its end is
+            // said under: what a browser sends once it has that screen is
+            // done, what it sent before that is dropped.
+            let mut c = lock(coming);
+            tell(&mut browsers, &sent);
+            c.editing = None;
+        } else {
+            tell(&mut browsers, &sent);
+        }
         shown = now;
     }
 }
@@ -576,7 +603,8 @@ fn icons() -> &'static [Vec<u8>; 2] {
 /// from a page of this machine's, holding the token, the icon too: the page
 /// links it with the token, and `/favicon.ico`, which a browser may ask for
 /// on its own, without it, is refused as all else is. A browser's events
-/// start among those `coming` holds, told first if `$EDITOR` runs.
+/// start among those `coming` holds, told first if `$EDITOR` runs; and its
+/// lines are dropped as they are read while `$EDITOR` runs, but a new size.
 fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>, coming: &Mutex<Coming>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut out = stream;
@@ -650,9 +678,16 @@ fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>, coming:
         ("POST", "/input") => {
             let mut body = vec![0; length.min(1 << 20)];
             reader.read_exact(&mut body)?;
+            // Read under the lock that `$EDITOR`'s run starts and ends
+            // under: what comes while it runs dropped, but a new size; what
+            // comes before or after it done.
+            let c = lock(coming);
             for line in String::from_utf8_lossy(&body).lines() {
-                let _ = tx.send(Input::Line(line.to_string()));
+                if c.editing.is_none() || kept_while_editing(line) {
+                    let _ = tx.send(Input::Line(line.to_string()));
+                }
             }
+            drop(c);
             reply(&mut out, "204 No Content", "text/plain", b"")
         }
         _ => reply(&mut out, "404 Not Found", "text/plain", b"nothing here"),

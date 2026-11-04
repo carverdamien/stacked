@@ -17,9 +17,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #screen div { height: 1.3em; overflow: hidden; }
 .cur { outline: 1px solid var(--fg); outline-offset: -1px; }
 #gone, #editing { position: fixed; inset: 0; display: none; place-items: center; background: #000c; color: #fff; font: 16px sans-serif; }
-/* Over the screen while $EDITOR runs, letting the mouse through to it, as
-   it went before there was anything over it. */
-#editing { text-align: center; white-space: pre-line; pointer-events: none; }
+/* Over the screen while $EDITOR runs, the mouse over it, not the screen:
+   what is done meanwhile is dropped. */
+#editing { text-align: center; white-space: pre-line; }
 </style>
 </head>
 <body>
@@ -49,7 +49,13 @@ const flush = () => {
   pending = '';
   fetch('/input?t=' + token, {method: 'POST', body}).finally(() => { sending = false; flush(); });
 };
-const send = line => { if (line) { pending += line + '\n'; flush(); } };
+// While $EDITOR runs, said over the screen, the server drops what the page
+// does: it is not sent, but the page's size, for the screen after to fit.
+const send = line => {
+  if (!line || (editing.style.display === 'grid' && !line.startsWith('s '))) return;
+  pending += line + '\n';
+  flush();
+};
 // A notice of the editor's, a banner of the system's, only while the page
 // is not what you look at: on it, the editor's own banner says it. Clicked,
 // it brings the page forward, closes, and sends its line. Without the

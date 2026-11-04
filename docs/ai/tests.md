@@ -1351,7 +1351,14 @@ runs, a page come while it runs told it at once, before any screen, and,
 the editor done, each page sent the screen whole, no row before it, the
 bottom line saying `nothing changed`; and an editor that cannot run told
 all the same, `e noedit`, then the screen whole at once, the bottom line
-saying why (`…/noedit failed; nothing changed`); and
+saying why (`…/noedit failed; nothing changed`); what the pages send
+while it runs dropped (from the first, the keys that would write a comment
+on the stack and save it, and a click on the second patch; from a second
+page come meanwhile, ↓ and a right click, a menu), but a new size: each
+page sent the screen whole after at that size, the bottom line saying
+`nothing changed`, the first patch still in the middle, no menu, no
+comment, nothing written in the database, then a key sent after done;
+and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the wheel said once it turned a notch, with the cell under the mouse

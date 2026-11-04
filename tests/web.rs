@@ -2407,3 +2407,53 @@ fn an_editor_that_cannot_run_is_said_over_the_screen_until_the_screen_after_says
     until(&mut events, "why", |l| text(l).contains(&why));
     s.quit();
 }
+
+#[test]
+fn what_the_pages_send_while_the_editor_runs_is_dropped_but_a_new_size_and_what_they_send_after_is_done_in_the_browser() {
+    let (tmp, db) = setup();
+    let editor = waiting_editor(tmp.path(), "slowedit");
+    let s = served_editing(&tmp.path().join("home"), tmp.path(), &db, &editor);
+    let (host, input) = (format!("127.0.0.1:{}", s.port), format!("POST /input?t={}", s.token));
+    let mut first = events(s.port, &s.token, 400);
+    until(&mut first, "the patches", |l| text(l).contains("Bug 2 - add b"));
+    edit_first_patch(s.port, &s.token, &mut first);
+    let said = "data: e slowedit";
+    until(&mut first, "the editor's word", |l| l == said);
+    assert!(there(&tmp.path().join("ran")), "the editor never ran");
+    let mut second = events(s.port, &s.token, 400);
+    until(&mut second, "its word", |l| l == said);
+    // While the editor runs: from the first page, keys that would write a
+    // comment on the stack and save it, then a click on the second patch;
+    // from the second page, ↓ and a right click on the first patch, its
+    // menu; then the first page's new size.
+    let before = std::fs::read(&db).unwrap();
+    ask(s.port, &host, &input, "k Home -\nk Enter -\n");
+    typed_in(s.port, &host, &input, "dropped");
+    ask(s.port, &host, &input, "k Esc -\nk Enter -\nm 5 3 l\n");
+    ask(s.port, &host, &input, "k Down -\nm 5 2 r\n");
+    ask(s.port, &host, &input, "s 300 30\n");
+    // The editor done: each page sent the screen whole at that size, the
+    // bottom line saying what came of the edit, nothing else of it done:
+    // the first patch still in the middle, no menu, no comment, nothing
+    // written.
+    std::fs::write(tmp.path().join("exit"), "").unwrap();
+    for page in [&mut first, &mut second] {
+        let seen = until(page, "the screen after", |l| l.starts_with("data: s "));
+        assert_eq!(seen.last().map(String::as_str), Some("data: s 300 30"), "{seen:#?}");
+        let rows = std::cell::RefCell::new(vec![String::new(); 30]);
+        until(page, "the screen's last row", |l| {
+            shown(&mut rows.borrow_mut(), l);
+            l.starts_with("data: r 29 ")
+        });
+        let rows = rows.into_inner();
+        assert!(rows[29].contains("nothing changed") && rows.iter().any(|r| r.contains("+TWO")), "{rows:#?}");
+        for done in ["+bee", "Edit this patch in $EDITOR", "dropped", "┌─ a comment on"] {
+            assert!(!rows.iter().any(|r| r.contains(done)), "{done}: {rows:#?}");
+        }
+    }
+    assert!(std::fs::read(&db).unwrap() == before, "the database was written");
+    // What is sent after: done.
+    ask(s.port, &host, &input, "k Down -\n");
+    until(&mut first, "the key after", |l| text(l).contains("+bee"));
+    s.quit();
+}

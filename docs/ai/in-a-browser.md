@@ -119,10 +119,16 @@ empty, as nothing else is read until the editor exits. Then, whether the
 editor ran or could not run, the server sends each page the screen whole,
 which takes the place of what was said over it; the bottom line says
 what came of it (`nothing changed`), or why the editor failed
-(`/path/to/noedit failed; nothing changed`). Keys, clicks and the wheel
-the page sends meanwhile wait, and are done once the editor exits, on the
-screen as it is then: what is said over the screen lets the mouse through
-to it, as before. Quit is
+(`/path/to/noedit failed; nothing changed`). What the pages do meanwhile is
+dropped, as StackED drops what is done in its window, and nothing says so:
+keys, clicks, the wheel, drags, the mouse going over the screen or leaving
+it, pastes, a notice clicked; but a new size, so that the screen sent after
+fits the page as it is then. The server drops it, for every page, one of
+an older stacked too: what it reads from a page from when it tells the
+pages that the editor runs to when it sends them the screen after is
+dropped; what it read before, or reads after, is done. The page sends
+nothing meanwhile but its size, and the mouse is over what is said, not
+over the screen. Quit is
 quit, and the page says so. A ctrl-c there, a kill, or that terminal
 closing quits too. Either way, as when the editor in a terminal is left,
 the agents' worktrees made ahead are removed, and the asks still running
@@ -190,6 +196,9 @@ the pages' events share with it, under one lock, the pages that came and
 that it has not read yet, and what says that the editor runs, so that a
 page that comes then is told at once, and one come just before the editor
 starts, which the editor's thread does not know yet, is told as it starts.
+The threads that read the pages' lines read them under that lock too,
+which the pages are told under that the editor runs and sent the screen
+after under: a line read once a page could have that screen is done.
 A page of an older stacked does nothing with a notice, nor with what says
 that the editor runs, as with any line it does not know. The page sends
 its keys, its clicks and its wheel back, the wheel
