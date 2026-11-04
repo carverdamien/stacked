@@ -665,6 +665,10 @@ pub struct Prepared {
     /// (`phab::fetched_at`), which the review says how long ago was, as it
     /// is drawn; none for a new revision.
     pub fetched: Option<i64>,
+    /// When a submit last changed it, in seconds since 1970, where that
+    /// was after what is shown of it was fetched (`Db::submitted_unread`),
+    /// which the review says too; none otherwise, and for a new revision.
+    pub submitted: Option<i64>,
     /// How its latest diff is a version of the patch: none for a revision
     /// not in work whose latest diff is no version of it.
     pub known: Option<Known>,
@@ -1198,6 +1202,7 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, read: &mut 
         _ => titled.title,
     };
     let parent = parent(db, s, at, revision.as_ref());
+    let submitted = named.as_ref().and_then(|(_, link)| db.submitted_unread(link));
     let parents_now = named.map_or_else(Vec::new, |(_, link)| parents_named(db, &link));
     let (code, code_said, code_files) = match (&revision, &known) {
         (Some(r), Some(k)) if new_diff => code_change(db, s, at, k, &r.raw, &p.diff),
@@ -1212,6 +1217,7 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, read: &mut 
         from: None,
         revision,
         fetched,
+        submitted,
         known,
         title,
         summary,
@@ -1799,6 +1805,10 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
             (r.id.clone(), r.phid.clone())
         }
     };
+    // Whether the revision changed, for the record of it below: its one
+    // edit made, the revision made by it for a new one; or its edit back to
+    // Changes Planned.
+    let mut changed = !txns.is_empty();
     let planned = if plan_now { ", in Changes Planned" } else { "" };
     let mut said = vec![match r {
         None => format!("Patch {n} is {d} on Phabricator now, in Changes Planned."),
@@ -1812,7 +1822,10 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
     // Planned again, after the new diff put the revision in Needs Review.
     if plan_after {
         said.push(match edit(call, &phid, json!({"type": "plan-changes", "value": true})) {
-            Ok(_) => format!("{d} stays Changes Planned."),
+            Ok(_) => {
+                changed = true;
+                format!("{d} stays Changes Planned.")
+            }
             Err(e) => format!("But {d} was not put back in Changes Planned, and may be Needs Review now: {e}"),
         });
     }
@@ -1829,6 +1842,19 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
         Parent::Set { id, .. } => said.push(format!("The parent of {d} is {id} now.")),
         Parent::Already { .. } => {}
         Parent::Nothing(why) => said.push(why.replace("the new revision", &d)),
+    }
+    // That the submit changed the revision, by the link the patch names it
+    // by, a new revision's as it goes into the patch: until a read of the
+    // revision is stored after it, what is stored of the revision was read
+    // before (`Db::submitted_unread`), as the patches pane marks it.
+    let link = match r {
+        Some(_) => crate::phab::revision_of(&patch.message).map(|(_, link)| link),
+        None => Some(format!("{}/{d}", p.url)),
+    };
+    if let Some(link) = link.filter(|_| changed)
+        && let Err(e) = Db::edit(path, |db| db.store_submitted(&link))
+    {
+        said.push(format!("But the database could not keep that {d} was submitted: {}.", e.0));
     }
     // Nothing is read after: what stacked shows of the revision is what was
     // fetched before, until the next fetch.
@@ -2865,6 +2891,100 @@ mod tests {
             "Patch 3 changed since what is sent was read, so nothing was sent. Submit it again to see what is sent now."
         );
         assert!(fake.calls.is_empty(), "{:?}", fake.calls);
+    }
+
+    /// The submits the database at `db` remembers, oldest first, each by
+    /// the link of the revision it changed (`Record::Submitted`).
+    fn submits(db: &Path) -> Vec<String> {
+        let d = Db::load(db).unwrap();
+        d.records()
+            .iter()
+            .filter_map(|r| match r {
+                crate::db::Record::Submitted { link, .. } => Some(link.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_submit_that_changed_its_revision_is_remembered_and_one_that_changed_nothing_of_it_is_not() {
+        // A new revision: made, remembered by the link its patch names now,
+        // as of the send, until a fetch reads it.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", "Bug 3 - three"]);
+        let mut fake = Fake::default();
+        let before = crate::db::now();
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert!(sent.unwrap().ends_with("Nothing of D200 is fetched from Phabricator yet."));
+        assert_eq!(submits(&db), [link(200)]);
+        assert_eq!(crate::phab::revision_of(&message_of(&db, 2)).map(|(_, l)| l), Some(link(200)));
+        assert!(Db::load(&db).unwrap().submitted_unread(&link(200)).is_some_and(|t| t >= before && t <= crate::db::now()));
+        fetch(&db, &mut fake);
+        assert_eq!(Db::load(&db).unwrap().submitted_unread(&link(200)), None);
+        assert_eq!(submits(&db), [link(200)], "no record taken out");
+        // Its diff made, but no revision of it: nothing remembered.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", "Bug 3 - three"]);
+        let mut fake = Fake { refuse: vec!["edit:title"], ..Default::default() };
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert!(sent.unwrap().starts_with("The diff of patch 3 was made on Phabricator, but no revision was made of it"));
+        assert!(submits(&db).is_empty());
+        // A revision in Changes Planned taking a new diff: its diff refused,
+        // then the edit that takes it refused, nothing of D13 changed, and
+        // nothing remembered.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        let earlier = diff_of(&db, 2);
+        new_code(&db, 2, &earlier.replace("+LINE 20", "+Line twenty"));
+        let mut fake = Fake { refuse: vec!["differential.creatediff"], ..Default::default() }.with(13, "changes-planned", &earlier, "WIP: Bug 3 - three");
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert!(sent.unwrap().starts_with("Phabricator refused the diff of patch 3"));
+        fake.refuse = vec!["edit:update"];
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert!(sent.unwrap().starts_with("The new diff of patch 3 was made on Phabricator, but the edit of D13 that takes it failed"));
+        assert!(submits(&db).is_empty());
+        assert!(Db::load(&db).unwrap().submitted_unread(&link(13)).is_none());
+        // That edit made, Changes Planned again refused: D13 changed, and
+        // remembered; then all four writes made, remembered again, the
+        // bottom line ending as ever.
+        fake.refuse = vec!["edit:plan-changes"];
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert!(sent.unwrap().contains("But D13 was not put back in Changes Planned"));
+        assert_eq!(submits(&db), [link(13)]);
+        fake.refuse.clear();
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert!(sent.unwrap().ends_with("D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit."));
+        assert_eq!(submits(&db), [link(13), link(13)]);
+        assert!(Db::load(&db).unwrap().submitted_unread(&link(13)).is_some());
+        // Fetched: D13 as it is now, nothing to send; sent all the same,
+        // nothing of D13 changes, and nothing is remembered.
+        fetch(&db, &mut fake);
+        let p = prepared(&db, 2, &mut fake).unwrap();
+        assert!(p.nothing() && p.submitted.is_none(), "{p:?}");
+        let sent = send_with(&db, &p, None, &mut |m, v| fake.call(m, v));
+        assert!(sent.starts_with("D13 keeps its diff, title and summary."), "{sent}");
+        assert_eq!(submits(&db).len(), 2);
+        assert!(Db::load(&db).unwrap().submitted_unread(&link(13)).is_none());
+        // A revision in review getting its title and summary alone: its one
+        // edit refused, nothing remembered; made, remembered.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}/D13")]);
+        let mut fake = Fake { refuse: vec!["edit:summary"], ..Default::default() }.with(13, "needs-review", &diff_of(&db, 2), "Bug 3 - three");
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert_eq!(sent.unwrap(), "The edit of D13 failed, so nothing of D13 changed: differential.revision.edit: refused.");
+        assert!(submits(&db).is_empty());
+        fake.refuse.clear();
+        let (ready, sent) = submit(&db, 2, &mut fake);
+        assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit.");
+        assert_eq!(submits(&db), [link(13)]);
+        // The next review of it says so, and that is all a submit changes of
+        // what it works out.
+        assert_eq!(ready.unwrap().submitted, None);
+        let again = prepared(&db, 2, &mut fake).unwrap();
+        assert_eq!(again.submitted, Db::load(&db).unwrap().submitted_unread(&link(13)));
+        assert!(again.submitted.is_some());
+        // The patch changed since what is sent was worked out: nothing sent,
+        // nothing remembered.
+        new_code(&db, 2, &diff_of(&db, 2).replace("+LINE 20", "+Line twenty"));
+        let sent = send_with(&db, &again, None, &mut |m, v| fake.call(m, v));
+        assert!(sent.starts_with("Patch 3 changed since what is sent was read, so nothing was sent."), "{sent}");
+        assert_eq!(submits(&db), [link(13)]);
     }
 
     #[test]

@@ -12,11 +12,13 @@ started), the patches they need, the comments as they stood, the read marks
 standing, each stack's filter, what stands of each revision read from
 Phabricator (its state and its comments, each as the read that stored it
 left it, the raw diff its state names, and when it was last fetched), each
-repository a submit read from it, and the runs still going with what their
+repository a submit read from it, each revision a submit changed since a
+read of it was last stored, with when, after every read, so that it is
+marked `↻` as before, and the runs still going with what their
 agent had written. Runs that had
 landed, earlier states no one names, the earlier versions of comments and
-patches, the raw diffs of a revision's diffs before its latest: that is
-what is left out. Every
+patches, the raw diffs of a revision's diffs before its latest, the
+submits a read came after: that is what is left out. Every
 record from `@N` on follows, its revs made the new file's. The new file is
 written whole, then read back: every stack must be as in the old one, or
 nothing is written.

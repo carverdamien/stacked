@@ -6,7 +6,8 @@
 //! revision, a dialog then says what is sent and where. For a revision
 //! there already, a screen of its own shows what replaces what: what is
 //! sent and where, said, how long ago what it shows of the revision was
-//! fetched, as the Phabricator line says it, and, to a revision not in
+//! fetched, as the Phabricator line says it, with how long ago a submit
+//! changed the revision since, if one did, and, to a revision not in
 //! work, that the code is not sent when it differs; the title and summary,
 //! Phabricator's then what is sent; what else changes (the parent, the
 //! bug, the status); and
@@ -31,7 +32,7 @@ use super::interdiffs::{At, Seen, Two, half_of, paired};
 use super::revisions::{Shown as CodeShown, bare, files_drawn, files_heading, interdiff_drawn, named_interdiff, shown_of, shown_said};
 use super::*;
 use crate::ops::CodePlace;
-use crate::phab::age_said;
+use crate::phab::{age_said, ago_said};
 use crate::submit::{Prepared, and};
 
 /// What the bar says while a submit is read, or sent.
@@ -44,6 +45,13 @@ const SENT: &str = "what is sent";
 /// interdiffs, for its code.
 pub(super) const VIEW_OF_CODE: &str = "The view of the code…";
 
+/// What the lines of a review are drawn for (`Submitting::built`): the
+/// width, the view of the interdiffs, every line or only what the patches
+/// changed, how long ago what they show of the revision was fetched, and
+/// how long ago a submit changed it since, as they say it (`phab::age_said`,
+/// `phab::ago_said`).
+type Built = (usize, InterLayout, InterLines, Option<String>, Option<String>);
+
 /// A submit read, waiting on you: its dialog open, for a new revision; or
 /// its review, on its screen.
 pub struct Submitting {
@@ -52,17 +60,15 @@ pub struct Submitting {
     /// first row of each of its lines, a line folded into more than one;
     /// the lines it draws, those rows then the code (`review_lines`), each
     /// with what it shows, to be found again drawn otherwise
-    /// (`interdiffs::Seen`); what they were drawn for: the width, the view
-    /// of the interdiffs, every line or only what the patches changed, and
-    /// how long ago what they show of the revision was fetched, as they say
-    /// it (`phab::age_said`); and, drawn again, the line the cursor
-    /// went on and the place it came with (`interdiffs::locate`), so that
-    /// switching back and forth it goes back where it was.
+    /// (`interdiffs::Seen`); what they were drawn for (`Built`); and, drawn
+    /// again, the line the cursor went on and the place it came with
+    /// (`interdiffs::locate`), so that switching back and forth it goes
+    /// back where it was.
     rows: Vec<Row>,
     starts: Vec<usize>,
     lines: Vec<Parts>,
     at: Vec<Seen>,
-    built: Option<(usize, InterLayout, InterLines, Option<String>)>,
+    built: Option<Built>,
     kept: Option<(usize, At)>,
     /// The line the cursor is on, and the first shown.
     pub cursor: usize,
@@ -99,11 +105,13 @@ impl Submitting {
 /// why a new diff is sent of a latest diff that makes the changes of a
 /// version of the patch; how long ago what is shown of the revision was
 /// fetched, `age` (`fetched 11 minutes ago`), as the Phabricator line says
-/// it; then only what changes: the title and summary, Phabricator's then
-/// what is sent; the parent and the bug, before then after, and the
-/// status; when a new diff is sent, the heading of the code and what the
-/// code is, `code` (`Compared::said`).
-fn review_rows(p: &Prepared, w: usize, code: Option<(&str, &str)>, age: Option<&str>) -> Vec<Row> {
+/// it, and how long ago a submit changed it after that, `since` (`2
+/// minutes ago`), as the patches pane's `↻` says it was; then only what
+/// changes: the title and summary, Phabricator's then what is sent; the
+/// parent and the bug, before then after, and the status; when a new diff
+/// is sent, the heading of the code and what the code is, `code`
+/// (`Compared::said`).
+fn review_rows(p: &Prepared, w: usize, code: Option<(&str, &str)>, (age, since): (Option<&str>, Option<&str>)) -> Vec<Row> {
     let mut rows = vec![row(Kind::File, "what is sent")];
     let n = p.number();
     let id = p.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
@@ -119,9 +127,13 @@ fn review_rows(p: &Prepared, w: usize, code: Option<(&str, &str)>, age: Option<&
         said_rows(&mut rows, Kind::Meta, &s, w);
     }
     // What the review stands on: the revision as it was fetched, nothing
-    // read again before it is sent.
+    // read again before it is sent; and a submit since, which it predates.
     if let (Some(r), Some(age)) = (&p.revision, age) {
-        said_rows(&mut rows, Kind::Meta, &format!("What is shown of {} here was {age}.", r.id), w);
+        let said = match since {
+            Some(since) => format!("What is shown of {} here was {age}, before it was last submitted, {since}.", r.id),
+            None => format!("What is shown of {} here was {age}.", r.id),
+        };
+        said_rows(&mut rows, Kind::Meta, &said, w);
     }
     // The title and summary, as an interdiff compares two messages.
     let before = p.message_before().unwrap_or_default();
@@ -305,8 +317,9 @@ fn code_near(code: &str, first: usize) -> Near {
 
 /// The review of `p` drawn `w` wide, its code in view `v` of the
 /// interdiffs, with only what the patches changed if `only`, saying how
-/// long ago what it shows of the revision was fetched, `age`: what it says
-/// over the code (`review_rows`), a row each, or, side by side where the
+/// long ago what it shows of the revision was fetched, `age`, and a submit
+/// changed it since, `since`: what it says over the code (`review_rows`),
+/// a row each, or, side by side where the
 /// view is side by side, as the code view pairs a diff's rows
 /// (`interdiffs::paired`), a line of the title and summary, or of what
 /// else changes, beside the one it replaces; then the code
@@ -316,12 +329,12 @@ fn code_near(code: &str, first: usize) -> Near {
 /// the review's, then the lines of the code.
 type Drawn = (Vec<Row>, Vec<usize>, Vec<Parts>, Vec<Seen>);
 
-fn review_lines(p: &Prepared, v: InterLayout, only: bool, w: usize, age: Option<&str>) -> Drawn {
+fn review_lines(p: &Prepared, v: InterLayout, only: bool, w: usize, (age, since): (Option<&str>, Option<&str>)) -> Drawn {
     let sides = v.sides();
     let fold = if sides { half_of(w) } else { w };
     let compared = p.code.as_deref().map(|code| Compared::of(p, code, age));
     let said = compared.as_ref().map(|c| c.heading(p, v));
-    let rows = review_rows(p, fold.saturating_sub(1), said.as_ref().map(|(h, s)| (h.as_str(), s.as_str())), age);
+    let rows = review_rows(p, fold.saturating_sub(1), said.as_ref().map(|(h, s)| (h.as_str(), s.as_str())), (age, since));
     // Each row's line, a row folded on with the line it goes on with.
     let mut starts = Vec::new();
     let mut place = Vec::with_capacity(rows.len());
@@ -550,8 +563,9 @@ impl App {
     /// The review: its title, then its lines from the top shown, the
     /// cursor's lit. Drawn again where the width, the view of the
     /// interdiffs or their lines changed (`review_lines`), or how long ago
-    /// what it shows of the revision was fetched, as it says it, worked out
-    /// as it is drawn, so that it grows while the review stays open; the
+    /// what it shows of the revision was fetched, or a submit changed it
+    /// since, as it says it, worked out as it is drawn, so that it grows
+    /// while the review stays open; the
     /// cursor on the place it was on (`interdiffs::locate`,
     /// `interdiffs::find`), as far under the top as it was.
     pub(super) fn draw_submit(&mut self, buf: &mut Buffer, area: Rect) {
@@ -573,12 +587,14 @@ impl App {
         let v = if has_code { self.inter_in(lw) } else { InterLayout::Interdiff };
         let only = self.only_changed();
         let Some(sub) = self.submitting.as_mut() else { return };
-        let age = sub.ready.fetched.map(|t| age_said(t, crate::db::now()));
-        let key = (lw, v, self.inter_lines, age);
+        let now = crate::db::now();
+        let age = sub.ready.fetched.map(|t| age_said(t, now));
+        let since = sub.ready.submitted.map(|t| ago_said(t, now));
+        let key = (lw, v, self.inter_lines, age, since);
         if sub.built.as_ref() != Some(&key) {
             let was = sub.built.as_ref().and_then(|_| interdiffs::locate(&sub.at, sub.cursor, sub.kept));
             let under = sub.cursor.saturating_sub(sub.top);
-            (sub.rows, sub.starts, sub.lines, sub.at) = review_lines(&sub.ready, key.1, only, lw, key.3.as_deref());
+            (sub.rows, sub.starts, sub.lines, sub.at) = review_lines(&sub.ready, key.1, only, lw, (key.3.as_deref(), key.4.as_deref()));
             sub.built = Some(key);
             sub.kept = was.map(|place| (interdiffs::find(&sub.at, place), place));
             if let Some((at, _)) = sub.kept {
@@ -649,19 +665,24 @@ impl App {
     }
 
     /// What `?` says on the review: for a revision not in work, that no
-    /// code is sent; Esc, and a right click, for the menu that sends it, as
-    /// the review shows it, nothing read first, or not; and, with code, 1
-    /// for its view.
+    /// code is sent; a submit that changed the revision since what is shown
+    /// of it was fetched, that the top says when; Esc, and a right click,
+    /// for the menu that sends it, as the review shows it, nothing read
+    /// first, or not; and, with code, 1 for its view.
     pub(super) fn submit_help(&self) -> Vec<String> {
         let ready = self.submitting.as_ref().map(|s| &s.ready);
         let id = ready.and_then(|p| p.revision.as_ref()).map_or("the revision".to_string(), |r| r.id.clone());
+        let since = match ready.and_then(|p| p.submitted) {
+            Some(_) => format!(", before {id} was last submitted, and how long ago that was"),
+            None => String::new(),
+        };
         let what = match ready.filter(|p| !p.in_work()) {
             Some(p) => format!(
-                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where, and how long ago what is shown of {id} was fetched; then, of what changes, the title and summary, Phabricator's then what is sent; and the parent and the bug, before then after, and the status, which stays as it is. No code is sent: {id} is {}, not in work, and only a revision in work gets a new diff.",
+                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where, and how long ago what is shown of {id} was fetched{since}; then, of what changes, the title and summary, Phabricator's then what is sent; and the parent and the bug, before then after, and the status, which stays as it is. No code is sent: {id} is {}, not in work, and only a revision in work gets a new diff.",
                 p.status_was()
             ),
             None => format!(
-                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where, and how long ago what is shown of {id} was fetched; then, of what changes, the title and summary, Phabricator's then what is sent; the parent and the bug, before then after, and the status; and the code, each file as the latest diff of {id} leaves it, then as the patch leaves it, both on the patches below it."
+                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where, and how long ago what is shown of {id} was fetched{since}; then, of what changes, the title and summary, Phabricator's then what is sent; the parent and the bug, before then after, and the status; and the code, each file as the latest diff of {id} leaves it, then as the patch leaves it, both on the patches below it."
             ),
         };
         let mut out = vec![

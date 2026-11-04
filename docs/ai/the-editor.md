@@ -104,12 +104,25 @@ parent), `✗` where it says what differs, the diff, the title or summary,
 or the parent (`  2 [W]✓ Bug 2 - add b`, `  3 [R]✗ Bug 3 - add c`). The
 mark is blank while what differs is not fetched and compared yet, or when
 Phabricator does not have the revision; the pane and the line read it in
-one place, so that they never disagree. `?` in the patches pane says what
-the two marks mean. The statuses are a column of their own, as wide as
-the widest of the stack's, so that the titles start together: a patch
-that names no revision, or whose revision's status is not fetched yet,
-has its column blank, and while no status is known there is no column at
-all; the marks are one more cell of it, there once any patch shows one.
+one place, so that they never disagree. Once a submit changed the
+revision since it was last read (Submitting a patch, below), the mark is
+`↻` in that cell, whatever the stored revision compares to
+(`  3 [W]↻ Bug 3 - add c`), as the line says it in words (below): what
+stacked shows of the revision is from before that submit. A read of the
+revision stored after the submit, `Fetch the latest from Phabricator`, the
+fetch a submit makes first or a pull, brings back `✓` or `✗`, from what it
+read. A revision a submit made has `↻` with no letter until it is fetched
+(`  1    ↻ Bug 1 - add a`). The database remembers the submit (One file,
+only appended to, below), so that an editor opened again shows `↻` as
+well. `?` in the patches pane says what the three marks mean. The statuses
+are a column of their own, as wide as the widest of the stack's, so that
+the titles start together: a patch that names no revision, or whose
+revision's status is not fetched yet, has its column blank, and while no
+status is known and no patch shows a mark there is no column at all; the
+marks are one more cell of it, there once any patch shows one, and alone,
+with no letters, while no status is known, as when a revision a submit
+made is the only one of the stack (`  1 ↻ Bug 1 - add a`,
+`  2   Bug 2 - add b`).
 Expanded, the pane is wider by the column, up to half the screen, so that
 each title keeps the room it had and folds as it did. The tags at the end
 of a patch's first line (`[2]`, then `✓` or `3/7` in the reading mode,
@@ -122,7 +135,8 @@ revision it has not sent to reviewers yet).
 
 The letters and the marks are what stacked stored the last time it read
 Phabricator, in the database (One file, only appended to, below), and the
-Phabricator line says how long ago that was (below). stacked reads
+Phabricator line says how long ago that was (below); `↻`, that a submit
+changed the revision since, as stacked stored that too. stacked reads
 Phabricator only when you ask, never by itself, not even as the editor
 opens: a stack none of whose revisions was ever fetched has no letter at
 all. `Fetch the latest from Phabricator`, in the menu of the stack's
@@ -412,9 +426,19 @@ a submit read it. A revision Phabricator does not have is said so, with
 how long ago (`Phabricator: D123 · not found on Phabricator · fetched just
 now`); one nothing of which is stored yet says so, and where to fetch it
 (`Phabricator: D123 · not fetched yet: Fetch the latest from Phabricator,
-in its menu`). Whether each patch is in sync, the patches pane marks too,
-after its revision's status (`✓`, `✗`, above), from the same reading as
-its line. The line is a row
+in its menu`). Once a submit changed the revision since it was last read
+(Submitting a patch, below), the line says so, and when each was, worked
+out as it is drawn, in the place of whether it is in sync and of how long
+ago it was fetched, its status and comments as they were read: `Phabricator:
+D123 · Changes Planned · no new comments · D123 was submitted 2 minutes
+ago, after it was last fetched, 11 minutes ago: Fetch the latest from
+Phabricator to see it as it is now`; a revision the last read did not find
+says the sentence alone, after its number; one nothing of which is fetched
+yet, as a revision a submit made, `Phabricator: D124 · D124 was submitted
+just now, and nothing of it is fetched yet: Fetch the latest from
+Phabricator to see it as it is now`. Whether each patch is in sync, the
+patches pane marks too, after its revision's status (`✓`, `✗`, `↻`,
+above), from the same reading as its line. The line is a row
 of the patch, over its message's header, and folds between words where
 the middle is narrower; it is not pinned, and scrolls away with the rows,
 the title pinned in its place. The cursor comes to a patch on its
@@ -522,8 +546,9 @@ partway stores nothing. A submit reads nothing of its revision but what
 the database lacks for it, which it fetches first, alone, as this fetch
 fetches it, and stores as it stores it (Submitting a patch, below); once
 it is sent, it fetches nothing, so that its line shows what was fetched
-before the submit, with how long ago that was, until the next fetch, as
-the bottom line says after what the submit came to. A pull stores what it reads of each revision as
+before the submit, saying that the revision was submitted since, and when
+each was, the patches pane `↻`, until the next read of it, as the bottom
+line says after what the submit came to. A pull stores what it reads of each revision as
 a fetch stores it: its state and its comments, with when the revision
 was last modified as its search said, each only where it is not what is
 stored, the raw diffs it read, and that it read every one of them; the

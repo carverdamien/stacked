@@ -139,7 +139,8 @@ bytes long, padded with spaces.
   writes only the parts that differ from what is stored, and nothing for a
   revision it found as it was stored: `Fetch the latest from Phabricator`,
   the fetch a submit makes first and a pull write both; a submit writes
-  nothing else of a revision. The latest record with
+  nothing else of a revision, but that it changed it (a submitted record,
+  below). The latest record with
   each part is what stands. A rawdiff record holds a revision's raw diff
   (`{"t":"rawdiff","link":…,"diff":456,"raw":"…"}`), its latest, or an
   older one a pull read, written once for each diff id, as a diff never
@@ -151,7 +152,18 @@ bytes long, padded with spaces.
   its PHID, its callsign, as the search gave it or as it was asked by,
   and what holds it, `git` or `hg`; none of it changes, so it is written
   once, and every submit after takes it from there, the latest of a PHID
-  what stands. A file a stacked of before wrote
+  what stands. A submitted record says that a submit changed a revision,
+  by the link its patch names it by, and when
+  (`{"t":"submitted","link":"https://…/D123","time":…}`): written by the
+  submit once its one edit of the revision was made, or its edit back to
+  Changes Planned, or the revision made by it, a new revision's link as it
+  goes into the patch; never for a submit that changed nothing of the
+  revision. The latest of a link is what stands: while no read of the
+  revision comes after it in the file (a revision record with its state or
+  its comments, or a fetched record naming it), what is stored of the
+  revision was read before that submit, and the patches pane marks it `↻`.
+  No record is taken out: the order of the records says which came last,
+  however close their times. A file a stacked of before wrote
   has none of them, and reads as if nothing had been fetched yet; a
   stacked of before passes over these lines as lines it cannot read, with
   its warning (`stacked check` lists them), and reads the rest of the file
@@ -183,10 +195,11 @@ bytes long, padded with spaces.
   the comments open, the asks going or waiting for your review and what
   they need, what is chosen and marked read, where stacked last left HEAD
   of each checkout, what stands of each revision read from Phabricator,
-  the raw diff its state names and when it was last fetched, and each
-  repository read from it), and how the indexes stood; a checkpoint of
-  before, with no index of where stacked left HEAD, or of what was read of
-  Phabricator, or of its repositories, reads as one with none.
+  the raw diff its state names, when it was last fetched and the latest
+  submit that changed it, and each repository read from it), and how the
+  indexes stood; a checkpoint of before, with no index of where stacked
+  left HEAD, or of what was read of Phabricator, or of its repositories,
+  or of the submits, reads as one with none.
   stacked reads the header, that checkpoint, the records it says, and the
   lines after it: not the whole file. What needs the history (an older
   stack, the log and the tree, the versions of a patch, a comment's

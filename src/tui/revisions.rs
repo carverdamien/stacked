@@ -10,7 +10,9 @@
 //! Phabricator's version then this one as an interdiff compares two
 //! versions. Whether each patch is in sync so, the patches pane marks right
 //! after its status (`✓`, `✗`), from the same reading as its line
-//! (`Synced`); and the patch's `Phabricator` menu offers, for a revision
+//! (`Synced`), or `↻` while a submit changed its revision since a read of
+//! it was last stored, which the line says in words (`submitted_since`);
+//! and the patch's `Phabricator` menu offers, for a revision
 //! open but not in work, the update of its title, summary and parent alone,
 //! as that reading says what differs (`App::submit_item`). The patch's own
 //! `Phabricator` menu, and the line's, hold every item of the patch about
@@ -20,7 +22,8 @@
 //! stores it (`phab::fetch_latest`). Nothing of Phabricator is read by
 //! itself: only that, a pull, and a submit, which fetches what the
 //! database lacks for it first, and nothing once it is sent, so that the
-//! line shows what was fetched before it, with how long ago that was. What
+//! line shows what was fetched before it, saying when each was, until a
+//! read of the revision is stored again. What
 //! differs in the code of each patch is worked out away from
 //! the screen, from what is stored, one patch at a time, the one shown
 //! first, and kept in memory as long as the editor runs. Not while reviews
@@ -30,7 +33,7 @@ use super::compared::{ONLY_WRAPPED, row};
 use super::*;
 use crate::db::State;
 use crate::ops::other_bases;
-use crate::phab::{Status, age_said};
+use crate::phab::{Status, age_said, ago_said};
 use crate::submit::{Below, Parent};
 
 /// What the top bar says while Phabricator is fetched.
@@ -48,6 +51,11 @@ const PULLING_ALREADY: &str = "already pulling from Phabricator: one pull at a t
 /// What the Phabricator line says of a revision nothing of which is stored
 /// yet.
 const NOT_FETCHED: &str = "not fetched yet: Fetch the latest from Phabricator, in its menu";
+
+/// What the Phabricator line ends with once a submit changed the revision
+/// since it was last read, after when each was (`App::line_said`): what to
+/// do to see the revision as it is now.
+const SEE_IT_NOW: &str = "Fetch the latest from Phabricator to see it as it is now";
 
 /// What the Phabricator line says of the files when they cannot be read as
 /// the patches below leave them.
@@ -514,18 +522,33 @@ impl App {
     }
 
     /// The mark the patches pane shows right after the status of patch
-    /// `id`'s revision: `✓` where Phabricator has this exact version of the
-    /// patch, `✗` where anything differs, as its Phabricator line says it,
-    /// from the same reading (`synced`). None, a blank, while that is not
-    /// known, or Phabricator does not have the revision; and when the patch
-    /// names no revision, or the editor does not read Phabricator.
+    /// `id`'s revision: `↻` while a submit changed the revision since a
+    /// read of it was last stored, a new revision never fetched too, as its
+    /// Phabricator line says it (`submitted_since`); else `✓` where
+    /// Phabricator has this exact version of the patch, `✗` where anything
+    /// differs, as that line says it, from the same reading (`synced`).
+    /// None, a blank, while that is not known, or Phabricator does not have
+    /// the revision; and when the patch names no revision, or the editor
+    /// does not read Phabricator.
     pub(super) fn sync_mark(&self, id: &str) -> Option<&'static str> {
         if !self.reads_phabricator() {
             return None;
         }
         let p = self.db.patch(id);
         let (_, link) = crate::phab::revision_of(&p.message)?;
+        if self.submitted_since(&link).is_some() {
+            return Some("↻");
+        }
         self.synced(p, &link).mark()
+    }
+
+    /// When a submit last changed the revision at `link`, in seconds since
+    /// 1970, while no read of the revision is stored after it
+    /// (`Db::submitted_unread`): what is stored of it is from before that
+    /// submit, if anything is. The one place the patches pane's `↻` and the
+    /// Phabricator line's words read it from, so that they never disagree.
+    fn submitted_since(&self, link: &str) -> Option<i64> {
+        self.db.submitted_unread(link)
     }
 
     /// Whether what Phabricator has is being fetched, or compared with a
@@ -539,12 +562,14 @@ impl App {
     /// What the middle's rows are built again for, as the Phabricator line
     /// changes, beyond what the database holds: how many times a comparison
     /// was worked out, and how long ago what the line of the patch shown
-    /// says was fetched, as the line says it, so that it is said again as
-    /// it is drawn.
+    /// says was fetched, and its revision submitted since, as the line says
+    /// it, so that it is said again as it is drawn.
     pub(super) fn line_key(&self) -> String {
         let link = self.shown_patch().and_then(|p| crate::phab::revision_of(&p.message)).map(|(_, link)| link);
-        let age = link.and_then(|l| self.fetched_at(&l)).map(|t| age_said(t, crate::db::now()));
-        format!("{}:{}", self.comparisons.seq, age.unwrap_or_default())
+        let now = crate::db::now();
+        let age = link.as_deref().and_then(|l| self.fetched_at(l)).map(|t| age_said(t, now));
+        let since = link.as_deref().and_then(|l| self.submitted_since(l)).map(|t| ago_said(t, now));
+        format!("{}:{}:{}", self.comparisons.seq, age.unwrap_or_default(), since.unwrap_or_default())
     }
 
     /// What the code of patch `p`, the one picked, is compared with its
@@ -680,23 +705,45 @@ impl App {
     /// (`fetched_at`), computed as it is drawn. What is not known yet is
     /// `…`, once for those in a row; a revision the last read did not find,
     /// said so, with how long ago; one nothing of which is stored, that it
-    /// is not fetched yet, and where to fetch it.
+    /// is not fetched yet, and where to fetch it. Submitted since it was
+    /// last read (`submitted_since`), as the patches pane's `↻` says: in
+    /// the place of whether it is in sync and of how long ago that was
+    /// fetched, that it was submitted after it was last fetched, when each
+    /// was, and that a fetch shows it as it is now, nothing else said of a
+    /// revision the last read did not find; or, nothing of it fetched yet,
+    /// as a new revision, that it was submitted, and that nothing of it is
+    /// fetched.
     fn line_said(&self, p: &Patch, d: &str, link: &str, sync: &Synced) -> String {
-        let Some(at) = self.fetched_at(link) else { return format!("Phabricator: {d} · {NOT_FETCHED}") };
-        let age = age_said(at, crate::db::now());
+        let now = crate::db::now();
+        let submitted = self.submitted_since(link).map(|t| ago_said(t, now));
+        let Some(at) = self.fetched_at(link) else {
+            return match submitted {
+                Some(when) => format!("Phabricator: {d} · {d} was submitted {when}, and nothing of it is fetched yet: {SEE_IT_NOW}"),
+                None => format!("Phabricator: {d} · {NOT_FETCHED}"),
+            };
+        };
+        let age = age_said(at, now);
+        let found = !matches!(sync, Synced::NotFound);
         let sync = match sync {
-            Synced::NotFound => return format!("Phabricator: {d} · not found on Phabricator · {age}"),
-            Synced::Unknown => None,
+            Synced::NotFound if submitted.is_none() => return format!("Phabricator: {d} · not found on Phabricator · {age}"),
             Synced::Known(x) => Some(x.said().to_string()),
+            Synced::NotFound | Synced::Unknown => None,
         };
         let status = self.state(link).map(|s| Status::from_value(&s.status).name().to_string());
         let comments = self.db.revision_comments(link).map(|(c, _)| {
             let all: Vec<crate::phab::Remote> = c.list.iter().map(crate::phab::remote_of).collect();
             comments_said(crate::review::not_pulled(&self.db, &self.stack, &p.change, &all))
         });
+        // Submitted since: what was read of it but whether it is in sync,
+        // of a revision found; then when each was.
+        let fields = match (&submitted, found) {
+            (None, _) => vec![status, sync, comments],
+            (Some(_), true) => vec![status, comments],
+            (Some(_), false) => vec![],
+        };
         let mut out = format!("Phabricator: {d}");
         let mut unknown = false;
-        for field in [status, sync, comments] {
+        for field in fields {
             match field {
                 Some(f) => {
                     out += &format!(" · {f}");
@@ -709,7 +756,10 @@ impl App {
                 None => {}
             }
         }
-        out + &format!(" · {age}")
+        match submitted {
+            Some(when) => out + &format!(" · {d} was submitted {when}, after it was last fetched, {}: {SEE_IT_NOW}", ago_said(at, now)),
+            None => out + &format!(" · {age}"),
+        }
     }
 
     /// The rows over patch `p`'s message, `w` wide, the middle showing it:
@@ -1126,9 +1176,10 @@ impl App {
     }
 
     /// Right after a submit: the database read again, for the link of a new
-    /// revision, and what the lines need next. Nothing is fetched: the line
-    /// shows what was fetched before the submit, with how long ago that
-    /// was, as the bottom line says.
+    /// revision and the record of the submit, and what the lines need next.
+    /// Nothing is fetched: the line shows what was fetched before the
+    /// submit, saying when each was, and the patches pane `↻`, as the bottom
+    /// line says.
     pub(super) fn submitted(&mut self) {
         self.reload();
         self.check_line();
@@ -1346,7 +1397,7 @@ impl App {
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
         let n = self.sel + 1;
         let mut out = vec![format!(
-            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; how many of the comments of {d} are not pulled yet; and how long ago that was fetched. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is what stacked stored the last time it read Phabricator: stacked reads nothing of it by itself. Fetch the latest from Phabricator, in this line's menu, reads every revision of the stack again; a submit fetches its revision first only where what it needs of it is not stored, and fetches nothing once it is sent; a pull reads the revisions it pulls. Where something is not fetched yet, the line says … in its place. The patches pane says the same after the status of each patch's revision: ✓ in sync, ✗ when something differs."
+            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; how many of the comments of {d} are not pulled yet; and how long ago that was fetched. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is what stacked stored the last time it read Phabricator: stacked reads nothing of it by itself. Fetch the latest from Phabricator, in this line's menu, reads every revision of the stack again; a submit fetches its revision first only where what it needs of it is not stored, and fetches nothing once it is sent; a pull reads the revisions it pulls. Once a submit has changed {d} since it was last fetched, the line says so, and when each was, in the place of whether {d} is in sync and of how long ago it was fetched: what it says of {d} is from before that submit, until {d} is read again. Where something is not fetched yet, the line says … in its place. The patches pane says the same after the status of each patch's revision: ✓ in sync, ✗ when something differs, ↻ when it was submitted since it was last fetched."
         )];
         out.push(match self.synced(p, &link) {
             Synced::NotFound => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),
@@ -1553,6 +1604,9 @@ mod tests {
         assert_eq!([said(3600), said(7200), said(86_399)], ["fetched 1 hour ago", "fetched 2 hours ago", "fetched 23 hours ago"]);
         assert_eq!([said(86_400), said(2 * 86_400 - 1)], ["fetched yesterday", "fetched yesterday"]);
         assert_eq!([said(2 * 86_400), said(40 * 86_400)], ["fetched 2 days ago", "fetched 40 days ago"]);
+        // How long ago alone, as the line says when a submit was.
+        let ago = |secs: i64| ago_said(now - secs, now);
+        assert_eq!([ago(30), ago(120), ago(7200), ago(86_400), ago(3 * 86_400)], ["just now", "2 minutes ago", "2 hours ago", "yesterday", "3 days ago"]);
     }
 
     #[test]

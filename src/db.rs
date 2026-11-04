@@ -26,7 +26,10 @@
 //!   revision's raw latest diff is stored once for each diff id, and a
 //!   fetch that found a revision as stored writes only a small record of
 //!   when it read it. A repository on Phabricator a submit makes a new
-//!   diff in is read once, and stored once, as none of it changes.
+//!   diff in is read once, and stored once, as none of it changes. A
+//!   submit that changed a revision writes a small record of when: until
+//!   a read of the revision is written after it, what is stored of the
+//!   revision was read before that submit.
 //!
 //! The records are only ever appended, so a crash can only leave a last
 //! line cut short. Such a line, or any line that cannot be read, is passed
@@ -45,8 +48,9 @@
 //! head and the stacks one undo and one redo go to, the comments open, the
 //! runs under way and what they name, what is chosen and marked read, where
 //! stacked last left HEAD of each checkout, what stands of each revision
-//! read from Phabricator and the raw diff its state names, the repositories
-//! read from it) and how the indexes stood. A reader reads the header, the checkpoint, those
+//! read from Phabricator and the raw diff its state names, the latest
+//! submit that changed it, the repositories read from it) and how the
+//! indexes stood. A reader reads the header, the checkpoint, those
 //! records and the lines after it, not the whole file; the records it did
 //! not read are `Unloaded`. What needs the history (an older stack, the
 //! log, versions of a patch, a comment's history, the comments closed, the
@@ -193,6 +197,11 @@ struct Checkpoint {
     /// wrote, as such a stacked wrote none of them.
     #[serde(default)]
     repositories: Vec<(String, usize)>,
+    /// The rev of the latest submit that changed each revision on
+    /// Phabricator, by its link. None in a checkpoint a stacked of before
+    /// wrote, as such a stacked wrote none of them.
+    #[serde(default)]
+    submitted: Vec<(String, usize)>,
     collapsed: Vec<(String, String)>,
     reviews: Vec<(String, usize)>,
     marks: Vec<(String, Vec<usize>)>,
@@ -424,6 +433,18 @@ pub enum Record {
     /// in it: stored once, as none of it changes. A database a stacked of
     /// before wrote has none.
     Repository(Repository),
+    /// That a submit changed the revision at `link` on Phabricator, at
+    /// `time`: its edit made, or its edit back to Changes Planned, or the
+    /// revision made by it. The latest of a revision is what stands; while
+    /// no read of the revision is stored after it, what is stored of the
+    /// revision was read before that submit (`Db::submitted_unread`). A
+    /// database a stacked of before wrote has none.
+    Submitted {
+        #[serde(default)]
+        link: String,
+        #[serde(default)]
+        time: i64,
+    },
     /// A line of what a run's claude wrote, as it wrote it.
     Event {
         run: String,
@@ -1099,6 +1120,8 @@ pub struct Db {
     /// A repository's PHID on Phabricator to the index of its latest
     /// record.
     repositories: BTreeMap<String, usize>,
+    /// A revision's link to the index of the latest submit that changed it.
+    submitted: BTreeMap<String, usize>,
     /// The comments collapsed: (change, comment id).
     collapsed: HashSet<(String, String)>,
     /// Run id to the index of its latest review record.
@@ -1555,6 +1578,14 @@ impl Db {
             }
             self.repositories.insert(phid, i);
         }
+        // The latest submit that changed each revision, read with it.
+        for (link, rev) in cp.submitted {
+            let i = ix(rev)?;
+            if !matches!(&self.records[i], Record::Submitted { link: l, .. } if *l == link) {
+                return None;
+            }
+            self.submitted.insert(link, i);
+        }
         self.collapsed = cp.collapsed.into_iter().collect();
         for (run, rev) in cp.reviews {
             let i = ix(rev)?;
@@ -1618,7 +1649,7 @@ impl Db {
         same!(len, lines, torn, torn_slot, tail, saved, version, fixed, changes, warnings, last_cp);
         same!(patches, latest, heads, stacks, on, notes, note_first, last_queued, note_lines);
         same!(views, choices, moved, collapsed, reviews, marks, runs, run_order);
-        same!(revisions, revision_comments, raw_diffs, fetched, repositories);
+        same!(revisions, revision_comments, raw_diffs, fetched, repositories, submitted);
         if self.records.len() != whole.records.len() {
             return Some(format!("{} records, read whole {}", self.records.len(), whole.records.len()));
         }
@@ -1687,6 +1718,7 @@ impl Db {
             raw_diffs: BTreeMap::new(),
             fetched: BTreeMap::new(),
             repositories: BTreeMap::new(),
+            submitted: BTreeMap::new(),
             collapsed: HashSet::new(),
             reviews: HashMap::new(),
             marks: HashMap::new(),
@@ -1984,6 +2016,9 @@ impl Db {
             }
             Record::Repository(r) => {
                 self.repositories.insert(r.phid.clone(), at);
+            }
+            Record::Submitted { link, .. } => {
+                self.submitted.insert(link.clone(), at);
             }
             Record::Collapse { change, id, collapsed } => {
                 let key = (change.clone(), id.clone());
@@ -2356,12 +2391,19 @@ impl Db {
 
     /// The records that what stands of the revisions read from Phabricator
     /// is in, by index: each one's latest with its state, its latest with
-    /// its comments, the latest fetch that read it, and the raw diff its
-    /// state names, when that is stored; and the latest record of each
-    /// repository read from it.
+    /// its comments, the latest fetch that read it, the latest submit that
+    /// changed it, and the raw diff its state names, when that is stored;
+    /// and the latest record of each repository read from it.
     fn phab_needed(&self) -> HashSet<usize> {
-        let mut need: HashSet<usize> =
-            self.revisions.values().chain(self.revision_comments.values()).chain(self.fetched.values()).chain(self.repositories.values()).copied().collect();
+        let mut need: HashSet<usize> = self
+            .revisions
+            .values()
+            .chain(self.revision_comments.values())
+            .chain(self.fetched.values())
+            .chain(self.repositories.values())
+            .chain(self.submitted.values())
+            .copied()
+            .collect();
         for (link, &at) in &self.revisions {
             if let Record::Revision(Revision { state: Some(s), .. }) = &self.records[at]
                 && let Some(&k) = self.raw_diffs.get(&(link.clone(), s.diff))
@@ -2415,6 +2457,7 @@ impl Db {
             raw_diffs: self.raw_diffs.iter().map(|((l, d), i)| (l.clone(), *d, i + 1)).collect(),
             fetched: self.fetched.iter().map(|(l, i)| (l.clone(), i + 1)).collect(),
             repositories: self.repositories.iter().map(|(p, i)| (p.clone(), i + 1)).collect(),
+            submitted: self.submitted.iter().map(|(l, i)| (l.clone(), i + 1)).collect(),
             collapsed: sorted(self.collapsed.iter().cloned().collect()),
             reviews: sorted(self.reviews.iter().map(|(r, i)| (r.clone(), i + 1)).collect()),
             marks: sorted(self.marks.iter().map(|(c, at)| (c.clone(), revs(at))).collect()),
@@ -3153,6 +3196,33 @@ impl Db {
         }
     }
 
+    /// When the latest submit that changed the revision at `link` on
+    /// Phabricator was, in seconds since 1970, while no read of the
+    /// revision is stored after it: what is stored of the revision, if
+    /// anything, was read before that submit. None when no submit changed
+    /// it, or once a read stored it after the latest one (Fetch the latest
+    /// from Phabricator, the fetch a submit makes first, a pull), its
+    /// state, its comments or that it read it. The file only appended to,
+    /// the order of their records says which came last, to the record,
+    /// however close their times.
+    pub fn submitted_unread(&self, link: &str) -> Option<i64> {
+        let at = *self.submitted.get(link)?;
+        let read = [&self.revisions, &self.revision_comments, &self.fetched].into_iter().filter_map(|m| m.get(link)).max();
+        if read.is_some_and(|&r| r > at) {
+            return None;
+        }
+        match self.at(at) {
+            Record::Submitted { time, .. } => Some(*time),
+            _ => None,
+        }
+    }
+
+    /// Every revision a submit changed since a read last stored it, each
+    /// its link and when (`submitted_unread`), by link.
+    pub fn submitted_all_unread(&self) -> Vec<(&str, i64)> {
+        self.submitted.keys().filter_map(|link| Some((link.as_str(), self.submitted_unread(link)?))).collect()
+    }
+
     /// The `D123` of the revision of PHID `phid`, as what is stored of the
     /// revisions read from Phabricator names it: one's own, or as the
     /// parent of another. A revision's PHID and number never change, so
@@ -3240,6 +3310,12 @@ impl Db {
     /// at `links` now.
     pub fn store_fetched(&mut self, links: Vec<String>) -> Result<()> {
         self.push(Record::Fetched { links, time: now() }).map(|_| ())
+    }
+
+    /// Remembers that a submit changed the revision at `link` on
+    /// Phabricator now (`Record::Submitted`).
+    pub fn store_submitted(&mut self, link: &str) -> Result<()> {
+        self.push(Record::Submitted { link: link.into(), time: now() }).map(|_| ())
     }
 
     /// The repository on Phabricator of PHID `phid`, as a submit read it:
@@ -4235,7 +4311,7 @@ mod tests {
         let good = std::fs::read(&path).unwrap();
         let ptr = serde_json::from_slice::<Header>(&good[..HEADER - 1]).unwrap().checkpoint.unwrap();
         let mut v: serde_json::Value = serde_json::from_slice(&good[ptr.at as usize..(ptr.at + ptr.len) as usize]).unwrap();
-        for k in ["revisions", "revision_comments", "raw_diffs", "fetched", "repositories"] {
+        for k in ["revisions", "revision_comments", "raw_diffs", "fetched", "repositories", "submitted"] {
             assert!(v.as_object_mut().unwrap().remove(k).is_some(), "{k}");
         }
         let line = serde_json::to_string(&v).unwrap();
@@ -4244,15 +4320,99 @@ mod tests {
         b.push(b'\n');
         b[..HEADER - 1].copy_from_slice(header_with(Some(&Pointer::new(ptr.at, ptr.rev, line.as_bytes()))).unwrap().as_bytes());
         std::fs::write(&path, &b).unwrap();
-        // Read from it all the same, as read whole; then a revision stored.
+        // Read from it all the same, as read whole; then a revision stored,
+        // and a submit of it.
         let whole = Db::from_bytes(&path, &b).unwrap();
         let db = Db::load(&path).unwrap();
         assert!(db.cp.is_some(), "read from its checkpoint");
         assert_eq!((db.differs(&whole), db.revision_state("https://p.example/D11")), (None, None));
-        assert!(db.repositories().is_empty());
+        assert!(db.repositories().is_empty() && db.submitted_all_unread().is_empty());
         let (s, c) = revision_read(11, 5, None, &[]);
         Db::edit(&path, |db| db.store_revision("https://p.example/D11", "D11", Some(s), Some(c)).map(|_| ())).unwrap();
         assert_eq!(Db::load(&path).unwrap().revision_state("https://p.example/D11").map(|(s, _)| s.diff), Some(5));
+        Db::edit(&path, |db| db.store_submitted("https://p.example/D11")).unwrap();
+        assert!(Db::load(&path).unwrap().submitted_unread("https://p.example/D11").is_some());
+    }
+
+    #[test]
+    fn a_submit_stands_until_a_read_of_its_revision_is_stored_after_it_read_from_a_checkpoint_as_read_whole_and_kept_by_a_trim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        let link = |n: u64| format!("https://p.example/D{n}");
+        // D13 read, then submitted; D14 made by a submit, never read; D12
+        // submitted, then read, as a fetch, a submit's fetch first or a pull
+        // stores what it read, then that it read it.
+        Db::edit(&path, |db| {
+            let (s, c) = revision_read(13, 5, Some(100), &[]);
+            db.store_revision(&link(13), "D13", Some(s), Some(c))?;
+            db.store_fetched(vec![link(13)])?;
+            db.store_submitted(&link(13))?;
+            db.store_submitted(&link(14))?;
+            db.store_submitted(&link(12))?;
+            db.store_fetched(vec![link(12)])
+        })
+        .unwrap();
+        // Those submitted since a read: D13 and D14, each with when, however
+        // close that is to the read, the order of the records deciding.
+        let unread = |db: &Db| [12, 13, 14, 15].map(|n| db.submitted_unread(&link(n)).is_some());
+        let db = Db::load(&path).unwrap();
+        assert_eq!(unread(&db), [false, true, true, false]);
+        let all = db.submitted_all_unread().into_iter().map(|(l, t)| (l.to_string(), t)).collect::<Vec<_>>();
+        assert_eq!(all.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), [link(13), link(14)]);
+        assert!(all.iter().all(|(_, t)| *t > 0 && *t <= now()), "{all:?}");
+        drop(db);
+        // A record of its own.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#"{"t":"submitted","link":"https://p.example/D13","time":"#), "{text}");
+        // Read from a checkpoint: the same, each read with it.
+        checkpoint(&path);
+        let whole = Db::from_bytes(&path, &std::fs::read(&path).unwrap()).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.cp.is_some(), "read from its checkpoint");
+        assert_eq!(db.differs(&whole), None);
+        assert!([12, 13, 14].iter().all(|n| !matches!(db.records[db.submitted[&link(*n)]], Record::Unloaded)));
+        assert_eq!(unread(&db), [false, true, true, false]);
+        assert!(db.shadow.get().is_none(), "nothing has read the whole history");
+        drop(db);
+        // D13's state read again: its submit stands no more, no record taken
+        // out; D14's stands. Then a trim's cut, and D14 fetched after it.
+        Db::edit(&path, |db| {
+            let (s, c) = revision_read(13, 6, Some(200), &[]);
+            db.store_revision(&link(13), "D13", Some(s), Some(c)).map(|_| ())
+        })
+        .unwrap();
+        let db = Db::load(&path).unwrap();
+        assert_eq!(unread(&db), [false, false, true, false]);
+        assert_eq!(db.records().iter().filter(|r| matches!(r, Record::Submitted { .. })).count(), 3);
+        let cut = db.end_rev() + 1;
+        let kept = db.submitted_all_unread().into_iter().map(|(l, t)| (l.to_string(), t)).collect::<Vec<_>>();
+        drop(db);
+        Db::edit(&path, |db| db.store_fetched(vec![link(14)])).unwrap();
+        // Trimmed to what there is now: no submit stands, and none is kept.
+        let now_only = tmp.path().join("now.jsonl");
+        crate::trim::trim(&path, &now_only, None).unwrap();
+        let made = Db::load(&now_only).unwrap();
+        assert_eq!(unread(&made), [false; 4]);
+        assert!(!made.records().iter().any(|r| matches!(r, Record::Submitted { .. })));
+        // Trimmed from the cut: D14's submit kept as it stood there, with
+        // when, before the fetch after it, which it says nothing after.
+        let from_cut = tmp.path().join("from-cut.jsonl");
+        crate::trim::trim(&path, &from_cut, Some(cut)).unwrap();
+        let made = Db::load(&from_cut).unwrap();
+        assert_eq!(unread(&made), [false; 4]);
+        let submits: Vec<(String, i64)> = made
+            .records()
+            .iter()
+            .filter_map(|r| match r {
+                Record::Submitted { link, time } => Some((link.clone(), *time)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(submits, kept);
+        // Submitted again there: it stands, as of then.
+        Db::edit(&from_cut, |db| db.store_submitted(&link(14))).unwrap();
+        assert_eq!(unread(&Db::load(&from_cut).unwrap()), [false, false, true, false]);
     }
 
     #[test]

@@ -367,8 +367,10 @@ database lacks of its revision. Each patch then
 shows its revision's status after its number, a letter (`[R]` Needs
 Review, `[A]` Accepted, `[W]` Changes Planned, and so on), then `✓` when
 Phabricator has this exact version of the patch, or `✗` when something
-differs. A line over the patch's message says it in full, and how long ago
-it was fetched:
+differs; or `↻` once you have submitted it since it was last fetched, as
+what is shown of it is from before your submit, until you fetch it again.
+A line over the patch's message says it in full, and how long ago it was
+fetched:
 
 ```
 Phabricator: D123456 · Needs Review · the diff differs · 2 new comments to pull · fetched 2 hours ago
@@ -411,7 +413,8 @@ to Phabricator's own latest diff.
   sends. What you see is worked out from what was last fetched of the
   revision, and says how long ago that was (`fetched 11 minutes ago`):
   nothing is read again before it is sent, nor after, so fetch the latest
-  first when that matters. It is sent in the writes moz-phab makes, four
+  first when that matters; once it is sent, the revision is marked `↻`
+  until you fetch it again. It is sent in the writes moz-phab makes, four
   at most. For a revision already in review, the menu offers to update its
   title, summary and parent alone. Sending a whole stack for review, with
   its reviewers, is still moz-phab's work: put the stack in your checkout

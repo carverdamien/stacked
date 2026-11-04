@@ -120,7 +120,15 @@ with it, and a checkpoint of before, with no index of them, read as one
 with none; a state saying whether its revision is a draft and its
 repository, one stored before saying neither; a repository read of
 Phabricator stored once, found by its PHID or by its callsign, read from
-a checkpoint as when read whole, a record of its own; and the edits since a state
+a checkpoint as when read whole, a record of its own; a submit of a
+revision a record of its own, by its link, with when, standing while no
+read of the revision is stored after it, whatever their times, read from a
+checkpoint as when read whole, a read after it, of its state, standing no
+more, no record taken out, and a submit again standing again; a trim of
+what there is now keeping no submit a read came after, and a trim from a
+cut keeping the one that stood there, with when, a read after the cut
+coming after it, as in the old file; a checkpoint of before with no index
+of the submits read as one with none, a submit stored after it; and the edits since a state
 of a stack counted along its tree of edits by the index of the stacks
 alone (another version once an edit is undone and another made in its
 place, nothing for what is no state of it), read from a checkpoint as
@@ -1100,10 +1108,25 @@ them while there is no column; the stack's revisions fetched in one
 search when asked, no other call made but the rest of the fetch, not again
 as the editor goes on, nor once its patches name others, until a fetch is
 asked again; a submit fetching nothing once it is done, all it needed
-stored and nothing read, its revision's line and letter as they were
-fetched before it, the bottom line saying so, a new revision not fetched
-yet, until a fetch, which shows Changes Planned as such though Phabricator
-says it is a draft; a fetch that fails keeping
+stored and nothing read, its revision's letter as it was fetched before
+it, its mark `↻` and its line saying that it was submitted since, the
+bottom line saying so, a new revision not fetched yet, `↻` with no letter,
+until a fetch, which shows Changes Planned as such though Phabricator
+says it is a draft; a submit's `↻` in the cell of its revision's `✗`, the
+pane as wide, its line saying it in words, the status and the comments
+as fetched, the other patches' marks as they were, the marks agreeing
+with the lines, `?` in the pane and on the line saying what it means, a
+review of a submit of it again saying when it was submitted, nothing
+read, an editor opened again on the database showing `↻` and the same
+line, nothing read, and a fetch bringing back `✓`, Phabricator giving
+back what was sent; a new revision's `↻` in a stack none of whose
+revisions is fetched, no letter for any patch and the column the marks'
+alone, the pane two cells wider, `?` saying what it means, the fetch a
+submit of it again makes first bringing its letter and `✓`, nothing to
+send, then its summary submitted, `↻` again, and a pull of it storing what
+it read after that, `✓` again, nothing new; the line and the review of a
+submit saying that the revision was submitted 2 minutes ago, after it was
+last fetched, 11 minutes ago, `?` on the review saying so, nothing read; a fetch that fails keeping
 what is stored and saying why, each time it is asked, a first one showing
 no status; none read nor offered while reviews come from nowhere; built
 without moz-phab, none shown, nor a Phabricator line), the Phabricator
@@ -1117,7 +1140,8 @@ version's put in, no word in the colours for words, and saying so, `?`
 saying that in sync is to the letter and what Space shows, the submit's
 review showing them so too, and in sync once it is submitted and
 fetched; a patch submitted and unchanged since in sync once fetched, its
-line as it was fetched before until then, Phabricator
+line saying that it was submitted since what it shows was fetched until
+then, Phabricator
 giving back its title and summary as they were sent, white space ending
 a line and all; a status stacked does not know, and a revision
 Phabricator does not have; the comments to pull, none once a pull holds
@@ -1314,7 +1338,8 @@ parent: a reordered stack's revisions differing by their parents alone,
 nothing read for it, Space and the menu's item showing the parent first,
 Phabricator's then the one a submit sets, and nothing under it, `?`
 saying so, a submit setting it and nothing else, in one write, nothing
-read, the line as it was fetched before until a fetch, then in sync, its
+read, the line saying that it was submitted since until a fetch, the
+pane's mark `↻`, the marks agreeing with the lines, then in sync, its
 parents fetched with the rest, Space naming the parent; none
 differing at the bottom of the stack, over a patch with no revision, a
 landed revision, or a patch naming the same revision, Space saying why a
@@ -1335,8 +1360,9 @@ not sent and why, the status staying as it is, no code under it, so no
 view to set: 1, Enter and Space doing nothing, the bottom bar naming no
 1, its menu no view of the code; `Send it to Phabricator` in that menu
 sending the summary alone, no diff, no Changes Planned and no reviewers,
-nothing read, the bottom line saying what came of it, the line as it was
-fetched before, and once it is fetched, the diff alone differing, the
+nothing read, the bottom line saying what came of it, the line saying
+that it was submitted since what it shows was fetched, and once it is
+fetched, the diff alone differing, the
 update grayed, the menu saying why), and the comments pane's states (expanded,
 compact, hidden) and the compact view of the code as they were; and the
 notices of `stacked web`, kept once it asks for them (`keep_notices`): of
@@ -2128,8 +2154,18 @@ new revision's edit, its commit or its diff refused, a revision's one
 edit refused with a new diff made or with none, nothing of it changed,
 the parent with the rest, Changes Planned again refused after the rest,
 and the patch changed since the review, nothing read; that a refused
-parent refuses the one edit, and taken, it is set with the diff; and
-that a revision landed or abandoned is refused, fetched first, nothing
+parent refuses the one edit, and taken, it is set with the diff; that
+a submit that changed its revision is remembered, by the link its patch
+names, as of the send, until a fetch reads the revision: a new revision
+made, its link the one that goes into the patch; a revision in Changes
+Planned given its new diff, Changes Planned again refused after it, and
+all four writes made, remembered again; a revision in review given its
+title and summary in its one edit, the next review saying when it was
+submitted since; and that nothing is remembered of a submit that changed
+nothing of the revision: its diff refused, a diff of which no revision is
+made, the edit that takes the diff refused, the one edit of a title and
+summary refused, nothing to send, or the patch changed since the review;
+and that a revision landed or abandoned is refused, fetched first, nothing
 read but the fetch and nothing written, and refused again, nothing
 read; those
 in `history.rs`, what the history leaves out (comments, runs, a move to
@@ -2462,7 +2498,8 @@ a pull brings said counted, the suggested edits it reads of comments
 filed apart from the edits, its conflicts marked last. Those in
 `tui/revisions.rs` show how long ago what the Phabricator line says was
 fetched, said as the line says it, just now, then in minutes, in hours,
-yesterday, then in days, a time to come just now; a title in work
+yesterday, then in days, a time to come just now, and how long ago alone,
+as the line says when a submit was; a title in work
 as moz-phab reads it; the title and summary compared to the letter as a
 submit sends them, in work or not as the revision's title is, the white
 space at their end aside, their lines wrapped otherwise or other white

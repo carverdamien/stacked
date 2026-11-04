@@ -1622,22 +1622,30 @@ pub fn fetched_at(db: &Db, link: &str) -> Option<i64> {
 }
 
 /// How long before `now` it was that `then` was, in seconds since 1970, as
-/// the Phabricator line and the review of a submit say how long ago what
-/// they show was fetched, as the dialog asking before a patch that should
-/// not change is changed says it too (`protected`): `just now` under a
-/// minute, then in minutes, then in hours, `yesterday` from a day to two,
-/// then in days. A time to come, as a clock set otherwise gives, is just
-/// now.
-pub fn age_said(then: i64, now: i64) -> String {
+/// the Phabricator line and the review of a submit say when a submit
+/// changed the revision since it was fetched, and how long ago it was
+/// fetched (`age_said`): `just now` under a minute, then in minutes, then
+/// in hours, `yesterday` from a day to two, then in days. A time to come,
+/// as a clock set otherwise gives, is just now.
+pub fn ago_said(then: i64, now: i64) -> String {
     let secs = now.saturating_sub(then).max(0);
-    let ago = |n: i64, unit: &str| format!("fetched {n} {unit}{} ago", if n == 1 { "" } else { "s" });
+    let ago = |n: i64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
     match secs {
-        s if s < 60 => "fetched just now".into(),
+        s if s < 60 => "just now".into(),
         s if s < 3600 => ago(s / 60, "minute"),
         s if s < 86_400 => ago(s / 3600, "hour"),
-        s if s < 2 * 86_400 => "fetched yesterday".into(),
+        s if s < 2 * 86_400 => "yesterday".into(),
         s => ago(s / 86_400, "day"),
     }
+}
+
+/// How long ago what was fetched at `then` was fetched, `now` being now
+/// (`ago_said`), as the Phabricator line and the review of a submit say it
+/// of what they show, and the dialog asking before a patch that should not
+/// change is changed says it too (`protected`): `fetched just now`,
+/// `fetched 11 minutes ago`.
+pub fn age_said(then: i64, now: i64) -> String {
+    format!("fetched {}", ago_said(then, now))
 }
 
 /// The revisions of stack `s` a fetch reads beyond their search

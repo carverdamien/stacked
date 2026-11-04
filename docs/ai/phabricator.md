@@ -393,7 +393,9 @@ in one search; and the Phabricator line over the message of the patch the
 middle shows says it by name, whether the revision's latest diff and its
 title and summary are the patch's, its parent the one a submit sets, how
 many of its comments are not pulled yet, and how long ago that was
-fetched. Nothing of it is read by itself. Space there shows what differs
+fetched; or, once a submit changed the revision since it was last read,
+that it did, and when, as the patches pane's `↻` says it (Submitting a
+patch, below). Nothing of it is read by itself. Space there shows what differs
 on a screen of its own, in the view of the interdiffs that `1` sets there,
 every line or only what the patches changed (as an interdiff, in a column
 per version, or side by side, or the change
@@ -650,12 +652,35 @@ screen says is there for; Fetch the latest from Phabricator, before the
 submit, reads it again. Only the patch is seen to be as it was (`Patch 3
 changed since what is sent was read, so nothing was sent. Submit it again
 to see what is sent now.`). Once it is sent, what stacked shows of the
-revision, its Phabricator line, the patches pane's letter and mark and
-the next submit's review, is what was fetched before the submit, with
-how long ago that was, until the next fetch, as the bottom line says
-after what was sent (`What is shown of D123 was fetched before this
-submit.`; for a new revision, `Nothing of D124 is fetched from Phabricator
-yet.`).
+revision, its Phabricator line, the patches pane's letter and the next
+submit's review, is what was fetched before the submit, with how long ago
+that was, until the next read of it, as the bottom line says after what
+was sent (`What is shown of D123 was fetched before this submit.`; for a
+new revision, `Nothing of D124 is fetched from Phabricator yet.`), and
+nothing is fetched by itself. A submit that changed the revision, its one
+edit made or its edit back to Changes Planned, or the revision made by it,
+is remembered, with when, by the link the patch names it by, a new
+revision's as it goes into the patch (One file, only appended to, above),
+whatever came of the rest: from then on the patches pane marks the
+revision `↻`, in the place of its `✓` or `✗`, a new one with no letter
+(The editor, above); its Phabricator line says it in its own words, in the
+place of whether it is in sync and of how long ago it was fetched
+(`Phabricator: D123 · Changes Planned · no new comments · D123 was
+submitted 2 minutes ago, after it was last fetched, 11 minutes ago: Fetch
+the latest from Phabricator to see it as it is now`; for a new revision,
+`Phabricator: D124 · D124 was submitted just now, and nothing of it is
+fetched yet: …`); and the review of a submit of it adds it to how long
+ago what it shows was fetched (`What is shown of D123 here was fetched 11
+minutes ago, before it was last submitted, 2 minutes ago.`), and so does
+its `?`. Any read that stores the revision after it, `Fetch the latest
+from Phabricator`, the fetch a submit makes first or a pull, brings its
+`✓` or `✗` back, from what it read, and the line and the review as they
+were: no record is taken out, the order of the records decides. A submit
+that changed nothing of the revision is not remembered: one that failed
+before any write, one whose diff was made and whose edit was refused, or
+one with nothing to send. Should the database not take the record, the
+bottom line says so before its last sentence (`But the database could not
+keep that D123 was submitted: …`).
 
 Only what changed is sent, in the writes moz-phab makes, and nothing
 else: a new diff of the patch (differential.creatediff), unless the latest
@@ -758,7 +783,8 @@ for a submit in work. When nothing differs, nothing is sent, and the
 bottom line says so. Once it is sent, the bottom line says what came of
 it, as after a submit (`D123 has the title and summary of patch 3 now.
 What is shown of D123 was fetched before this submit.`), and nothing is
-fetched. While the revision's status is not
+fetched: the edit made, it is remembered as a submit's is, the patches
+pane marking D123 `↻` until a read of it. While the revision's status is not
 fetched yet, or is one stacked does not know, the menu has `Submit to
 Phabricator as WIP`, and the status the submit reads decides what is
 sent. For a revision that landed or was abandoned, `Submit

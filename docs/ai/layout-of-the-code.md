@@ -82,7 +82,9 @@
   as work in progress, or its title, summary and parent alone to a
   revision in review, worked out from what is stored of Phabricator, what
   it lacks fetched first, and sent in the writes moz-phab makes, nothing
-  read (`submit.rs`); Fetch the latest from Phabricator, every revision of
+  read, and, once a write changed the revision, remembered with when, so
+  that the revision is marked `↻` until a read of it is stored after that
+  (`submit.rs`); Fetch the latest from Phabricator, every revision of
   a stack read in a few calls, and stored, only what differs from what is
   stored, as what a pull reads is stored, and the fetch a submit makes
   first, its calls the submit's own; and what the Phabricator line over a
@@ -185,7 +187,8 @@
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
   which the patches pane shows, and the Phabricator line over the message
   of the patch the middle shows, from what is stored, with how long ago it
-  was fetched, what differs on a screen of its own, a revision's code
+  was fetched, or, a submit having changed it since, the pane's `↻` and
+  what the line says of it, what differs on a screen of its own, a revision's code
   drawn as the views of the interdiffs draw it there and on the review of
   a submit, the interdiff of its latest diff and the patch's, or each file
   as each leaves it, the pulls, of the
