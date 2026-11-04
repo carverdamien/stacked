@@ -1683,3 +1683,36 @@ fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_browser_too
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
     until(&mut events, "the versions side by side", |l| text(l).contains("│v2"));
 }
+
+#[test]
+fn one_picks_only_what_the_patches_changed_of_a_patch_s_versions_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    stacked::db::Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft { diff: old.diff.replace("+TWO", "+Two"), ..stacked::mbox::Draft::from(&old) };
+        stacked::ops::replace(d, "s", 0, draft, "edit").map(|_| ())
+    })
+    .unwrap();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the patches", |l| l.starts_with("data: r ") && l.contains("Bug 2 - add b"));
+    // The first patch's versions, from its menu, a right click opening it.
+    ask(port, &host, &input, "m 5 2 r\n");
+    let seen = until(&mut events, "the patch's menu", |l| text(l).contains("Versions of this patch…"));
+    let (x, y) = cell_of(seen.last().unwrap(), "Versions of this patch…");
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the versions", |l| text(l).contains("what changed from the version before"));
+    // 1, then a click on only what the patches changed: the version's pane
+    // drawn without the lines the two versions have alike, each place they
+    // were saying how many.
+    ask(port, &host, &input, "k c 31 -\n");
+    until(&mut events, "the lines' heading", |l| text(l).contains("the lines: in each view, every line or only what the patches changed"));
+    let item = "Only what the patches changed: no context";
+    let seen = until(&mut events, "only what the patches changed in the menu", |l| text(l).contains(item));
+    let (x, y) = cell_of(seen.last().unwrap(), item);
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "what is left out, said", |l| text(l).contains("lines are left out here."));
+    until(&mut events, "the line each version says", |l| text(l).trim_end().ends_with("++Two"));
+}

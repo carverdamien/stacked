@@ -765,7 +765,7 @@ impl App {
             let at = now.patches.iter().position(|id| *id == mine.id).unwrap_or_default();
             (self.changed(self.on_first(was, &version), self.on_stack(now, at, "this version"), [&version, "this version"]), near)
         });
-        let stops = interdiffs::view_stops(&refs, view, &two, change.as_ref(), self.change_whole, w.saturating_sub(1), 6);
+        let stops = interdiffs::view_stops(&refs, view, &two, change.as_ref(), (self.change_whole, self.only_changed()), w.saturating_sub(1), 6);
         out.extend(stops.iter().flat_map(|s| &s.lines).flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 7)));
         out
     }
@@ -950,9 +950,13 @@ impl App {
         // work leaves it.
         let view = self.inter_in(self.inter_w.get());
         let changes = self.stack_changes(&diff, (Some(&now), Some(&next)), [AS_IT_IS.0, AS_IT_IS.1], view);
-        let changed = |k: &usize| matches!(&diff[*k], Diffed::Code(l) if l.text.starts_with('+') || l.text.starts_with('-'));
+        // A line of what changed taken out or put in; drawn with only what
+        // the patches changed, not a hunk's header, which stands there for
+        // the lines under it, as both versions have it.
+        let only = self.only_changed();
+        let changed = |k: &usize| matches!(&diff[*k], Diffed::Code(l) if (l.text.starts_with('+') || l.text.starts_with('-')) && !(only && l.part == crate::ops::Part::Hunk));
         let mut ordinal: HashMap<usize, usize> = HashMap::new();
-        for stop in interdiffs::stack_stops(&diff, view, AS_IT_IS, w.saturating_sub(1), &changes, self.change_whole) {
+        for stop in interdiffs::stack_stops(&diff, view, AS_IT_IS, w.saturating_sub(1), &changes, (self.change_whole, only)) {
             let start = v.lines.len();
             v.lines.extend(stop.lines.iter().flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 6)));
             let (Some(&first), Some(&last)) = (stop.shows.first(), stop.shows.last()) else { continue };

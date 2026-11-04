@@ -465,13 +465,47 @@ pub fn interdiff(old: &Patch, new: &Patch) -> String {
 /// diff draws it. And, a line of a hunk taken out or put in, what changed
 /// in it as its own version's diff pairs it with a line removed or added
 /// in its place (`rows::changed_words`), `words`: ranges of its
-/// characters, the sign the first of them too.
+/// characters, the sign the first of them too. And, a line of the two
+/// diffs, where it is in the diff of each version that has it, the old
+/// one's then the new one's (`Under`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InterLine {
     pub text: String,
     pub own: Option<(Vec<(usize, usize)>, bool)>,
     pub part: Part,
     pub words: Vec<(usize, usize)>,
+    pub under: [Option<Under>; 2],
+}
+
+/// Where a line of an interdiff is in its version's diff
+/// (`InterLine::under`): its line there, from 0, and the lines there of the
+/// headers it is under, its file's `diff --git` and its hunk's `@@`, none
+/// before the first of each. The views of an interdiff drawing only what
+/// the patches changed keep the headers of the lines they keep by it,
+/// though the interdiff leaves out lines between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Under {
+    pub at: usize,
+    pub file: Option<usize>,
+    pub hunk: Option<usize>,
+}
+
+/// Of each line of diff `diff`, where it is in it (`Under`): a hunk's
+/// header from a line starting `@@`, as `line_parts` tells them apart; a
+/// file's from one starting `diff --git `, which no hunk goes on past.
+fn unders(diff: &str) -> Vec<Under> {
+    let (mut file, mut hunk) = (None, None);
+    diff.lines()
+        .enumerate()
+        .map(|(at, l)| {
+            if l.starts_with("diff --git ") {
+                (file, hunk) = (Some(at), None);
+            } else if l.starts_with("@@") {
+                hunk = Some(at);
+            }
+            Under { at, file, hunk }
+        })
+        .collect()
 }
 
 /// What part of its version's mail a line of an interdiff is: of the mail
@@ -605,9 +639,10 @@ fn mail_places<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<(Option<usize>, 
 /// mail, a line of its diff, a file's header, a hunk's header or a line of
 /// a hunk, as its version's diff has it; and in a line of a hunk taken out
 /// or put in, what changed in it as its own version's diff pairs it
-/// (`InterLine::words`). `old` and `new` are the two versions, each with
-/// its mail as `render` writes it; a mail not written so has no line of
-/// its diff told apart.
+/// (`InterLine::words`); and where each line of the diffs is in the diff of
+/// each version that has it (`InterLine::under`). `old` and `new` are the
+/// two versions, each with its mail as `render` writes it; a mail not
+/// written so has no line of its diff told apart.
 fn mark_code(lines: &mut [InterLine], (old, a): (&Patch, &str), (new, b): (&Patch, &str)) {
     let (Some(from_a), Some(from_b)) = (diff_start(old, a), diff_start(new, b)) else { return };
     let places = mail_places(lines.iter().map(|l| l.text.as_str()));
@@ -632,12 +667,22 @@ fn mark_code(lines: &mut [InterLine], (old, a): (&Patch, &str), (new, b): (&Patc
         Some((p, w)) => (*p, w.iter().map(|&(s, e)| (s + 1, e + 1)).collect()),
         None => (Part::Head, vec![]),
     };
+    // Where a line at line `at` of a mail whose diff starts at `from` is in
+    // that diff, `all` saying it of each line there.
+    let (under_a, under_b) = (unders(&old.diff), unders(&new.diff));
+    let side = |at: Option<usize>, from: usize, all: &[Under]| at.and_then(|k| k.checked_sub(from)).and_then(|k| all.get(k).copied());
     for (l, (o, n)) in lines.iter_mut().zip(places) {
         (l.part, l.words) = match (l.text.chars().next(), o, n) {
             (Some(' '), _, Some(n)) if n >= from_b => (part(&is, n - from_b).0, vec![]),
             (Some('-'), Some(o), _) if o >= from_a => part(&was, o - from_a),
             (Some('+'), _, Some(n)) if n >= from_b => part(&is, n - from_b),
             _ => (Part::Mail, vec![]),
+        };
+        l.under = match l.text.chars().next() {
+            Some(' ') => [side(o, from_a, &under_a), side(n, from_b, &under_b)],
+            Some('-') => [side(o, from_a, &under_a), None],
+            Some('+') => [None, side(n, from_b, &under_b)],
+            _ => [None, None],
         };
     }
 }

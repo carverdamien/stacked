@@ -422,7 +422,7 @@ an edit does.
 | `?` | say what can be done here |
 | Esc | go back; in the panes, go to the banner of what waits for you |
 | Delete or Backspace | close, drop, stop or reject what the cursor is on (it asks first) |
-| `1` | pick a view of the code: unified, side by side, compact, or unified split in two; where interdiffs are shown, how to draw them: as an interdiff, a column per version, or side by side, or the change from the old version to the new one as a patch of its own, in those views of the code |
+| `1` | pick a view of the code: unified, side by side, compact, or unified split in two; where interdiffs are shown, how to draw them: as an interdiff, a column per version, or side by side, or the change from the old version to the new one as a patch of its own, in those views of the code. There, it also picks whether every line is drawn, or only what the patches changed, the context, the index lines and what a change of base made left out, each place saying how many |
 | `2` | switch between commenting and reading, where Space marks code read |
 | `3` | switch between the hunks and each file whole |
 | `/` | search what the middle shows; Tab and shift-Tab go from match to match |

@@ -7,8 +7,9 @@ every comment and every run; the editor shows them where they belong:
   one being edited marked; enter edits from another. Beside each, its
   patches and what its edit changed; Space, `What this edit changed…` in
   full: its stack diff (below), from the stack it was edited from, on a
-  screen of its own, its interdiffs in the view `1` picks there (The
-  editor, above), or each patch's change from the stack it was edited
+  screen of its own, its interdiffs in the view `1` picks there, every
+  line or only what the patches changed (The editor, above), or each
+  patch's change from the stack it was edited
   from to the one it made, as a patch of its own, the two stacks named
   `@10` and `@12`, its top line kept from one view to another.
 - `History…`, on the stack's header: what changed the stack, newest first:
@@ -41,8 +42,9 @@ every comment and every run; the editor shows them where they belong:
   and each patch dropped, marked `−`, where it was. A patch is known across
   its versions, so one only shifted by what was added or dropped below it
   is not taken for moved. → goes into it, ↑↓ scroll it, ← goes back; `1`,
-  on the history or in the stack diff, picks the view of its interdiffs
-  (The editor, above), or of each patch's change from the stack before to
+  on the history or in the stack diff, picks the view of its interdiffs,
+  every line or only what the patches changed (The editor, above), or of
+  each patch's change from the stack before to
   the one after, as a patch of its own, each version on the stack it is
   in, the two stacks named `@4` and `@12`, the cursor on its line. It is only to look at: nothing is edited, commented on or
   asked from it, nor undone or redone from History…; esc leaves it, for
@@ -110,8 +112,9 @@ every comment and every run; the editor shows them where they belong:
   place: what the views of the interdiffs draw (The editor, above).
 - `Versions of this patch…`, on a patch: every version, oldest first, each
   with the edit that first had it; beside it what changed from the version
-  before, in the view of the interdiffs `1` picks there (The editor,
-  above), the two versions named as the list names them (`v2`, `v3`): the
+  before, in the view of the interdiffs `1` picks there, every line or
+  only what the patches changed (The editor, above), the two versions
+  named as the list names them (`v2`, `v3`): the
   interdiff, or the change from the one to the other as a patch of its
   own, each on the stack that first held it; or the version whole. `Put this version back in the stack` is an edit like
   any.

@@ -785,7 +785,7 @@ impl App {
             // the patches below it.
             let two = interdiffs::Two { old: &theirs_said, new: &mine_said, one_base: !drifted };
             let refs: Vec<&ops::InterLine> = inter.iter().collect();
-            for stop in interdiffs::view_stops(&refs, v, &two, change.as_ref(), self.change_whole, w, 0) {
+            for stop in interdiffs::view_stops(&refs, v, &two, change.as_ref(), (self.change_whole, self.only_changed()), w, 0) {
                 let seen = interdiffs::Seen { shows: stop.shows.iter().map(|j| id + j).collect(), rows: stop.rows.clone() };
                 for parts in stop.lines {
                     // Side by side, its halves folded already; a line of the

@@ -27,15 +27,20 @@
 //! one of the message between words. Or the change from the old version
 //! to the new one as a patch of its own, in the views of the code
 //! (`change.rs`). The menu of 1 is in sections, each what it draws under a
-//! heading, then the views it is drawn in: the interdiff, and the change.
-//! The view picked holds for every interdiff while the editor is open, the
-//! settings' `view.interdiff` the one they start in; a pane narrower than
-//! two sides need (`view.split_width`, as the code view's) draws its
-//! interdiffs as interdiffs meanwhile, the change unified, and says so.
-//! Switching from one view to another, a screen keeps its place (`At`).
+//! heading, then the views it is drawn in: the interdiff, and the change;
+//! then the lines each view draws: every line, or only what the patches
+//! changed (`kept_lines`, `change::changed_rows`), each place lines are
+//! left out a line saying how many (`left_out`). The view picked, and the
+//! lines, hold for every interdiff while the editor is open, the settings'
+//! `view.interdiff` and `view.interdiff_lines` those they start with; a
+//! pane narrower than two sides need (`view.split_width`, as the code
+//! view's) draws its interdiffs as interdiffs meanwhile, the change
+//! unified, and says so. Switching from one view to another, or to other
+//! lines, a screen keeps its place (`At`).
 
 use super::change::{Changed, Near, change_said, code_stops, code_view, message_stops};
 use super::*;
+use crate::config::InterLines;
 use crate::ops::{InterLine, Part};
 use crate::rows::FOLDED;
 
@@ -64,6 +69,19 @@ impl InterLayout {
     }
 }
 
+impl InterLines {
+    /// Each, in the order the menu of 1 lists them.
+    pub const ALL: [InterLines; 2] = [InterLines::Every, InterLines::Changed];
+
+    /// As the menu of 1 lists it: what it draws.
+    pub fn item(self) -> &'static str {
+        match self {
+            InterLines::Every => "Every line: the context, the index lines and what the change of base made too",
+            InterLines::Changed => "Only what the patches changed: no context, no index line, nothing the change of base made",
+        }
+    }
+}
+
 /// What the menu of 1 is called on an interdiff's screen.
 pub(super) const INTER_MENU: &str = "the view of the interdiffs";
 
@@ -76,6 +94,19 @@ pub(super) const INTERDIFF_SECTION: &str = "the interdiff: the two versions' dif
 /// version to the new one, a patch of its own, in each of the views of the
 /// code.
 pub(super) const CHANGE_SECTION: &str = "the change: each file from the old version to the new one, as a patch of its own";
+
+/// The heading of the menu of 1's section of the lines each of the views
+/// above draws (`InterLines`).
+pub(super) const LINES_SECTION: &str = "the lines: in each view, every line or only what the patches changed";
+
+/// What the views of an interdiff say once, at the top of its code, while
+/// they draw only what the patches changed: what is left out, and how the
+/// places they were are marked (`kept_lines`, `left_out`).
+pub(super) const LEFT_OUT: &str = "Only what the patches changed is drawn. The lines both versions have alike, the context lines of their diffs and their index lines are left out, and where lines are left out, a line says how many. Two hunk headers that differ only in their numbers are drawn once, as the new version has them.";
+
+/// What an interdiff says in place of its lines, drawn with only what the
+/// patches changed, when none of them is kept (`kept_lines`).
+pub(super) const NOTHING_LEFT: &str = "The two versions differ only in context, line numbers or index lines, which are left out.";
 
 /// The two versions an interdiff compares, as the screen names them, the
 /// old one first; and whether both are on one base (`ops::other_bases`):
@@ -446,11 +477,29 @@ fn own_sign(l: &InterLine) -> Option<char> {
     l.text.get(1..)?.chars().next().filter(|c| l.part == Part::Line && matches!(c, ' ' | '-' | '+'))
 }
 
+/// What line `l` says after the interdiff's sign: its version's line.
+fn after_sign(l: &InterLine) -> &str {
+    l.text.get(1..).unwrap_or_default()
+}
+
 /// What line `l` of a version says after the interdiff's sign, and after
 /// its own sign too, which its column says instead.
 fn after_signs(l: &InterLine) -> &str {
     let at = if own_sign(l).is_some() { 2 } else { 1 };
     l.text.get(at..).unwrap_or_default()
+}
+
+/// Line `k` of `lines`, as a column per version matches it with the other
+/// version's (`Key`), the two versions on one base or not (`one_base`).
+fn key<'a>(lines: &[&'a InterLine], k: usize, one_base: bool) -> Key<'a> {
+    let l = lines[k];
+    let line = l.text.get(1..).unwrap_or_default();
+    match (l.part, own_sign(l)) {
+        (Part::Line, Some(c)) => Key::Line(one_base && c == '+', &line[1..]),
+        (Part::Hunk, _) => Key::Hunk(ranges(line).map_or(line, |(_, rest)| rest)),
+        (Part::Mail, _) => Key::Mail(k),
+        _ => Key::Head(line),
+    }
 }
 
 /// An interdiff in a column per version, `lines` from its first hunk's
@@ -552,16 +601,6 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
         };
         Stop::new(vec![draw(cols, text, agree)], vec![k, m])
     };
-    let key = |k: usize| -> Key {
-        let l = lines[k];
-        let line = l.text.get(1..).unwrap_or_default();
-        match (l.part, own_sign(l)) {
-            (Part::Line, Some(c)) => Key::Line(one_base && c == '+', &line[1..]),
-            (Part::Hunk, _) => Key::Hunk(ranges(line).map_or(line, |(_, rest)| rest)),
-            (Part::Mail, _) => Key::Mail(k),
-            _ => Key::Head(line),
-        }
-    };
     let mut out: Vec<Stop> = Vec::new();
     let mut k = 0;
     while k < lines.len() {
@@ -582,7 +621,7 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
                 }
                 let olds: Vec<usize> = (start..k).filter(|&i| lines[i].text.starts_with('-')).collect();
                 let news: Vec<usize> = (start..k).filter(|&i| lines[i].text.starts_with('+')).collect();
-                let (a, b): (Vec<Key>, Vec<Key>) = (olds.iter().map(|&i| key(i)).collect(), news.iter().map(|&i| key(i)).collect());
+                let (a, b): (Vec<Key>, Vec<Key>) = (olds.iter().map(|&i| key(lines, i, one_base)).collect(), news.iter().map(|&i| key(lines, i, one_base)).collect());
                 let mut apart: (Vec<usize>, Vec<usize>) = (vec![], vec![]);
                 for op in similar::capture_diff_slices(similar::Algorithm::Myers, &a, &b) {
                     let (tag, x, y) = op.as_tag_tuple();
@@ -607,6 +646,284 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
     out
 }
 
+/// What git derives in a file's header, which only what the patches
+/// changed leaves out though the two versions' differ: its index line, and
+/// its similarity, as the screen of what differs from Phabricator leaves
+/// them out of the diffs it compares (`revisions::bare`).
+const DERIVED: [&str; 3] = ["index ", "similarity index ", "dissimilarity index "];
+
+/// An interdiff's lines from its first hunk's header, as its views draw
+/// them with only what the patches changed (`kept_lines`): its lines, but
+/// two hunk's headers of the two versions that differ only in their
+/// numbers, which are one line, the new version's, as a header both have
+/// (` @@`), each version's lines before its own of the two over it, and
+/// those after under it; of each, the lines of the interdiff it stands
+/// for, by their places there, one or the two headers; whether each is
+/// kept; and the run of lines each version has alone it is in, as drawn,
+/// none for a line both have, or the interdiff's own.
+pub(super) struct Kept {
+    pub lines: Vec<InterLine>,
+    pub of: Vec<Vec<usize>>,
+    pub kept: Vec<bool>,
+    pub runs: Vec<Option<usize>>,
+}
+
+/// What of interdiff `lines`, from its first hunk's header, its views draw
+/// with only what the patches changed (`Kept`), its versions on one base or
+/// not (`one_base`). Kept: a line of the two diffs that one version adds or
+/// removes and the other does not, its own sign `+` or `-`; git's `\` line
+/// that one version alone has, and the line of that version it is about;
+/// a line of a file's header that differs, but what git derives
+/// (`DERIVED`), as when a file comes or goes; a line of the mail around the
+/// diffs that differs, the messages compared; and the headers one of those
+/// is under in its version's diff (`InterLine::under`), its hunk's and the
+/// line naming its file, its `diff --git`, where the interdiff has them,
+/// though it leaves out lines between them, a header both versions have
+/// for a line of either. Two hunk's headers of a run of lines the versions
+/// have each alone that differ only in their numbers, which a column per
+/// version matches as one line (`Key::Hunk`), are one, the new version's,
+/// kept so too. Left out: the lines both versions have alike, the
+/// interdiff's own context; the context lines of the two diffs, whichever
+/// version has them; what git derives; the interdiff's own hunks' headers;
+/// and a hunk's header, or a file's, with nothing kept under it.
+pub(super) fn kept_lines(lines: &[&InterLine], one_base: bool) -> Kept {
+    // The lines in the order drawn, each the lines of the interdiff it
+    // stands for: a run of lines each version has alone cut at each two
+    // hunk's headers that are one, the lines of each version before its
+    // own over the one, in their order, and those after under it.
+    let mut order: Vec<Vec<usize>> = Vec::new();
+    let mut k = 0;
+    while k < lines.len() {
+        if !lines[k].text.starts_with(['-', '+']) {
+            order.push(vec![k]);
+            k += 1;
+            continue;
+        }
+        let start = k;
+        while lines.get(k).is_some_and(|l| l.text.starts_with(['-', '+'])) {
+            k += 1;
+        }
+        let olds: Vec<usize> = (start..k).filter(|&i| lines[i].text.starts_with('-')).collect();
+        let news: Vec<usize> = (start..k).filter(|&i| lines[i].text.starts_with('+')).collect();
+        let (a, b): (Vec<Key>, Vec<Key>) = (olds.iter().map(|&i| key(lines, i, one_base)).collect(), news.iter().map(|&i| key(lines, i, one_base)).collect());
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        for op in similar::capture_diff_slices(similar::Algorithm::Myers, &a, &b) {
+            let (tag, x, y) = op.as_tag_tuple();
+            if tag == similar::DiffTag::Equal {
+                pairs.extend(x.zip(y).filter(|&(i, _)| matches!(a[i], Key::Hunk(_))).map(|(i, j)| (olds[i], news[j])));
+            }
+        }
+        // The first line of each version not drawn yet.
+        let mut from = (start, start);
+        for (o, n) in pairs.into_iter().chain([(k, k)]) {
+            let before = |i: &usize| match lines[*i].text.starts_with('-') {
+                true => (from.0..o).contains(i),
+                false => (from.1..n).contains(i),
+            };
+            order.extend((start..k).filter(before).map(|i| vec![i]));
+            if o < k {
+                order.push(vec![o, n]);
+            }
+            from = (o + 1, n + 1);
+        }
+    }
+    let drawn: Vec<InterLine> = order
+        .iter()
+        .map(|of| match of.as_slice() {
+            &[_, n] => InterLine { text: format!(" {}", &lines[n].text[1..]), part: Part::Hunk, ..Default::default() },
+            _ => lines[of[0]].clone(),
+        })
+        .collect();
+    // The versions a line is of, by its sign: both, the old one, the new
+    // one; none, the interdiff's own.
+    let versions = |l: &InterLine| -> &'static [usize] {
+        match l.text.chars().next() {
+            Some(' ') => &[0, 1],
+            Some('-') => &[0],
+            Some('+') => &[1],
+            _ => &[],
+        }
+    };
+    let mut kept = vec![false; drawn.len()];
+    // Each `\` line both versions have, or the interdiff's own, with the
+    // lines it is about: kept with them.
+    let mut about: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut last: [Option<usize>; 2] = [None, None];
+    for (e, l) in drawn.iter().enumerate() {
+        let (of, line, differs) = (versions(l), after_sign(l), l.text.starts_with(['-', '+']));
+        match l.part {
+            Part::Line if line.starts_with('\\') => {
+                let on: Vec<usize> = of.iter().filter_map(|&v| last[v]).collect();
+                match differs {
+                    true => {
+                        kept[e] = true;
+                        for a in on {
+                            kept[a] = true;
+                        }
+                    }
+                    false => about.push((e, on)),
+                }
+            }
+            Part::Line => {
+                kept[e] = differs && line.starts_with(['+', '-']);
+                for &v in of {
+                    last[v] = Some(e);
+                }
+            }
+            Part::Head => kept[e] = differs && !DERIVED.iter().any(|d| line.starts_with(d)),
+            Part::Hunk => {}
+            Part::Mail if l.text.starts_with('\\') => about.push((e, e.checked_sub(1).into_iter().collect())),
+            Part::Mail => kept[e] = differs,
+        }
+    }
+    for (e, on) in about {
+        kept[e] = on.iter().any(|&a| kept[a]);
+    }
+    // The headers of the lines kept: each line drawn that is a header of a
+    // version's diff, by the version and its line there; then of each line
+    // kept, those it is under there, where they are drawn.
+    let mut heads: HashMap<(usize, usize), usize> = HashMap::new();
+    for (e, of) in order.iter().enumerate() {
+        for &i in of {
+            let l = lines[i];
+            if l.part == Part::Hunk || (l.part == Part::Head && after_sign(l).starts_with("diff --git ")) {
+                for (v, u) in l.under.iter().enumerate() {
+                    if let Some(u) = u {
+                        heads.insert((v, u.at), e);
+                    }
+                }
+            }
+        }
+    }
+    let mut need = vec![false; drawn.len()];
+    for (e, of) in order.iter().enumerate() {
+        if !kept[e] || !matches!(drawn[e].part, Part::Line | Part::Head) {
+            continue;
+        }
+        for (v, u) in of.iter().flat_map(|&i| lines[i].under.iter().enumerate()) {
+            for h in u.iter().flat_map(|u| [u.file, u.hunk]).flatten() {
+                if let Some(&at) = heads.get(&(v, h)) {
+                    need[at] = true;
+                }
+            }
+        }
+    }
+    for (e, needed) in need.into_iter().enumerate() {
+        kept[e] |= needed;
+    }
+    let mut runs = Vec::with_capacity(drawn.len());
+    let mut n = 0;
+    for (e, l) in drawn.iter().enumerate() {
+        let alone = l.text.starts_with(['-', '+']);
+        if alone && (e == 0 || !drawn[e - 1].text.starts_with(['-', '+'])) {
+            n += 1;
+        }
+        runs.push(alone.then_some(n));
+    }
+    Kept { lines: drawn, of: order, kept, runs }
+}
+
+/// Lines `n` left out of an interdiff, or of the change, drawn with only
+/// what the patches changed, as the line marking where they were says it.
+pub(super) fn left_out_said(n: usize) -> String {
+    match n {
+        1 => "⋯ 1 line is left out here.".into(),
+        n => format!("⋯ {} lines are left out here.", crate::paint::thousands(n)),
+    }
+}
+
+/// Where `n` lines are left out, drawn with only what the patches changed:
+/// a line saying so (`left_out_said`), dim, after `indent` columns; a stop
+/// that shows no line.
+pub(super) fn left_out(n: usize, indent: usize) -> Stop {
+    Stop::new(vec![vec![(" ".repeat(indent), Style::new()), (left_out_said(n), color::dim())]], vec![])
+}
+
+/// Stops `stops` drawn of lines `k` (`kept_lines`), with only what the
+/// patches changed: each that shows lines, none of them kept, left out,
+/// each run of those one line saying how many (`left_out`), after `indent`
+/// columns; of the stops of a run of lines each version has alone
+/// (`Kept::runs`), those it keeps together, under the line saying how many
+/// of its others are left out, with those before it. Each kept showing the
+/// lines of the interdiff its own stand for, by their places among what is
+/// drawn, the first at `first`. A stop that shows no line, a heading or
+/// what is said, kept.
+fn kept_stops(stops: Vec<Stop>, k: &Kept, first: usize, indent: usize) -> Vec<Stop> {
+    let keeps = |s: &Stop| s.shows.is_empty() || s.shows.iter().any(|&e| k.kept[e]);
+    let run = |s: &Stop| s.shows.first().and_then(|&e| k.runs[e]);
+    let shown = |s: Stop| Stop { shows: s.shows.iter().flat_map(|&e| k.of[e].iter().map(|i| first + i)).collect(), ..s };
+    let mut out = Vec::new();
+    let mut gone = 0;
+    let mut stops = stops.into_iter().peekable();
+    while let Some(s) = stops.next() {
+        let mut all = vec![s];
+        if let Some(r) = run(&all[0]) {
+            while let Some(next) = stops.next_if(|t| run(t) == Some(r)) {
+                all.push(next);
+            }
+        }
+        let (kept, left): (Vec<Stop>, Vec<Stop>) = all.into_iter().partition(keeps);
+        gone += left.len();
+        if !kept.is_empty() && gone > 0 {
+            out.push(left_out(std::mem::take(&mut gone), indent));
+        }
+        out.extend(kept.into_iter().map(shown));
+    }
+    if gone > 0 {
+        out.push(left_out(gone, indent));
+    }
+    out
+}
+
+/// What view `v` of an interdiff of versions `two` says once, at the top of
+/// its code, of how to read it, with only what the patches changed: as an
+/// interdiff, and in a column per version, what it says ever, then what is
+/// left out (`LEFT_OUT`); side by side, that alone.
+fn said_left_out(v: InterLayout, two: &Two) -> String {
+    match v {
+        InterLayout::Columns => format!("{} {LEFT_OUT}", columns_said(two)),
+        InterLayout::Sides => LEFT_OUT.into(),
+        _ => format!("{} {LEFT_OUT}", interdiff_said(two)),
+    }
+}
+
+/// One interdiff's stops in view `v` with only what the patches changed,
+/// as `interdiff_stops` draws it, `lines` its lines, the first `names` of
+/// them naming the versions: what the view says of how to read it and what
+/// is left out (`said_left_out`); then, as an interdiff, the two lines
+/// naming the versions, as ever, in a column per version none, and side by
+/// side the heading standing for them; then the lines kept, each run of
+/// those left out one line saying how many (`kept_stops`). With none of
+/// its lines kept, what says so (`NOTHING_LEFT`) alone.
+fn only_changed_stops(lines: &[&InterLine], names: usize, v: InterLayout, two: &Two, w: usize, indent: usize) -> Vec<Stop> {
+    let k = kept_lines(&lines[names..], two.one_base);
+    if !k.kept.contains(&true) {
+        return vec![said_stop(NOTHING_LEFT, w, indent)];
+    }
+    let refs: Vec<&InterLine> = k.lines.iter().collect();
+    let lead = |parts: Parts| -> Parts { std::iter::once((" ".repeat(indent), Style::new())).chain(parts).collect() };
+    let mut out = vec![said_stop(&said_left_out(v, two), w, indent)];
+    let stops = match v {
+        InterLayout::Columns => columns(&refs, two.one_base, indent),
+        InterLayout::Sides => {
+            let mut sides = side_by_side(&refs, (two.old, two.new), w, indent);
+            // The heading stands for the two lines it names.
+            if !sides.is_empty() {
+                out.push(Stop { shows: (0..names).collect(), ..sides.remove(0) });
+            }
+            sides
+        }
+        _ => {
+            for (j, parts) in inter_parts(&lines[..names]).into_iter().enumerate() {
+                out.push(Stop::new(vec![lead(parts)], vec![j]));
+            }
+            inter_parts(&refs).into_iter().enumerate().map(|(e, parts)| Stop::new(vec![lead(parts)], vec![e])).collect()
+        }
+    };
+    out.extend(kept_stops(stops, &k, names, indent));
+    out
+}
+
 /// One interdiff's stops in view `v`, `lines` as `ops` gives them, the two
 /// lines naming the versions over its first hunk first, `w` wide with
 /// `indent` columns before each line, of versions `two`: as an interdiff,
@@ -615,11 +932,15 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
 /// lines naming the versions left out (`columns`); side by side, those left
 /// out too, each half under a heading of its version (`side_by_side`). In
 /// a view of the change, as an interdiff: `view_stops` draws the change.
-/// Each stop with the lines of `lines` it shows.
-pub(super) fn interdiff_stops(lines: &[&InterLine], v: InterLayout, two: &Two, w: usize, indent: usize) -> Vec<Stop> {
+/// With `only`, only what the patches changed (`only_changed_stops`). Each
+/// stop with the lines of `lines` it shows.
+pub(super) fn interdiff_stops(lines: &[&InterLine], v: InterLayout, two: &Two, only: bool, w: usize, indent: usize) -> Vec<Stop> {
     let names = lines.iter().take_while(|l| l.text.starts_with("--- ") || l.text.starts_with("+++ ")).count();
     let shifted = |stops: Vec<Stop>| -> Vec<Stop> { stops.into_iter().map(|s| Stop { shows: s.shows.iter().map(|k| k + names).collect(), ..s }).collect() };
     let block = w.saturating_sub(indent);
+    if only {
+        return only_changed_stops(lines, names, v, two, block, indent);
+    }
     match v {
         InterLayout::Columns => {
             let mut out = vec![said_stop(&columns_said(two), block, indent)];
@@ -649,11 +970,12 @@ pub(super) fn interdiff_stops(lines: &[&InterLine], v: InterLayout, two: &Two, w
 /// One interdiff's stops in view `v` (`interdiff_stops`); in a view of the
 /// change, the change of its patch as `change` has it, with the lines of
 /// the interdiff nearest each of its lines, each file whole with `whole`
-/// (`change::one_change_stops`), and without it, as an interdiff.
-pub(super) fn view_stops(lines: &[&InterLine], v: InterLayout, two: &Two, change: Option<&(Changed, Near)>, whole: bool, w: usize, indent: usize) -> Vec<Stop> {
+/// (`change::one_change_stops`), and without it, as an interdiff. With
+/// `only`, only what the patches changed, in either.
+pub(super) fn view_stops(lines: &[&InterLine], v: InterLayout, two: &Two, change: Option<&(Changed, Near)>, (whole, only): (bool, bool), w: usize, indent: usize) -> Vec<Stop> {
     match change {
-        Some((c, near)) if v.change() => super::change::one_change_stops(lines, v, two, (c, near), whole, w, indent),
-        _ => interdiff_stops(lines, v, two, w, indent),
+        Some((c, near)) if v.change() => super::change::one_change_stops(lines, v, two, (c, near), (whole, only), w, indent),
+        _ => interdiff_stops(lines, v, two, only, w, indent),
     }
 }
 
@@ -668,10 +990,20 @@ pub(super) fn view_stops(lines: &[&InterLine], v: InterLayout, two: &Two, change
 /// has it by the place of the patch's line (`change::code_stops`), each
 /// file whole with `whole`. As an interdiff, in a column per version and in
 /// a view of the change, what says how to read them once, over the first;
-/// what dim is, where a change read is on other bases. The two versions
-/// named `names`, each patch's on one base or not as its line says
+/// what dim is, where a change read is on other bases. With `only`, only
+/// what the patches changed, in each (`kept_lines`, `kept_stops`), what is
+/// left out said once over the first too, side by side as well; an
+/// interdiff with none of its lines kept saying so. The two versions named
+/// `names`, each patch's on one base or not as its line says
 /// (`Diffed::Patch::rebased`). Each stop with the lines of `diff` it shows.
-pub(super) fn stack_stops(diff: &[Diffed], v: InterLayout, (old, new): (&str, &str), w: usize, changes: &HashMap<usize, (Changed, Near)>, whole: bool) -> Vec<Stop> {
+pub(super) fn stack_stops(
+    diff: &[Diffed],
+    v: InterLayout,
+    (old, new): (&str, &str),
+    w: usize,
+    changes: &HashMap<usize, (Changed, Near)>,
+    (whole, only): (bool, bool),
+) -> Vec<Stop> {
     let indent = 1 + Diffed::Code(Default::default()).text().chars().count();
     let block = w.saturating_sub(indent);
     let lines = diff_lines(diff);
@@ -699,25 +1031,51 @@ pub(super) fn stack_stops(diff: &[Diffed], v: InterLayout, (old, new): (&str, &s
         let two = Two { old, new, one_base: !rebased };
         let code: Vec<&InterLine> = diff[start..k].iter().filter_map(|d| if let Diffed::Code(l) = d { Some(l) } else { None }).collect();
         let at = |stops: Vec<Stop>| -> Vec<Stop> { stops.into_iter().map(|s| Stop { shows: s.shows.iter().map(|j| start + j).collect(), ..s }).collect() };
-        let as_interdiff = || -> Vec<Stop> { (start..k).map(|j| Stop::new(vec![plain[j].clone()], vec![j])).collect() };
+        // The interdiff in `view`, as an interdiff, in a column per version or
+        // side by side; with only what the patches changed, its lines drawn
+        // so, as an interdiff after the indent `diff_parts` gives them.
+        let drawn = |view: InterLayout| -> Vec<Stop> {
+            if only {
+                let kept = kept_lines(&code, two.one_base);
+                if !kept.kept.contains(&true) {
+                    return vec![said_stop(NOTHING_LEFT, block, indent)];
+                }
+                let refs: Vec<&InterLine> = kept.lines.iter().collect();
+                let stops = match view {
+                    InterLayout::Columns => columns(&refs, two.one_base, indent),
+                    InterLayout::Sides => side_by_side(&refs, (old, new), block, indent),
+                    _ => inter_parts(&refs).into_iter().enumerate().map(|(e, parts)| Stop::new(vec![indented(parts, indent)], vec![e])).collect(),
+                };
+                return kept_stops(stops, &kept, start, indent);
+            }
+            match view {
+                InterLayout::Columns => at(columns(&code, two.one_base, indent)),
+                InterLayout::Sides => at(side_by_side(&code, (old, new), block, indent)),
+                _ => (start..k).map(|j| Stop::new(vec![plain[j].clone()], vec![j])).collect(),
+            }
+        };
         match v {
-            InterLayout::Interdiff => {
-                if !std::mem::replace(&mut said, true) {
-                    out.push(said_stop(&interdiff_said(&two), block, indent));
+            InterLayout::Interdiff | InterLayout::Columns | InterLayout::Sides => {
+                let how = match v {
+                    InterLayout::Interdiff => Some(interdiff_said(&two)),
+                    InterLayout::Columns => Some(columns_said(&two)),
+                    _ => None,
+                };
+                let say = match only {
+                    true => Some(said_left_out(v, &two)),
+                    false => how,
+                };
+                if let Some(say) = say
+                    && !std::mem::replace(&mut said, true)
+                {
+                    out.push(said_stop(&say, block, indent));
                 }
-                out.extend(as_interdiff());
+                out.extend(drawn(v));
             }
-            InterLayout::Columns => {
-                if !std::mem::replace(&mut said, true) {
-                    out.push(said_stop(&columns_said(&two), block, indent));
-                }
-                out.extend(at(columns(&code, two.one_base, indent)));
-            }
-            InterLayout::Sides => out.extend(at(side_by_side(&code, (old, new), block, indent))),
             _ => {
                 let how = code_view(v);
                 if !std::mem::replace(&mut said, true) {
-                    out.push(said_stop(&change_said(&two, how, rebased_change), block, indent));
+                    out.push(said_stop(&change_said(&two, how, rebased_change, only), block, indent));
                 }
                 // The change of the patch whose line is over its code.
                 match start.checked_sub(1).and_then(|p| changes.get(&p).map(|c| (p, c))) {
@@ -725,9 +1083,9 @@ pub(super) fn stack_stops(diff: &[Diffed], v: InterLayout, (old, new): (&str, &s
                         if matches!(c, Changed::Read(_) | Changed::Reading) {
                             out.extend(message_stops(&code, start, indent));
                         }
-                        out.extend(code_stops(c, how, (near, p), whole, (w, indent), as_interdiff));
+                        out.extend(code_stops(c, how, (near, p), (whole, only), (w, indent), || drawn(InterLayout::Interdiff)));
                     }
-                    None => out.extend(as_interdiff()),
+                    None => out.extend(drawn(InterLayout::Interdiff)),
                 }
             }
         }
@@ -735,14 +1093,29 @@ pub(super) fn stack_stops(diff: &[Diffed], v: InterLayout, (old, new): (&str, &s
     out
 }
 
+/// Line `parts` of an interdiff under its patch in a stack diff, after
+/// `indent` columns, as `diff_parts` draws it: the indent the start of its
+/// first part.
+fn indented(mut parts: Parts, indent: usize) -> Parts {
+    if let Some((text, _)) = parts.first_mut() {
+        text.insert_str(0, &" ".repeat(indent));
+    }
+    parts
+}
+
 /// Of the lines drawn, `seen`, the one where place `at` is: the first that
 /// shows its line of the change, else its line of what is drawn, else the
-/// first that shows one past that; none, the last.
+/// first that shows the line nearest that, of two as near the one past it,
+/// as a line left out is found, drawn with only what the patches changed;
+/// none, the last.
 pub(super) fn find(seen: &[Seen], at: At) -> usize {
+    // How far from the line a line drawn is, one before it the farther of
+    // two as far.
+    let far = |s: &Seen| s.shows.iter().map(|&l| (l.abs_diff(at.line), l < at.line)).min();
     at.row
         .and_then(|r| seen.iter().position(|s| s.rows.contains(&r)))
         .or_else(|| seen.iter().position(|s| s.shows.contains(&at.line)))
-        .or_else(|| seen.iter().position(|s| s.shows.iter().any(|&l| l > at.line)))
+        .or_else(|| seen.iter().enumerate().filter_map(|(i, s)| far(s).map(|d| (d, i))).min().map(|(_, i)| i))
         .unwrap_or(seen.len().saturating_sub(1))
 }
 
@@ -796,7 +1169,9 @@ impl App {
     /// each of its views; and the change from the old version to the new
     /// one as a patch of its own, in each view of the code, which cannot be
     /// picked where the screen cannot read the versions' bases, the menu
-    /// saying why (`change_why`).
+    /// saying why (`change_why`). Then the lines each of those views draws,
+    /// every line or only what the patches changed, the ones drawn marked
+    /// as the view is.
     pub(super) fn inter_menu(&self) -> Menu {
         let why = self.change_why();
         let item = |v: InterLayout| {
@@ -807,6 +1182,11 @@ impl App {
         items.extend(InterLayout::ALL.iter().filter(|v| !v.change()).map(|&v| item(v)));
         items.push(Item::heading(CHANGE_SECTION));
         items.extend(InterLayout::ALL.iter().filter(|v| v.change()).map(|&v| item(v)));
+        items.push(Item::heading(LINES_SECTION));
+        items.extend(InterLines::ALL.iter().map(|&l| {
+            let mark = if l == self.inter_lines { "● " } else { "  " };
+            Item::new(format!("{mark}{}", l.item()), Action::InterLines(l))
+        }));
         let note = why.map(|w| format!("The change cannot be drawn here: {w}."));
         let mut m = Menu::new(INTER_MENU, items, note);
         if let Some(at) = m.items.iter().position(|i| i.action == Action::InterView(self.inter) && i.enabled) {
@@ -891,13 +1271,33 @@ impl App {
         };
     }
 
+    /// Lines `l`, picked in the menu of 1: every interdiff drawn with them
+    /// from now on, every line or only what the patches changed, in every
+    /// view, while the editor is open, on every screen; this one keeping its
+    /// place (`keep_inter_place`), the line its cursor is on, else the
+    /// nearest line kept (`find`). The status line says what is drawn.
+    pub(super) fn pick_lines(&mut self, l: InterLines) {
+        let kept = self.keep_inter_place();
+        self.inter_lines = l;
+        self.find_inter_place(kept);
+        self.status = match l {
+            InterLines::Every => "every line is drawn: of each interdiff, the lines both versions have alike, the context lines and the index lines too, and of the change, the lines the change of base made, dim".into(),
+            InterLines::Changed => "only what the patches changed is drawn: of each interdiff, no line both versions have alike, no context line and no index line, and of the change, no line the change of base made; a line says how many are left out at each place".into(),
+        };
+    }
+
+    /// Whether the interdiffs are drawn with only what the patches changed.
+    pub(super) fn only_changed(&self) -> bool {
+        self.inter_lines == InterLines::Changed
+    }
+
     /// Where the screen of interdiffs is, kept before it is drawn otherwise
-    /// (in another view, each file of the change whole or not): History…'s
-    /// stack diff, the place of its cursor's line, on its line of the pane,
-    /// found again as it is drawn; the review's stack diff, the place of its
-    /// cursor's stop, and how far under the pane's top it is, for
-    /// `find_inter_place`. The text's is found again as it is drawn
-    /// (`text_again`).
+    /// (in another view, each file of the change whole or not, with other
+    /// lines): History…'s stack diff, the place of its cursor's line, on its
+    /// line of the pane, found again as it is drawn; the review's stack
+    /// diff, the place of its cursor's stop, and how far under the pane's
+    /// top it is, for `find_inter_place`. The text's is found again as it is
+    /// drawn (`text_again`).
     pub(super) fn keep_inter_place(&mut self) -> Option<(At, usize)> {
         if self.screen == Screen::History
             && let Some(at) = locate(&self.hist_of, self.hist_cursor, self.hist_line)
@@ -918,17 +1318,21 @@ impl App {
         }
     }
 
-    /// What `?` says of 1 on an interdiff's screen; side by side, on a pane
-    /// too narrow for it, why the interdiffs here are drawn as interdiffs,
-    /// or the change unified; in a view of the change, what 3 does there.
-    /// Nothing elsewhere.
+    /// What `?` says of 1 on an interdiff's screen; drawing only what the
+    /// patches changed, what is left out, and how to draw every line again;
+    /// side by side, on a pane too narrow for it, why the interdiffs here
+    /// are drawn as interdiffs, or the change unified; in a view of the
+    /// change, what 3 does there. Nothing elsewhere.
     pub(super) fn inter_help(&self) -> Vec<String> {
         if !self.inter_screen() {
             return vec![];
         }
         let mut out = vec![
-            "Press 1 to pick how the interdiffs are drawn: as interdiffs, a sign for which version has each line before that version's own sign; in a column per version, what each one's patch does with each line; or side by side, the old version on the left and the new one on the right, the lines both have dim. Or how the change from the old version to the new one is drawn as a patch of its own: unified, side by side, or side by side and compact.".to_string(),
+            "Press 1 to pick how the interdiffs are drawn: as interdiffs, a sign for which version has each line before that version's own sign; in a column per version, what each one's patch does with each line; or side by side, the old version on the left and the new one on the right, the lines both have dim. Or how the change from the old version to the new one is drawn as a patch of its own: unified, side by side, or side by side and compact. And whether every line is drawn, or only what the patches changed.".to_string(),
         ];
+        if self.only_changed() {
+            out.push("Only what the patches changed is drawn: of each interdiff, the lines both versions have alike, the context lines and the index lines are left out, and of the change, the lines the change of base made; where lines are left out, a line says how many. Press 1 to draw every line again.".into());
+        }
         let need = self.cfg.view.split_width;
         if self.inter_narrow() {
             match self.inter {
@@ -962,7 +1366,8 @@ impl App {
     /// What the top bar says of the interdiffs on their screens, drawn
     /// otherwise than as interdiffs: in columns, or side by side, as the
     /// code view's side by side says it, too narrow so; the change, in the
-    /// view of the code it is drawn in, its files whole.
+    /// view of the code it is drawn in, its files whole; and drawn with
+    /// only what the patches changed.
     pub(super) fn inter_bar(&self) -> String {
         if !self.inter_screen() {
             return String::new();
@@ -977,7 +1382,8 @@ impl App {
             InterLayout::ChangeCompact => format!(" · change side-by-side, compact{narrow}"),
         };
         let whole = if self.change_drawn() && self.change_whole { " · whole files" } else { "" };
-        view + whole
+        let only = if self.only_changed() { " · only what changed" } else { "" };
+        view + whole + only
     }
 }
 
@@ -1241,19 +1647,19 @@ mod tests {
         let refs: Vec<&InterLine> = all.iter().collect();
         let two = Two { old: "v2", new: "v3", one_base: true };
         // As an interdiff: what the two signs say, then the lines as ever.
-        let stops = interdiff_stops(&refs, InterLayout::Interdiff, &two, 400, 0);
+        let stops = interdiff_stops(&refs, InterLayout::Interdiff, &two, false, 400, 0);
         assert_eq!(said(&stops[..1]), [interdiff_said(&two)]);
         assert!(interdiff_said(&two).contains("- for v2 alone, + for v3 alone"), "{}", interdiff_said(&two));
         assert_eq!(said(&stops[1..]), ["--- 1234abcd", "+++ 5678ef01", "@@ -5,4 +5,4 @@", " ---", "  a", "-+b", "++B"]);
         // In a column per version: what each column is, the lines naming
         // the versions left out.
-        let stops = interdiff_stops(&refs, InterLayout::Columns, &two, 400, 0);
+        let stops = interdiff_stops(&refs, InterLayout::Columns, &two, false, 400, 0);
         assert_eq!(said(&stops[..1]), [columns_said(&two)]);
         assert!(columns_said(&two).starts_with("The first column is v2, the second v3."), "{}", columns_said(&two));
         assert_eq!(said(&stops[1..3]), ["@@ -5,4 +5,4 @@", "==---"]);
         assert_eq!(stops[1].shows, [2], "each line by its place among them all");
         // Side by side: a heading of the two instead.
-        let stops = interdiff_stops(&refs, InterLayout::Sides, &two, 43, 0);
+        let stops = interdiff_stops(&refs, InterLayout::Sides, &two, false, 43, 0);
         assert_eq!(said(&stops[..1]), [beside(0, "v2", 20, "v3")]);
         // A stack diff: said once, over its first interdiff, the patches'
         // lines as ever.
@@ -1263,13 +1669,13 @@ mod tests {
         diff.push(patch(2));
         diff.extend(all[2..].iter().cloned().map(Diffed::Code));
         for (v, said_once) in [(InterLayout::Interdiff, interdiff_said(&two)), (InterLayout::Columns, columns_said(&two))] {
-            let stops = stack_stops(&diff, v, ("v2", "v3"), 400, &HashMap::new(), false);
+            let stops = stack_stops(&diff, v, ("v2", "v3"), 400, &HashMap::new(), (false, false));
             let lines = said(&stops);
             assert_eq!(lines.iter().filter(|l| l.trim() == said_once).count(), 1, "{lines:#?}");
             assert_eq!(lines[1].trim(), said_once, "{lines:#?}");
             assert_eq!((lines[0].trim(), stops[1].shows.len()), ("1 ~ Bug 1", 0));
         }
-        let stops = stack_stops(&diff, InterLayout::Sides, ("v2", "v3"), 400, &HashMap::new(), false);
+        let stops = stack_stops(&diff, InterLayout::Sides, ("v2", "v3"), 400, &HashMap::new(), (false, false));
         assert_eq!(said(&stops).iter().filter(|l| l.trim().starts_with("v2 ")).count(), 2, "a heading over each");
     }
 
@@ -1295,5 +1701,284 @@ mod tests {
         assert_eq!(locate(&change, 2, None), Some(At { line: 1, row: Some((0, 8)) }));
         let inter = seen(&[&[0], &[1], &[3]]);
         assert_eq!(locate(&inter, 1, Some((1, At { line: 1, row: Some((0, 8)) }))), Some(At { line: 1, row: Some((0, 8)) }));
+    }
+
+    /// The interdiff of two versions of a patch saying `message`, as `ops`
+    /// makes it, each version's diff of f.txt its index line, then its
+    /// hunks, each its header and its lines.
+    fn versions(message: &str, old: (&str, &[(&str, &[&str])]), new: (&str, &[(&str, &[&str])])) -> Vec<InterLine> {
+        let diff = |(index, hunks): (&str, &[(&str, &[&str])])| -> String {
+            let mut d = format!("diff --git a/f.txt b/f.txt\nindex {index} 100644\n--- a/f.txt\n+++ b/f.txt\n");
+            for (head, lines) in hunks {
+                d += &format!("{head}\n");
+                for l in *lines {
+                    d += &format!("{l}\n");
+                }
+            }
+            d
+        };
+        let patch = |d: String| crate::db::Patch::new("a".into(), Some("A <a@b>".into()), None, message.into(), d);
+        crate::ops::interdiff_lines(&patch(diff(old)), &patch(diff(new)))
+    }
+
+    /// A patch of f.txt's two versions, on two bases a commit apart: the new
+    /// base has two lines more over the patch's hunks, and its line 18
+    /// otherwise; each version makes line 5 `FIVE`, and line 20 its own.
+    fn rebased() -> Vec<InterLine> {
+        let five = [" line 2", " line 3", " line 4", "-line 5", "+FIVE", " line 6", " line 7", " line 8"];
+        let old = [" line 17", " line 18", " line 19", "-line 20", "+LINE 20", " line 21", " line 22", " line 23"];
+        let new = [" line 17", " line 18, moved", " line 19", "-line 20", "+LINE 20, again", " line 21", " line 22", " line 23"];
+        versions(
+            "Bug 1 - five and twenty",
+            ("1111111..2222222", &[("@@ -2,7 +2,7 @@ fn top()", &five), ("@@ -17,7 +17,7 @@ fn bottom()", &old)]),
+            ("3333333..4444444", &[("@@ -4,7 +4,7 @@ fn top()", &five), ("@@ -19,7 +19,7 @@ fn bottom()", &new)]),
+        )
+    }
+
+    /// The lines drawn of interdiff `all` in view `v` with only what the
+    /// patches changed, as `said` reads them, what the view says of how to
+    /// read it left out.
+    fn only(all: &[InterLine], v: InterLayout, one_base: bool) -> Vec<String> {
+        let refs: Vec<&InterLine> = all.iter().collect();
+        let two = Two { old: "v2", new: "v3", one_base };
+        said(&interdiff_stops(&refs, v, &two, true, 2000, 0)[1..])
+    }
+
+    #[test]
+    fn with_only_what_the_patches_changed_a_rebase_onto_a_new_commit_is_its_one_line_that_changed() {
+        let all = rebased();
+        // As an interdiff: 29 lines under the two naming the versions, of
+        // which an index line, two hunk headers whose numbers moved, and a
+        // context line, each version's; a line each version makes its own.
+        assert_eq!(all.len(), 31, "{:#?}", all.iter().map(|l| &l.text).collect::<Vec<_>>());
+        let lines = only(&all, InterLayout::Interdiff, false);
+        // The two lines naming the versions as ever; then the file's name,
+        // the header of the hunk that changed, as the new version has it, as
+        // both versions have it; and the line each makes its own; each place
+        // lines are left out, how many: 26 of the 29.
+        assert_eq!(
+            lines[2..],
+            [
+                "⋯ 3 lines are left out here.",
+                " diff --git a/f.txt b/f.txt",
+                "⋯ 12 lines are left out here.",
+                " @@ -19,7 +19,7 @@ fn bottom()",
+                "⋯ 5 lines are left out here.",
+                "-+LINE 20",
+                "++LINE 20, again",
+                "⋯ 3 lines are left out here.",
+            ]
+        );
+        assert!(lines[0].starts_with("--- ") && lines[1].starts_with("+++ "), "{lines:#?}");
+        // In a column per version, as each column says the line is.
+        assert_eq!(
+            only(&all, InterLayout::Columns, false),
+            [
+                "⋯ 3 lines are left out here.",
+                "==diff --git a/f.txt b/f.txt",
+                "⋯ 12 lines are left out here.",
+                "==@@ -19,7 +19,7 @@ fn bottom()",
+                "⋯ 5 lines are left out here.",
+                "+·LINE 20",
+                "·+LINE 20, again",
+                "⋯ 3 lines are left out here.",
+            ]
+        );
+        // Side by side, under the heading of the two, each line of two
+        // versions one row: the index lines one, and the context lines.
+        let row = |left: &str, right: &str| beside(0, left, 998, right);
+        assert_eq!(
+            only(&all, InterLayout::Sides, false),
+            [
+                row("v2", "v3"),
+                "⋯ 3 lines are left out here.".to_string(),
+                row("diff --git a/f.txt b/f.txt", "diff --git a/f.txt b/f.txt"),
+                "⋯ 11 lines are left out here.".to_string(),
+                row("@@ -19,7 +19,7 @@ fn bottom()", "@@ -19,7 +19,7 @@ fn bottom()"),
+                "⋯ 4 lines are left out here.".to_string(),
+                row("+LINE 20", "+LINE 20, again"),
+                "⋯ 3 lines are left out here.".to_string(),
+            ]
+        );
+        // The marks dim; the header kept as a line both have.
+        let refs: Vec<&InterLine> = all.iter().collect();
+        let two = Two { old: "v2", new: "v3", one_base: false };
+        let stops = interdiff_stops(&refs, InterLayout::Interdiff, &two, true, 2000, 0);
+        assert!(stops[3].lines[0].contains(&("⋯ 3 lines are left out here.".to_string(), color::dim())), "{:?}", stops[3]);
+        assert_eq!(stops[3].shows, Vec::<usize>::new(), "a mark shows no line");
+        // Each line kept shows the lines of the interdiff it stands for: the
+        // header both of the two, the new version's last.
+        let at = |text: &str| stops.iter().find(|s| said(std::slice::from_ref(*s)) == [text]).map(|s| s.shows.clone()).unwrap_or_else(|| panic!("{text}"));
+        assert_eq!(at(" @@ -19,7 +19,7 @@ fn bottom()"), [19, 20]);
+        assert_eq!((at("-+LINE 20"), at("++LINE 20, again")), (vec![26], vec![27]));
+    }
+
+    #[test]
+    fn with_only_what_the_patches_changed_a_hunk_s_header_is_kept_only_over_its_own_lines() {
+        // One base: the first hunk the same, the second's line its own in
+        // each version. The interdiff has the first hunk's header, within
+        // three lines of the index lines, and not the second's.
+        let one = [" one", "-two", "+TWO", " three"];
+        let (old, new) = ([" line 19", " line 20", "-line 21", "+LINE 21", " line 22"], [" line 19", " line 20", "-line 21", "+LINE 21, again", " line 22"]);
+        let all = versions(
+            "Bug 6 - twenty-one",
+            ("1111111..2222222", &[("@@ -1,3 +1,3 @@", &one), ("@@ -20,4 +20,4 @@", &old)]),
+            ("1111111..3333333", &[("@@ -1,3 +1,3 @@", &one), ("@@ -20,4 +20,4 @@", &new)]),
+        );
+        let texts: Vec<&str> = all.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts.contains(&" @@ -1,3 +1,3 @@") && !texts.contains(&" @@ -20,4 +20,4 @@"), "{texts:#?}");
+        // The file's name over its line, though lines between are left out
+        // of the interdiff; no hunk's header, as the first is not its own.
+        assert_eq!(
+            only(&all, InterLayout::Interdiff, true)[2..],
+            ["⋯ 3 lines are left out here.", " diff --git a/f.txt b/f.txt", "⋯ 9 lines are left out here.", "-+LINE 21", "++LINE 21, again", "⋯ 1 line is left out here."]
+        );
+    }
+
+    #[test]
+    fn with_only_what_the_patches_changed_a_change_of_the_patches_below_leaves_out_the_context_it_changed() {
+        // Patch 1, below, made line 10 `TEN`, then `TEN, louder`, and put a
+        // line in over it; patch 2 puts a line in under it, its own each time.
+        let old = [" line 8", " line 9", " TEN", "+eleven and a half", " line 11", " line 12", " line 13"];
+        let new = [" line 8", " line 9", " TEN, louder", "+ten and a half", " line 11", " line 12", " line 13"];
+        let all = versions("Bug 2 - and a half", ("aaaaaaa..bbbbbbb", &[("@@ -8,6 +8,7 @@", &old)]), ("ccccccc..ddddddd", &[("@@ -9,6 +9,7 @@", &new)]));
+        // The context line patch 1 changed left out with the rest: the two
+        // lines that differ of the run together, under the mark of the
+        // others.
+        assert_eq!(
+            only(&all, InterLayout::Interdiff, false)[2..],
+            [
+                "⋯ 3 lines are left out here.",
+                " diff --git a/f.txt b/f.txt",
+                "⋯ 4 lines are left out here.",
+                " @@ -9,6 +9,7 @@",
+                "⋯ 4 lines are left out here.",
+                "-+eleven and a half",
+                "++ten and a half",
+                "⋯ 3 lines are left out here.",
+            ]
+        );
+        assert_eq!(only(&all, InterLayout::Columns, false)[4..7], ["⋯ 4 lines are left out here.", "+·eleven and a half", "·+ten and a half"]);
+        let sides = only(&all, InterLayout::Sides, false);
+        assert_eq!(sides[5..7], ["⋯ 3 lines are left out here.".to_string(), beside(0, "+eleven and a half", 998, "+ten and a half")]);
+    }
+
+    #[test]
+    fn with_only_what_the_patches_changed_on_one_base_two_hunk_headers_that_differ_only_in_their_numbers_are_one() {
+        // The new version puts in a line more: its index line, and the length
+        // of its hunk, otherwise.
+        let old = [" line 5", " line 6", " line 7", "+new one", " line 8", " line 9", " line 10"];
+        let new = [" line 5", " line 6", " line 7", "+new one", "+new two", " line 8", " line 9", " line 10"];
+        let all = versions("Bug 3 - new", ("1111111..2222222", &[("@@ -5,6 +5,7 @@", &old)]), ("1111111..3333333", &[("@@ -5,6 +5,8 @@", &new)]));
+        assert_eq!(
+            only(&all, InterLayout::Interdiff, true)[2..],
+            [
+                "⋯ 3 lines are left out here.",
+                " diff --git a/f.txt b/f.txt",
+                "⋯ 4 lines are left out here.",
+                " @@ -5,6 +5,8 @@",
+                "⋯ 4 lines are left out here.",
+                "++new two",
+                "⋯ 3 lines are left out here.",
+            ]
+        );
+        // In a column per version, the header once, as a header both have,
+        // with the new version's numbers: not the line with both ranges.
+        let columns = only(&all, InterLayout::Columns, true);
+        assert!(columns.contains(&"==@@ -5,6 +5,8 @@".to_string()) && !columns.iter().any(|l| l.contains('→')), "{columns:#?}");
+        // As every line is drawn: the two headers, and the line with both
+        // ranges.
+        let refs: Vec<&InterLine> = all.iter().collect();
+        let two = Two { old: "v2", new: "v3", one_base: true };
+        let every = said(&interdiff_stops(&refs, InterLayout::Columns, &two, false, 2000, 0));
+        assert!(every.contains(&"==@@ -5,6 +5,7 → -5,6 +5,8 @@".to_string()), "{every:#?}");
+    }
+
+    #[test]
+    fn with_only_what_the_patches_changed_the_messages_compared_and_a_file_one_version_alone_touches_are_kept() {
+        let diff = "diff --git a/f.txt b/f.txt\nindex 1111111..2222222 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n";
+        let head = "diff --git a/g.txt b/g.txt\nnew file mode 100644\nindex 0000000..5555555\n--- /dev/null\n+++ b/g.txt\n";
+        let g = format!("{head}@@ -0,0 +1,2 @@\n+gee\n+whiz\n\\ No newline at end of file\n");
+        let old = crate::db::Patch::new("a".into(), Some("A <a@b>".into()), None, "Bug 4 - one\n\nBecause.".into(), diff.into());
+        let new = crate::db::Patch::new("a".into(), Some("A <a@b>".into()), None, "Bug 4 - one, reworded\n\nBecause.".into(), format!("{diff}{g}"));
+        let all = crate::ops::interdiff_lines(&old, &new);
+        let lines = only(&all, InterLayout::Interdiff, true);
+        // The title as each version has it; the file the new version alone
+        // makes, each line of it but what git derives, git's `\` line too,
+        // the index line counted with what is left out over it.
+        let at = lines.iter().position(|l| l.starts_with("-Subject: ")).unwrap_or_else(|| panic!("{lines:#?}"));
+        assert_eq!(lines[at..at + 2], ["-Subject: Bug 4 - one", "+Subject: Bug 4 - one, reworded"]);
+        let at = lines.iter().position(|l| l.starts_with("+diff --git")).unwrap_or_else(|| panic!("{lines:#?}"));
+        assert!(lines[at - 1].starts_with("⋯ ") && lines[at - 1].ends_with(" lines are left out here."), "{lines:#?}");
+        assert_eq!(
+            lines[at..],
+            ["+diff --git a/g.txt b/g.txt", "+new file mode 100644", "+--- /dev/null", "++++ b/g.txt", "+@@ -0,0 +1,2 @@", "++gee", "++whiz", "+\\ No newline at end of file"]
+        );
+        // Of f.txt, which both versions change alike, nothing.
+        assert!(!lines.iter().any(|l| l.contains("f.txt") || l.contains("-b") || l.contains("+B")), "{lines:#?}");
+    }
+
+    #[test]
+    fn with_only_what_the_patches_changed_an_interdiff_with_nothing_left_says_so() {
+        // The same patch on a new base: its index line and its hunk's numbers
+        // otherwise, nothing it does.
+        let five = [" line 2", " line 3", " line 4", "-line 5", "+FIVE", " line 6", " line 7", " line 8"];
+        let all = versions("Bug 5 - five", ("1111111..2222222", &[("@@ -2,7 +2,7 @@", &five)]), ("3333333..4444444", &[("@@ -4,7 +4,7 @@", &five)]));
+        let refs: Vec<&InterLine> = all.iter().collect();
+        let two = Two { old: "v2", new: "v3", one_base: false };
+        for v in [InterLayout::Interdiff, InterLayout::Columns, InterLayout::Sides] {
+            let stops = interdiff_stops(&refs, v, &two, true, 2000, 0);
+            assert_eq!(said(&stops), [NOTHING_LEFT], "{v:?}");
+            assert_eq!(NOTHING_LEFT, "The two versions differ only in context, line numbers or index lines, which are left out.");
+        }
+        // In a stack diff, under its patch's line, whatever the view, what
+        // is left out said once over the first interdiff.
+        let patch = |at: usize| Diffed::Patch { at, title: format!("Bug {at}"), added: false, changed: true, reworded: false, rebased: true, was: None };
+        let mut diff = vec![patch(1)];
+        diff.extend(all[2..].iter().cloned().map(Diffed::Code));
+        diff.push(patch(2));
+        diff.extend(rebased()[2..].iter().cloned().map(Diffed::Code));
+        for v in [InterLayout::Interdiff, InterLayout::Columns, InterLayout::Sides] {
+            let lines = said(&stack_stops(&diff, v, ("@4", "@12"), 2000, &HashMap::new(), (false, true)));
+            let trimmed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+            assert_eq!(trimmed[0], "1 ~ Bug 1", "{v:?}");
+            assert!(trimmed[1].ends_with(LEFT_OUT) && trimmed[2] == NOTHING_LEFT && trimmed[3] == "2 ~ Bug 2", "{v:?}: {trimmed:#?}");
+            assert_eq!(trimmed.iter().filter(|l| l.ends_with(LEFT_OUT)).count(), 1, "{v:?}");
+            assert!(trimmed.contains(&"⋯ 3 lines are left out here."), "{v:?}: {trimmed:#?}");
+        }
+    }
+
+    #[test]
+    fn with_only_what_the_patches_changed_each_view_says_what_is_left_out_once_at_the_top() {
+        let all = rebased();
+        let refs: Vec<&InterLine> = all.iter().collect();
+        let two = Two { old: "v2", new: "v3", one_base: false };
+        // As an interdiff and in a column per version, after how to read
+        // them; side by side, on its own, over the heading.
+        for (v, first) in [(InterLayout::Interdiff, interdiff_said(&two)), (InterLayout::Columns, columns_said(&two)), (InterLayout::Sides, String::new())] {
+            let stops = interdiff_stops(&refs, v, &two, true, 2000, 0);
+            let said_first = said(&stops[..1]).join(" ");
+            assert_eq!(said_first, format!("{first} {LEFT_OUT}").trim(), "{v:?}");
+            // With every line, nothing of it.
+            let every = interdiff_stops(&refs, v, &two, false, 2000, 0);
+            assert!(!said(&every).join(" ").contains(LEFT_OUT), "{v:?}");
+        }
+        assert_eq!(
+            LEFT_OUT,
+            "Only what the patches changed is drawn. The lines both versions have alike, the context lines of their diffs and their index lines are left out, and where lines are left out, a line says how many. Two hunk headers that differ only in their numbers are drawn once, as the new version has them."
+        );
+    }
+
+    #[test]
+    fn of_the_lines_drawn_a_line_left_out_is_found_on_the_nearest_kept() {
+        // Lines 0 and 9 kept, those between left out, under a mark.
+        let seen = |all: &[&[usize]]| -> Vec<Seen> { all.iter().map(|s| Seen { shows: s.to_vec(), rows: vec![] }).collect() };
+        let at = seen(&[&[0], &[], &[9]]);
+        let line = |line: usize| At { line, row: None };
+        // The nearest; of two as near, the one past it.
+        assert_eq!([1, 4, 5, 8].map(|l| find(&at, line(l))), [0, 0, 2, 2]);
+        assert_eq!(find(&seen(&[&[0], &[], &[8]]), line(4)), 2);
+        // Past the last, the last kept; none kept, the last drawn.
+        assert_eq!((find(&at, line(20)), find(&seen(&[&[], &[]]), line(3))), (2, 1));
     }
 }

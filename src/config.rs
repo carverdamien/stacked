@@ -117,6 +117,38 @@ impl InterLayout {
 /// What `view.interdiff` is told it is not, when it names no view.
 const NOT_AN_INTERDIFF_VIEW: &str = "interdiff, columns, side-by-side, change-unified, change-side-by-side or change-compact";
 
+/// Which lines the interdiffs are drawn with at the start, on every screen
+/// that shows one, in every view of them: every line, as the two versions'
+/// diffs have them; or only what the patches changed, the lines both
+/// versions have alike, the context lines of their diffs, their index
+/// lines and the numbers of a hunk's header that a change of base moved
+/// left out, and of the change from the old version to the new one, the
+/// lines the change of base made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InterLines {
+    #[default]
+    Every,
+    Changed,
+}
+
+impl InterLines {
+    pub fn name(self) -> &'static str {
+        match self {
+            InterLines::Every => "every",
+            InterLines::Changed => "changed",
+        }
+    }
+
+    /// The lines `s` names.
+    fn parse(s: &str) -> Option<InterLines> {
+        match s {
+            "every" => Some(InterLines::Every),
+            "changed" => Some(InterLines::Changed),
+            _ => None,
+        }
+    }
+}
+
 /// How the patches pane is shown: not at all; listing the files of the
 /// patch picked under it, a line each, to jump to; or expanded, each patch
 /// its title whole.
@@ -396,6 +428,9 @@ pub struct View {
     /// or as the change from one version to the other, a patch of its own,
     /// unified, side by side, or compact.
     pub interdiff: InterLayout,
+    /// The lines the interdiffs are drawn with at the start, in every view
+    /// of them: every line, or only what the patches changed.
+    pub interdiff_lines: InterLines,
     /// Reading rather than commenting, at the start.
     pub reading: bool,
     /// Whether changed lines that are empty or white space alone need
@@ -422,6 +457,7 @@ impl Default for View {
         View {
             layout: Layout::Unified,
             interdiff: InterLayout::Interdiff,
+            interdiff_lines: InterLines::Every,
             reading: false,
             whitespace_needs_review: false,
             patches: PatchesPane::Expanded,
@@ -598,6 +634,7 @@ struct WrittenReviews {
 struct WrittenView {
     layout: Option<String>,
     interdiff: Option<String>,
+    interdiff_lines: Option<String>,
     reading: Option<bool>,
     whitespace_needs_review: Option<bool>,
     patches: Option<WrittenPane>,
@@ -760,6 +797,12 @@ impl Config {
             match InterLayout::parse(&i) {
                 Some(i) => c.view.interdiff = i,
                 None => wrong.push(format!("view.interdiff: {i:?} is not {NOT_AN_INTERDIFF_VIEW}")),
+            }
+        }
+        if let Some(l) = v.interdiff_lines {
+            match InterLines::parse(&l) {
+                Some(l) => c.view.interdiff_lines = l,
+                None => wrong.push(format!("view.interdiff_lines: {l:?} is not every or changed")),
             }
         }
         c.view.reading = v.reading.unwrap_or(c.view.reading);
@@ -1055,6 +1098,13 @@ impl Config {
              # (1 picks one there).\n",
         );
         out.push_str(&format!("interdiff = {}\n", q(v.interdiff.name())));
+        out.push_str(
+            "# The lines every interdiff is drawn with at the start, in every view: \"every\" line, or\n\
+             # only what the patches \"changed\": no line both versions have alike, no context line,\n\
+             # no index line, a hunk's header once though a change of base moved its numbers, and\n\
+             # in the change, no line the change of base made (1 picks one there).\n",
+        );
+        out.push_str(&format!("interdiff_lines = {}\n", q(v.interdiff_lines.name())));
         out.push_str("# Reading rather than commenting, at the start (2 switches).\n");
         out.push_str(&format!("reading = {}\n", v.reading));
         out.push_str(
@@ -1205,6 +1255,7 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("reviews.bugzilla", Kind::Text),
     ("view.layout", Kind::Text),
     ("view.interdiff", Kind::Text),
+    ("view.interdiff_lines", Kind::Text),
     ("view.reading", Kind::Flag),
     ("view.whitespace_needs_review", Kind::Flag),
     ("view.patches", Kind::Patches),
@@ -1330,6 +1381,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "reviews.bugzilla" => vec![c.reviews.bugzilla.clone()],
         "view.layout" => vec![c.view.layout.name().into()],
         "view.interdiff" => vec![c.view.interdiff.name().into()],
+        "view.interdiff_lines" => vec![c.view.interdiff_lines.name().into()],
         "view.reading" => vec![c.view.reading.to_string()],
         "view.whitespace_needs_review" => vec![c.view.whitespace_needs_review.to_string()],
         "view.patches" => vec![c.view.patches.name().into()],
@@ -2171,6 +2223,28 @@ mod tests {
         let e = set(&path, "view.interdiff", &["compact".to_string()]).unwrap_err();
         assert!(e.contains("view.interdiff: \"compact\" is not interdiff, columns, side-by-side, change-unified, change-side-by-side or change-compact") && e.contains("nothing written"), "{e}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\ninterdiff = \"side-by-side\"\n");
+    }
+
+    #[test]
+    fn the_interdiffs_start_with_every_line_unless_set_to_only_what_the_patches_changed() {
+        // Every line, as stacked always drew them, unless set.
+        assert_eq!(Config::default().view.interdiff_lines, InterLines::Every);
+        assert!(Config::default().render().contains("\ninterdiff_lines = \"every\"\n"), "{}", Config::default().render());
+        let (c, wrong) = Config::parse("[view]\ninterdiff_lines = \"changed\"\n").unwrap();
+        assert!(wrong.is_empty() && c.view.interdiff_lines == InterLines::Changed, "{wrong:?}");
+        assert_eq!(value_of(&c, "view.interdiff_lines"), Ok(vec!["changed".to_string()]));
+        let (c, wrong) = Config::parse("[view]\ninterdiff_lines = \"some\"\n").unwrap();
+        assert_eq!(c.view.interdiff_lines, InterLines::Every, "what is wrong keeps its default");
+        assert_eq!(wrong, ["view.interdiff_lines: \"some\" is not every or changed"]);
+        // Written and read as any setting is; lines there are not, refused.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        set(&path, "view.interdiff_lines", &["changed".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\ninterdiff_lines = \"changed\"\n");
+        assert_eq!(Config::load(&path).0.view.interdiff_lines, InterLines::Changed);
+        let e = set(&path, "view.interdiff_lines", &["all".to_string()]).unwrap_err();
+        assert!(e.contains("view.interdiff_lines: \"all\" is not every or changed") && e.contains("nothing written"), "{e}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\ninterdiff_lines = \"changed\"\n");
     }
 
     #[test]

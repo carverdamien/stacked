@@ -506,7 +506,37 @@ on it; in the review, its items there, the cursor from the interdiff's
 line of the patch as the work leaves it; with moz-phab, Phabricator saying
 no commit for the latest diff, the change's items grayed and the menu
 saying why, then, a fetch reading the commit, the change from the diff
-on it to the patch as it is, on one base, nothing dim), what changed in a
+on it to the patch as it is, on one base, nothing dim), the lines the
+views of the interdiffs draw (the menu's third section under its
+heading, every line marked as the view is, `?` on its other item saying
+what it draws, the bar in the menu as on any item; only what the patches
+changed picked, the view as it was, the status line saying what is
+drawn; as an interdiff, what it is said after how to read it, the titles
+and the messages as each version says them, the file's name, the line
+each version says its own, `⋯ 5 lines are left out here.` and three times
+`⋯ 1 line is left out here.`, no context line, index line or hunk the two
+have alike; the top bar `· only what changed`, the bottom bar `1: view`,
+`?` saying what is left out and that 1 draws every line again; the menu
+marking it, the view still picked; in a column per version the same,
+said after what each column is; side by side said over the heading, a
+pair of lines one row; on History…'s stack diff too; every line again,
+the status line saying so, the context lines back, the top bar and `?`
+as ever; the settings' `view.interdiff_lines` starting them so, the menu
+marking it, and with `view.interdiff` both read from a file; across a
+change of the patches below, patch 2's interdiff in a column per version
+with every line its context lines and index lines, and with only what the
+patches changed the line it no longer takes out, `-·line 28`, its own
+`·-line 35` and `·+THIRTY-FIVE` under the new version's header, never one
+with both ranges, the context patch 1 changed left out, and patch 1's,
+on one base, its new lines and c.txt; the change, unified, what is left
+out said rather than what dim is, patch 1's on one base whole, patch 2's
+lines the change of base made in place of line 25 left out, `⋯ 2 lines
+are left out here.` dim in their place, its own as ever, side by side
+and compact the same, and every line again dim; the cursor in History…'s
+stack diff on a line kept there still, and back, on a context line on the
+nearest line kept, and back on its own, through another view too, and a
+text's top line kept, else the nearest; in the review, the cursor on its
+line, what is left out said, ↓ from line kept to line kept), what changed in a
 line almost the same as the
 one removed painted as words (and lines quite other, not), in the code, in
 a version's interdiff and in the history's stack diff, none of the room after
@@ -1115,7 +1145,9 @@ without it, as `/favicon.ico` is, the rows as they change, a key and a click,
 1 on the versions of a patch opening the menu of the views of the
 interdiffs under its heading, a click picking side by side, the version
 drawn so, and the change from a version to the next, picked so, drawn as
-a patch of its own once its files are read, HEAD's row pressed, dragged
+a patch of its own once its files are read, and only what the patches
+changed, under the heading of the lines, picked so, the lines left out
+said where they were, HEAD's row pressed, dragged
 onto patch 1 and let go there, `stacked web` run in the checkout, HEAD
 put down under patch 1,
 the wheel's ↑ after a key, sent with the cell under the mouse, on a patch,
@@ -1192,6 +1224,8 @@ click, 1 on the versions of a patch opening the menu of the views of the
 interdiffs under its heading, a click picking side by side, the version
 drawn so, and the change from a version to the next, under its own
 heading, picked so, drawn as a patch of its own once its files are read,
+and only what the patches changed, under the heading of the lines, picked
+so, the lines left out said where they were,
 the screen sent saying HEAD's row is where a press is held for a drag,
 HEAD's row pressed, dragged onto patch 1 and let go there, HEAD put down
 under patch 1,
@@ -1712,8 +1746,10 @@ keys of before said to be gone where a file names them, refused to
 `stacked config` and taken out by its `--unset`, the view the interdiffs
 start in, as interdiffs unless set, in columns or side by side, or the
 change unified, side by side or compact, another refused and nothing
-written; those in `change.rs`, the change from one version to another
-on one base, each file from the one to the other, nothing dim, the same
+written, and their lines, every line unless set, or only what the patches
+changed, other lines refused and nothing written; those in `change.rs`,
+the change from one version to another on one base, each file from the
+one to the other, nothing dim, the same
 files no change; across a change of base, the line it made in place of
 another dim on both sides, each patch's line put in its own; a line the
 change of base touched where a patch takes it out, or the other keeps it,
@@ -1942,4 +1978,29 @@ over the first interdiff of a stack diff alone, side by side a heading
 over each; and the line a line drawn shows found again in another view,
 the old version's of two, or the one a switch kept, a line of the change
 by its own line, else by the line of the interdiff nearest it, kept
-across a switch where no line drawn shows it.
+across a switch where no line drawn shows it, and a line no line drawn
+shows found on the nearest, of two as near the one after. They show, on
+interdiffs `ops` makes of two patches, what only what the patches
+changed draws: across a rebase onto a new commit, of 29 lines the file's
+name, the hunk's header as the new version has it, as one both have, and
+the line each version makes its own, under `⋯ 3`, `⋯ 12`, `⋯ 5` and over
+`⋯ 3 lines are left out here.`, in a column per version as each column
+says the lines, side by side the index lines one row, `⋯ 11` and `⋯ 4`,
+the lines saying so dim and showing no line, the header showing both it
+stands for; a hunk's header kept only over its own lines, though the
+interdiff leaves out the lines between; across a change of the patches
+below, the context line they changed left out, the two lines of the run
+that differ together under one line saying how many; on one base, two
+hunk headers whose numbers differ one, the new version's, not the line
+with both ranges, which every line draws; the messages compared and a
+file one version alone makes kept, each line of it but its index line,
+counted over it, git's `\` line too; an interdiff with nothing left saying
+so in each view, and in a stack diff under its patch, what is left out
+said once over the first; and what each view says of it. Those in
+`tui/change.rs` show, with only what the patches changed, the lines the
+change of base made left out of the change, unified, side by side and
+compact, a hunk and a file with nothing else too, its blank line once,
+each place saying how many, dim, a stop that shows no line; a change all
+of whose lines the change of base made saying so; on one base nothing
+left out; and what the views say on other bases, what is left out rather
+than what is dim.

@@ -61,7 +61,7 @@ pub use finding::Find;
 pub mod head_why;
 pub use head_why::HeadWhy;
 mod interdiffs;
-pub use crate::config::InterLayout;
+pub use crate::config::{InterLayout, InterLines};
 pub mod places;
 pub mod reviewing;
 pub use reviewing::Reviewing;
@@ -1548,6 +1548,9 @@ pub enum Action {
     /// Every interdiff drawn as `0` from now on, picked in the menu of 1 on
     /// a screen of interdiffs.
     InterView(InterLayout),
+    /// Every interdiff drawn with lines `0` from now on, in every view of
+    /// them, picked there too: every line, or only what the patches changed.
+    InterLines(InterLines),
     Undo,
     Redo,
     EditList,
@@ -1881,6 +1884,12 @@ fn about(action: &Action) -> String {
         Action::InterView(InterLayout::ChangeCompact) => {
             "draw, as long as the editor is open, the change from the old version to the new one as a patch of its own, side by side and compact: the old version's lines on the left and the new one's on the right, each side's one after another, with no gap where the other has more, the lines the change of base made dim".into()
         }
+        Action::InterLines(InterLines::Every) => {
+            "draw every line, as long as the editor is open, in every view of the interdiffs: of each interdiff, the lines both versions have alike, the context lines of their diffs, their index lines and the hunk headers of both versions too; of the change, the lines the change of base made, dim".into()
+        }
+        Action::InterLines(InterLines::Changed) => {
+            "draw only what the patches changed, as long as the editor is open, in every view of the interdiffs: of each interdiff, the lines both versions have alike, the context lines of their diffs and their index lines left out, and two hunk headers that differ only in their numbers drawn once, as the new version has them; of the change, the lines the change of base made left out, and a hunk or a file with nothing else; where lines are left out, a line says how many".into()
+        }
         Action::Undo => "go back to the stack before this edit".into(),
         Action::Redo => "make that edit again".into(),
         Action::EditList => "edit the stack as `git rebase -i` does, in $EDITOR".into(),
@@ -2206,14 +2215,15 @@ pub struct TextView {
 /// differs from Phabricator, or what an edit changed; what each line drawn
 /// shows with the others of its stop of the cursor (`interdiffs::Seen`),
 /// none for a heading; the width and view it was drawn in, each file of the
-/// change whole or not, and how many changes were read then; and, drawn
-/// again, the top line it was drawn from and the place of what it shows
-/// that top line was on (`interdiffs::locate`).
+/// change whole or not, its lines every one or only what the patches
+/// changed, and how many changes were read then; and, drawn again, the top
+/// line it was drawn from and the place of what it shows that top line was
+/// on (`interdiffs::locate`).
 #[derive(Debug, Clone)]
 struct InterText {
     of: Inter,
     at: Vec<interdiffs::Seen>,
-    built: (usize, InterLayout, bool, u64),
+    built: (usize, InterLayout, bool, InterLines, u64),
     kept: Option<(usize, interdiffs::At)>,
 }
 
@@ -2223,8 +2233,9 @@ type InterDrawn = (String, Vec<Parts>, Vec<interdiffs::Seen>);
 
 /// What History…'s stack diff was drawn from: the stacks diffed, the
 /// width, the view of its interdiffs, each file of the change whole or not,
-/// and how many changes were read then (`change::Reader::ended`).
-type HistBuilt = (Option<usize>, Option<usize>, usize, InterLayout, bool, u64);
+/// its lines every one or only what the patches changed, and how many
+/// changes were read then (`change::Reader::ended`).
+type HistBuilt = (Option<usize>, Option<usize>, usize, InterLayout, bool, InterLines, u64);
 
 /// What a text screen of interdiffs shows: what differs between the patch
 /// the middle shows and its revision on Phabricator; or what the edit that
@@ -2317,8 +2328,11 @@ pub struct App {
     /// with 1 there, and kept while the editor is open, the settings' at
     /// the start. And how wide the pane the screen draws its interdiffs in
     /// was last drawn: one too narrow for two sides draws them as
-    /// interdiffs meanwhile, and the change unified.
+    /// interdiffs meanwhile, and the change unified. And the lines they are
+    /// drawn with, in every view: every line, or only what the patches
+    /// changed, picked there too, the settings' at the start.
     pub inter: InterLayout,
+    pub inter_lines: InterLines,
     inter_w: std::cell::Cell<usize>,
     /// The change from one version of a patch to another, as a patch of its
     /// own, drawn with each file whole rather than as its hunks (`3`, on a
@@ -2937,6 +2951,7 @@ impl App {
             notes_top: None,
             layout: Layout::Unified,
             inter: cfg.view.interdiff,
+            inter_lines: cfg.view.interdiff_lines,
             inter_w: std::cell::Cell::new(0),
             change_whole: false,
             changes: crate::change::Reader::default(),
@@ -8627,6 +8642,7 @@ impl App {
                 let _ = self.open_inter(Inter::Changed(rev));
             }
             Action::InterView(v) => self.pick_inter(v),
+            Action::InterLines(l) => self.pick_lines(l),
             Action::History => self.open_list(Screen::History),
             Action::Versions => {
                 if let Some(id) = self.patch_id() {
@@ -10279,7 +10295,7 @@ impl App {
                 let diff = crate::history::what_changed(&self.db, rev);
                 let parent = s.parent.and_then(|p| self.db.node(p).ok());
                 let changes = self.stack_changes(&diff, (parent, Some(s)), [&before, &after], v);
-                for stop in interdiffs::stack_stops(&diff, v, (&before, &after), w.saturating_sub(1), &changes, self.change_whole) {
+                for stop in interdiffs::stack_stops(&diff, v, (&before, &after), w.saturating_sub(1), &changes, (self.change_whole, self.only_changed())) {
                     let seen = interdiffs::Seen { shows: stop.shows.iter().map(|k| k + 1).collect(), rows: stop.rows.clone() };
                     at.extend(std::iter::repeat_n(seen, stop.lines.len()));
                     lines.extend(stop.lines);
@@ -10291,8 +10307,8 @@ impl App {
 
     /// What a text screen of interdiffs drawn `w` wide is drawn from
     /// (`InterText::built`).
-    fn text_built(&self, w: usize) -> (usize, InterLayout, bool, u64) {
-        (w, self.inter_in(w), self.change_whole, self.changes.ended())
+    fn text_built(&self, w: usize) -> (usize, InterLayout, bool, InterLines, u64) {
+        (w, self.inter_in(w), self.change_whole, self.inter_lines, self.changes.ended())
     }
 
     /// The text screen of interdiffs drawn again `w` wide, when it is one
@@ -12605,7 +12621,7 @@ impl App {
                 let two = interdiffs::Two { old: &old, new: &new, one_base: ops::one_base(&lines, &before.diff, &p.diff) };
                 let v = self.inter_in(w);
                 let change = v.change().then(|| self.versions_change(before, p, &refs, [&old, &new]));
-                interdiffs::view_stops(&refs, v, &two, change.as_ref(), self.change_whole, w, 0).into_iter().flat_map(|s| s.lines).collect()
+                interdiffs::view_stops(&refs, v, &two, change.as_ref(), (self.change_whole, self.only_changed()), w, 0).into_iter().flat_map(|s| s.lines).collect()
             }
             None => inter_parts(&refs),
         };
@@ -12701,7 +12717,7 @@ impl App {
         };
         self.scrolls_in(area, Wheeled::HistDiff);
         self.inter_w.set(w);
-        let want = (e.from, e.to, w, self.inter_in(w), self.change_whole, self.changes.ended());
+        let want = (e.from, e.to, w, self.inter_in(w), self.change_whole, self.inter_lines, self.changes.ended());
         if self.hist_built != Some(want) {
             // The same record drawn otherwise (in another view, at another
             // width, a change read meanwhile): the cursor kept on its line.
@@ -12723,7 +12739,7 @@ impl App {
             let node = |rev: Option<usize>| rev.and_then(|r| self.db.node(r).ok());
             let changes = self.stack_changes(&diff, (node(e.from), node(e.to)), [&before, &after], want.3);
             let (mut rows, mut of) = (Vec::new(), Vec::new());
-            for stop in interdiffs::stack_stops(&diff, want.3, (&before, &after), w.saturating_sub(1), &changes, self.change_whole) {
+            for stop in interdiffs::stack_stops(&diff, want.3, (&before, &after), w.saturating_sub(1), &changes, (self.change_whole, self.only_changed())) {
                 let seen = interdiffs::Seen::from(&stop);
                 for parts in stop.lines.iter().flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 6)) {
                     rows.push(parts);

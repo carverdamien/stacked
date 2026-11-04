@@ -235,6 +235,13 @@ settings:
   version to the new one as a patch of its own, `"change-unified"`,
   `"change-side-by-side"` or `"change-compact"` (what `1` picks there
   holds while the editor is open, and is not written);
+  `interdiff_lines`, the lines every interdiff starts with, in every view
+  of them (The editor, above): `"every"` line, as stacked always drew
+  them, unless set; or only what the patches `"changed"`, the lines both
+  versions have alike, the context lines of their diffs, their index lines
+  and the old one of two hunk headers that differ only in their numbers
+  left out, and of the change, the lines the change of base made (what `1`
+  picks there holds while the editor is open, and is not written);
   `reading`, to start reading; `whitespace_needs_review`, whether changed
   lines that are empty or white space alone, the message's empty lines and
   moz-phab's trailer need review in the reading mode (`false`: they need no

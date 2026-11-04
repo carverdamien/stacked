@@ -171,8 +171,9 @@ Phabricator said after it: `modify  3 Bug 3 - …, from D13's latest diff`,
 operation, the right pane says where its patch comes from, and why, and,
 for a patch changed in the stack since, what it had since then that the
 pulled version lacks: the interdiff from that version to the patch as the
-stack has it, in the view of the interdiffs that `1` picks there (The
-editor, above), the two named `version 3` and `this version`. A patch whose conflicts are marked does not go in:
+stack has it, in the view of the interdiffs that `1` picks there, every
+line or only what the patches changed (The editor, above), the two named
+`version 3` and `this version`. A patch whose conflicts are marked does not go in:
 closing with its operation standing is refused, the review's `Close
 review` and `Accept all remaining and Close` grayed, saying why (`patch 3
 (Bug 13 - eleven) holds the conflicts the pull marked where it does not
@@ -393,8 +394,9 @@ middle shows says it by name, whether the revision's latest diff and its
 title and summary are the patch's, its parent the one a submit sets, how
 many of its comments are not pulled yet, and how long ago that was
 fetched. Nothing of it is read by itself. Space there shows what differs
-on a screen of its own, in the view of the interdiffs that `1` picks there
-(as an interdiff, in a column per version, or side by side, or the change
+on a screen of its own, in the view of the interdiffs that `1` picks there,
+every line or only what the patches changed (as an interdiff, in a column
+per version, or side by side, or the change
 from the latest diff, on the commit it is on, to the patch as it is, as a
 patch of its own, a fetch, a pull and a submit storing that commit as
 Phabricator names it), and its menu

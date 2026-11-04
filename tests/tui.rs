@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 
 use stacked::db::{Db, Note, stack_change};
 use stacked::thread::{Role, append_turn};
-use stacked::tui::{App, AskDialog, Button, Effect, Focus, InterLayout, Layout, Mode, Pane, PatchesPane, Screen, Show, Spot, Turned};
+use stacked::tui::{App, AskDialog, Button, Effect, Focus, InterLayout, InterLines, Layout, Mode, Pane, PatchesPane, Screen, Show, Spot, Turned};
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -12323,8 +12323,14 @@ fn down_to_hist(app: &mut App, wanted: impl Fn(&str) -> bool) {
 
 /// What each view of the interdiffs is in the menu of 1, the one drawn
 /// `marked`, under the heading of what they draw: the interdiff, then the
-/// change from the old version to the new one.
+/// change from the old version to the new one; then the lines each draws,
+/// every line marked.
 fn inter_views(marked: InterLayout) -> Vec<String> {
+    inter_views_with(marked, InterLines::Every)
+}
+
+/// As `inter_views`, the lines the views draw `lines`.
+fn inter_views_with(marked: InterLayout, lines: InterLines) -> Vec<String> {
     let mut out = Vec::new();
     for (v, l) in [
         (None, "the interdiff: the two versions' diffs, compared"),
@@ -12340,6 +12346,13 @@ fn inter_views(marked: InterLayout) -> Vec<String> {
             None => l.to_string(),
             Some(v) => format!("{}{l}", if v == marked { "● " } else { "  " }),
         });
+    }
+    out.push("the lines: in each view, every line or only what the patches changed".into());
+    for (l, item) in [
+        (InterLines::Every, "Every line: the context, the index lines and what the change of base made too"),
+        (InterLines::Changed, "Only what the patches changed: no context, no index line, nothing the change of base made"),
+    ] {
+        out.push(format!("{}{item}", if l == lines { "● " } else { "  " }));
     }
     out
 }
@@ -12361,7 +12374,7 @@ fn one_on_every_screen_of_interdiffs_opens_the_menu_of_their_views_the_one_drawn
     assert_eq!((menu_title(&app), labels(&app)), ("the view of the interdiffs".to_string(), inter_views(InterLayout::Interdiff)));
     assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 1), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Up]);
-    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 7), "{:?}", app.mode);
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 10), "{:?}", app.mode);
     // Esc leaves things as they are.
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!((app.mode.clone(), app.inter, app.status.as_str()), (Mode::Normal, InterLayout::Interdiff, ""));
@@ -25451,20 +25464,20 @@ fn the_second_section_of_the_menu_is_on_every_screen_of_interdiffs() {
     choose(&mut app, "Versions of this patch…");
     keys(&mut app, &[KeyCode::Char('1')]);
     assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), inter_views(InterLayout::Interdiff));
-    assert_eq!(enabled(&app)[5..], [true, true, true]);
+    assert_eq!(enabled(&app)[5..8], [true, true, true]);
     keys(&mut app, &[KeyCode::Esc, KeyCode::Esc, KeyCode::Home]);
     choose(&mut app, "History…");
     for k in [None, Some(KeyCode::Right)] {
         keys(&mut app, &k.into_iter().chain([KeyCode::Char('1')]).collect::<Vec<_>>());
         assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), inter_views(InterLayout::Interdiff));
-        assert_eq!(enabled(&app)[5..], [true, true, true]);
+        assert_eq!(enabled(&app)[5..8], [true, true, true]);
         keys(&mut app, &[KeyCode::Esc]);
     }
     keys(&mut app, &[KeyCode::Left, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Tree);
     choose(&mut app, "What this edit changed…");
     keys(&mut app, &[KeyCode::Char('1')]);
-    assert_eq!(enabled(&app)[5..], [true, true, true]);
+    assert_eq!(enabled(&app)[5..8], [true, true, true]);
     // Picked there: the change of what the edit changed, the stacks before
     // and after it named.
     keys(&mut app, &[KeyCode::Esc]);
@@ -25492,7 +25505,7 @@ fn in_the_review_of_what_landed_its_stack_diff_is_drawn_as_the_change_of_each_pa
     down_to_review(&mut app, "modify  1 Bug 1 - shout two");
     keys(&mut app, &[KeyCode::Char('1')]);
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    assert!(m.items[5..].iter().all(|i| i.enabled), "{:?}", m.items);
+    assert!(m.items[5..8].iter().all(|i| i.enabled), "{:?}", m.items);
     keys(&mut app, &[KeyCode::Esc]);
     // Into the stack diff, as an interdiff; then the change, the cursor on
     // the nearest line of it, the stack's version on its base, the work's
@@ -25527,7 +25540,7 @@ fn what_differs_from_phabricator_is_drawn_as_the_change_from_the_latest_diff_on_
     // items cannot be picked, the menu saying why; the interdiff's can.
     keys(&mut app, &[KeyCode::Char('1')]);
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    assert_eq!(m.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [false, true, true, true, false, false, false, false]);
+    assert_eq!(m.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [false, true, true, true, false, false, false, false, false, true, true]);
     assert_eq!(
         m.note.as_deref(),
         Some("The change cannot be drawn here: the commit D12 on Phabricator is on is not known: Phabricator said none, or it was fetched before stacked read that.")
@@ -25550,4 +25563,348 @@ fn what_differs_from_phabricator_is_drawn_as_the_change_from_the_latest_diff_on_
     assert_eq!(lines[at + 1..at + 4], ["@@ -1 +1 @@", "-bea", "+bee"]);
     assert!(!all.contains("drawn dim"), "{all}");
     stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// The lines of the versions of a patch's pane, 120 columns wide and 50
+/// rows high: each from column 31, its spaces at the end gone.
+fn version_lines(app: &mut App) -> Vec<String> {
+    draw_sized(app, 120, 50).lines().map(|l| l.chars().skip(31).collect::<String>().trim_end().to_string()).collect()
+}
+
+/// Of `lines`, those under the line naming the new version (`+++ `), as an
+/// interdiff draws them; all of them where there is none.
+fn under_names(lines: &[String]) -> Vec<String> {
+    match lines.iter().position(|l| l.starts_with("+++ ")) {
+        Some(at) => lines[at + 1..].to_vec(),
+        None => lines.to_vec(),
+    }
+}
+
+/// The rows of History…'s stack diff, each as it reads, the spaces around
+/// it gone, and whether all of what it says is dim.
+fn hist_texts(app: &App) -> Vec<(String, bool)> {
+    app.hist_rows
+        .iter()
+        .map(|parts| {
+            let text: String = parts.iter().map(|(t, _)| t.as_str()).collect();
+            let dim = parts.iter().filter(|(t, _)| !t.trim().is_empty()).all(|(_, st)| st.add_modifier.contains(ratatui::style::Modifier::DIM));
+            (text.trim().to_string(), dim)
+        })
+        .collect()
+}
+
+#[test]
+fn one_picks_every_line_or_only_what_the_patches_changed_in_every_view_and_on_every_screen_of_interdiffs() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    // The versions of a patch: 1, the menu's third section under its
+    // heading, the lines each view draws, every line marked as the view is;
+    // ? on its other item saying what it draws.
+    choose(&mut app, "Versions of this patch…");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(labels(&app), inter_views(InterLayout::Interdiff));
+    let at = labels(&app).iter().position(|l| l.trim_start_matches(['●', ' ']).starts_with("Only what the patches changed")).unwrap();
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == at) {
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    assert!(app.hint().starts_with("↑↓ choose · enter: do it · "), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(
+        lines[0].starts_with("Press Enter to draw only what the patches changed, as long as the editor is open, in every view of the interdiffs: of each interdiff, the lines both versions have alike, the context lines of their diffs and their index lines left out"),
+        "{lines:#?}"
+    );
+    keys(&mut app, &[KeyCode::Char('?'), KeyCode::Esc]);
+    // Picked: the view as it was, the status line saying what is drawn.
+    inter_view(&mut app, "Only what the patches changed");
+    assert_eq!((app.mode.clone(), app.inter, app.inter_lines), (Mode::Normal, InterLayout::Interdiff, InterLines::Changed));
+    assert_eq!(
+        app.status,
+        "only what the patches changed is drawn: of each interdiff, no line both versions have alike, no context line and no index line, and of the change, no line the change of base made; a line says how many are left out at each place"
+    );
+    // As an interdiff: what says how to read it, then what is left out;
+    // the titles and the messages, as each version says them; the file's
+    // name; the line each version says its own; and each place lines are
+    // left out, how many. No context line, no index line, no hunk the two
+    // versions have alike.
+    let lines = version_lines(&mut app);
+    let said: Vec<String> = lines.iter().skip(2).take_while(|l| !l.starts_with("--- ")).cloned().collect();
+    assert!(
+        said.join(" ").ends_with("+ for a line its patch adds, - for one it removes, a space for one it leaves as it is. Only what the patches changed is drawn. The lines both versions have alike, the context lines of their diffs and their index lines are left out, and where lines are left out, a line says how many. Two hunk headers that differ only in their numbers are drawn once, as the new version has them."),
+        "{said:#?}"
+    );
+    let code = under_names(&lines);
+    for line in [
+        "-Subject: Bug 1 - shout two",
+        "+Subject: Bug 1 - shout two, reworded",
+        "-Because.",
+        " diff --git a/a.txt b/a.txt",
+        "⋯ 5 lines are left out here.",
+        "-+line 39 was",
+        "++line 39 said",
+    ] {
+        assert!(code.contains(&line.to_string()), "{line:?} in {code:#?}");
+    }
+    assert!(code.iter().any(|l| l.starts_with("+Because ") && l.ends_with("says so.")), "{code:#?}");
+    assert_eq!(code.iter().filter(|l| *l == "⋯ 1 line is left out here.").count(), 3, "{code:#?}");
+    assert!(!code.iter().any(|l| l.contains("index ") || l.contains("line 38") || l.contains("TWO") || l.contains("@@")), "{code:#?}");
+    // The top bar says so; the bottom bar names 1, as ever; ? says what is
+    // left out, and how to draw every line again.
+    let screen = draw(&mut app);
+    assert!(screen.lines().next().unwrap().contains(" · only what changed"), "{screen}");
+    assert!(app.hint().contains("1: view · "), "{}", app.hint());
+    assert!(app.help().iter().any(|l| l.ends_with("Or how the change from the old version to the new one is drawn as a patch of its own: unified, side by side, or side by side and compact. And whether every line is drawn, or only what the patches changed.")), "{:?}", app.help());
+    assert!(
+        app.help().iter().any(|l| l == "Only what the patches changed is drawn: of each interdiff, the lines both versions have alike, the context lines and the index lines are left out, and of the change, the lines the change of base made; where lines are left out, a line says how many. Press 1 to draw every line again."),
+        "{:?}",
+        app.help()
+    );
+    // The menu again: those lines marked, the view picked as ever.
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(labels(&app), inter_views_with(InterLayout::Interdiff, InterLines::Changed));
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 1), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    // In a column per version: what says what each column is, then what is
+    // left out; each line as its columns say it.
+    inter_view(&mut app, "A column per version");
+    assert_eq!(app.inter_lines, InterLines::Changed, "the lines hold through the views");
+    let lines = version_lines(&mut app);
+    let said: Vec<String> = lines.iter().skip(2).take_while(|l| !l.starts_with("⋯ ")).cloned().collect();
+    assert!(said.join(" ").starts_with("The first column is v2, the second v3.") && said.join(" ").contains(" Only what the patches changed is drawn. "), "{said:#?}");
+    for line in [
+        "=·Subject: Bug 1 - shout two",
+        "·=Subject: Bug 1 - shout two, reworded",
+        "==diff --git a/a.txt b/a.txt",
+        "⋯ 5 lines are left out here.",
+        "+·line 39 was",
+        "·+line 39 said",
+    ] {
+        assert!(lines.contains(&line.to_string()), "{line:?} in {lines:#?}");
+    }
+    assert!(!lines.iter().any(|l| l.contains("line 38") || l.contains("=·index ")), "{lines:#?}");
+    // Side by side: what is left out said over the heading; the two
+    // versions' lines of a pair one row.
+    inter_view(&mut app, "Side by side: the old version on");
+    let lines = version_lines(&mut app);
+    assert!(lines[2].starts_with("Only what the patches changed is drawn. "), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.starts_with("+line 39 was") && l.ends_with("│+line 39 said")), "{lines:#?}");
+    assert!(lines.contains(&"⋯ 5 lines are left out here.".to_string()) && !lines.iter().any(|l| l.contains("line 38")), "{lines:#?}");
+    assert!(draw(&mut app).lines().next().unwrap().contains(" · interdiffs side-by-side · only what changed"));
+    // On every screen: History…'s stack diff, side by side, only what the
+    // patches changed there too.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    let rows: Vec<String> = hist_texts(&app).into_iter().map(|(t, _)| t).collect();
+    assert!(rows.iter().any(|r| r.starts_with("+line 39 was") && r.ends_with("│+line 39 said")) && rows.contains(&"⋯ 5 lines are left out here.".to_string()), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("line 38")), "{rows:#?}");
+    // Every line again: the status line says so, the context lines back,
+    // the top bar as ever.
+    inter_view(&mut app, "Every line");
+    assert_eq!(
+        app.status,
+        "every line is drawn: of each interdiff, the lines both versions have alike, the context lines and the index lines too, and of the change, the lines the change of base made, dim"
+    );
+    assert_eq!((app.inter_lines, app.inter), (InterLines::Every, InterLayout::Sides));
+    let rows: Vec<String> = hist_texts(&app).into_iter().map(|(t, _)| t).collect();
+    assert!(!rows.iter().any(|r| r.contains("lines are left out")) && rows.iter().any(|r| r.starts_with("line 38")), "{rows:#?}");
+    assert!(!draw(&mut app).lines().next().unwrap().contains("only what changed"));
+    assert!(!app.help().iter().any(|l| l.starts_with("Only what the patches changed is drawn")), "{:?}", app.help());
+}
+
+#[test]
+fn the_settings_start_the_interdiffs_with_only_what_the_patches_changed() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open_set(&db, |c| c.view.interdiff_lines = InterLines::Changed);
+    assert_eq!(app.inter_lines, InterLines::Changed);
+    // The versions: only what the patches changed at once, the menu of 1
+    // marking it.
+    choose(&mut app, "Versions of this patch…");
+    let lines = under_names(&version_lines(&mut app));
+    assert!(lines.contains(&"⋯ 5 lines are left out here.".to_string()) && !lines.iter().any(|l| l.contains("line 38")), "{lines:#?}");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), inter_views_with(InterLayout::Interdiff, InterLines::Changed));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Set in the file as any setting is.
+    let (cfg, wrong) = stacked::config::Config::parse("[view]\ninterdiff_lines = \"changed\"\ninterdiff = \"columns\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    assert_eq!((app.inter_lines, app.inter), (InterLines::Changed, InterLayout::Columns));
+    draw(&mut app);
+    choose(&mut app, "Versions of this patch…");
+    assert!(version_lines(&mut app).contains(&"·+line 39 said".to_string()));
+}
+
+#[test]
+fn with_only_what_the_patches_changed_the_interdiff_of_a_patch_whose_patches_below_changed_is_what_it_changed_itself() {
+    let (_tmp, db, _src) = rebased_versions();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    inter_view(&mut app, "A column per version");
+    let every: Vec<String> = hist_texts(&app).into_iter().map(|(t, _)| t).collect();
+    let second = |rows: &[String]| rows.iter().position(|t| t.starts_with("2 ~ Bug 2 - thirty")).unwrap_or_else(|| panic!("{rows:#?}"));
+    // With every line, patch 2's interdiff on two bases: the context lines
+    // patch 1 changed, and the index lines.
+    let all = &every[second(&every)..];
+    assert!(all.contains(&"· TWENTY-EIGHT".to_string()) && all.iter().any(|t| t.starts_with("=·index ")), "{all:#?}");
+    // Only what the patches changed: the line patch 2 no longer takes out,
+    // and the line it makes its own; the new version's header over them,
+    // never one with both ranges.
+    inter_view(&mut app, "Only what the patches changed");
+    let rows: Vec<String> = hist_texts(&app).into_iter().map(|(t, _)| t).collect();
+    let mine = &rows[second(&rows)..];
+    for line in ["==diff --git a/a.txt b/a.txt", "-·line 28", "·-line 35", "·+THIRTY-FIVE"] {
+        assert!(mine.contains(&line.to_string()), "{line:?} in {mine:#?}");
+    }
+    assert!(mine.iter().any(|t| t.contains("@@ -27,")) && !mine.iter().any(|t| t.contains('→')), "{mine:#?}");
+    assert!(!mine.iter().any(|t| t.contains("TWENTY-EIGHT") || t.contains("line 25") || t.contains("index ")), "{mine:#?}");
+    assert!(mine.iter().filter(|t| t.ends_with(" left out here.")).count() >= 2, "{mine:#?}");
+    // Patch 1's, on one base: the hunk the new version adds, each line it
+    // changes, and c.txt, which it alone touches.
+    let first = &rows[..second(&rows)];
+    for line in ["·+TWENTY-FIVE", "·+TWENTY-EIGHT", "·=diff --git a/c.txt b/c.txt", "·+SEA"] {
+        assert!(first.contains(&line.to_string()), "{line:?} in {first:#?}");
+    }
+}
+
+#[test]
+fn with_only_what_the_patches_changed_the_change_leaves_out_the_lines_the_change_of_base_made_each_place_saying_how_many() {
+    let (_tmp, db, _src) = rebased_versions();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    inter_view(&mut app, "Only what the patches changed");
+    inter_view(&mut app, "Unified: - for a line only");
+    app.wait_files();
+    draw(&mut app);
+    let rows = hist_texts(&app);
+    let texts: Vec<&str> = rows.iter().map(|(t, _)| t.as_str()).collect();
+    // What it is, said once: on other bases, what is left out, rather than
+    // what is dim.
+    let said = texts.join(" ");
+    assert!(said.contains("The two are on other bases. Only what the patches changed is drawn: the lines the change of base made, not either patch, are left out,"), "{texts:#?}");
+    assert!(!said.contains("a line drawn dim"), "{texts:#?}");
+    let second = texts.iter().position(|t| t.starts_with("2 ~ Bug 2 - thirty")).unwrap_or_else(|| panic!("{texts:#?}"));
+    // Patch 1's change, on one base: every line of it, nothing left out.
+    let first = &rows[..second];
+    for line in ["-line 25", "+TWENTY-FIVE", "-line 28", "+TWENTY-EIGHT", "-sea", "+SEA"] {
+        assert!(first.iter().any(|(t, dim)| t == line && !dim), "{line}: {first:#?}");
+    }
+    assert!(!first.iter().any(|(t, _)| t.ends_with(" left out here.")), "{first:#?}");
+    // Patch 2's: the lines the change of base made in place of line 25 left
+    // out, a line saying how many where they were, dim; its own as ever.
+    let last = &rows[second..];
+    let is = |rows: &[(String, bool)], line: &str| rows.iter().find(|(t, _)| t == line).map(|(_, dim)| *dim);
+    assert_eq!((is(last, "-line 25"), is(last, "+TWENTY-FIVE")), (None, None), "{last:#?}");
+    assert_eq!(is(last, "⋯ 2 lines are left out here."), Some(true), "{last:#?}");
+    assert_eq!((is(last, "+TWENTY-EIGHT"), is(last, "-line 35"), is(last, "+THIRTY-FIVE")), (Some(false), Some(false), Some(false)), "{last:#?}");
+    // Side by side, and compact: the same, the line saying how many across
+    // both sides; side by side, the lines of a run paired as ever.
+    for view in ["Side by side: the old version's code", "Side by side, compact"] {
+        inter_view(&mut app, view);
+        let rows: Vec<String> = hist_texts(&app).into_iter().map(|(t, _)| t).collect();
+        let at = rows.iter().position(|t| t.starts_with("2 ~ Bug 2 - thirty")).unwrap_or_else(|| panic!("{rows:#?}"));
+        let last = &rows[at..];
+        assert!(last.contains(&"⋯ 2 lines are left out here.".to_string()) && !last.iter().any(|t| t.contains("TWENTY-FIVE")), "{view}: {last:#?}");
+        assert!(last.iter().any(|t| t.starts_with("-line 35")) && last.iter().any(|t| t.ends_with("│+THIRTY-FIVE")), "{view}: {last:#?}");
+    }
+    inter_view(&mut app, "Side by side: the old version's code");
+    let rows: Vec<String> = hist_texts(&app).into_iter().map(|(t, _)| t).collect();
+    assert!(rows.iter().any(|t| t.starts_with("-line 35") && t.ends_with("│+THIRTY-FIVE")), "{rows:#?}");
+    // Every line again: the lines the change of base made, dim, as ever.
+    inter_view(&mut app, "Unified: - for a line only");
+    inter_view(&mut app, "Every line");
+    let rows = hist_texts(&app);
+    let at = rows.iter().position(|(t, _)| t.starts_with("2 ~ Bug 2 - thirty")).unwrap_or_else(|| panic!("{rows:#?}"));
+    assert_eq!((is(&rows[at..], "-line 25"), is(&rows[at..], "+TWENTY-FIVE")), (Some(true), Some(true)));
+}
+
+#[test]
+fn switching_to_only_what_the_patches_changed_keeps_the_cursor_on_its_line_else_on_the_nearest_line_kept() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    // History…'s stack diff: on a line kept, there still, and back.
+    down_to_hist(&mut app, |r| r == "++line 39 said");
+    inter_view(&mut app, "Only what the patches changed");
+    assert_eq!(hist_row(&app), "++line 39 said");
+    inter_view(&mut app, "Every line");
+    assert_eq!(hist_row(&app), "++line 39 said");
+    // On a context line, left out: on the nearest line kept, the one after
+    // it; back on its own line.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_hist(&mut app, |r| r == "line 38");
+    inter_view(&mut app, "Only what the patches changed");
+    assert_eq!(hist_row(&app), "-+line 39 was");
+    inter_view(&mut app, "Every line");
+    assert_eq!(hist_row(&app), "line 38");
+    // On the line both versions remove, the same; through another view.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(hist_row(&app), "-line 39");
+    inter_view(&mut app, "Only what the patches changed");
+    assert_eq!(hist_row(&app), "-+line 39 was");
+    inter_view(&mut app, "A column per version");
+    assert_eq!(hist_row(&app), "+·line 39 was");
+    inter_view(&mut app, "Every line");
+    assert_eq!(hist_row(&app), "--line 39");
+    inter_view(&mut app, "Interdiff");
+    assert_eq!(hist_row(&app), "-line 39");
+    // What an edit changed, on a screen of its own: its top line kept, else
+    // the nearest kept.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Enter]);
+    choose(&mut app, "What this edit changed…");
+    let top = |app: &App| app.text.as_ref().map(|t| t.texts()[t.scroll].trim().to_string()).unwrap_or_default();
+    for _ in 0..40 {
+        if top(&app) == "-line 39" {
+            break;
+        }
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    assert_eq!(top(&app), "-line 39");
+    inter_view(&mut app, "Only what the patches changed");
+    assert_eq!(top(&app), "-+line 39 was");
+    inter_view(&mut app, "Every line");
+    assert_eq!(top(&app), "-line 39");
+}
+
+#[test]
+fn in_the_review_of_what_landed_only_what_the_patches_changed_keeps_the_cursor_on_its_line() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed_to(&db, "run-agent", &n, None);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1 - shout two");
+    // Into the stack diff, on its first line that changed; only what the
+    // patches changed, the cursor on it still, what is left out said once.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    inter_view(&mut app, "Only what the patches changed");
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    let pane = review_pane(&mut app);
+    assert!(pane.join(" ").contains("Only what the patches changed is drawn."), "{pane:#?}");
+    assert!(pane.iter().any(|l| l.ends_with(" left out here.")) && !pane.iter().any(|l| l == "-index" || l.starts_with("-index ")), "{pane:#?}");
+    // ↓ from line to line kept, the lines left out passed by.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("++Two"));
+    inter_view(&mut app, "Every line");
+    assert_eq!(work_row(&mut app).as_deref(), Some("++Two"));
 }

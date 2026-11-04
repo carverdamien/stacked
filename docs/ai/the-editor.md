@@ -700,7 +700,13 @@ the help then names those:
   views (below): `Unified: - for a line only the old version's code has, +
   for one only the new one's has`, `Side by side: the old version's code on
   the left, the new one's on the right`, and `Side by side, compact: each
-  side's lines one after another, no gap where the other has more`.
+  side's lines one after another, no gap where the other has more`. Its
+  third is the lines each of those views draws, `the lines: in each view,
+  every line or only what the patches changed`: `Every line: the context,
+  the index lines and what the change of base made too`, as stacked always
+  drew them, and `Only what the patches changed: no context, no index
+  line, nothing the change of base made` (below), the ones drawn marked
+  `●` as the view is, Enter or a click picking them as a view.
   The view the interdiffs are drawn in is marked `●`; Enter or a click
   picks one, and Esc leaves the view as it is; `?` on an item says what it
   draws. The view picked holds for every interdiff, on every screen, as
@@ -924,6 +930,66 @@ the help then names those:
   once the screen is drawn, the cursor goes on to the line it was found
   for. Enter on a line of the change in the review's stack diff goes to the
   line of its patch the line of the interdiff nearest it goes to.
+
+  The lines, the third section: every line, or only what the patches
+  changed, in every view of both sections, on every screen of interdiffs,
+  as long as the editor is open; the settings' `view.interdiff_lines` is
+  what they start with (Settings, below), every line unless set. Picked,
+  the status line says what is drawn (`only what the patches changed is
+  drawn: of each interdiff, no line both versions have alike, no context
+  line and no index line, and of the change, no line the change of base
+  made; a line says how many are left out at each place`; `every line is
+  drawn: …`), the top bar says `· only what changed`, `?` says what is left
+  out and that `1` draws every line again, and `?` on each item what it
+  draws; the bottom bar names `1: view`, as for the views. In the
+  interdiff's views, as an interdiff, in a column per version and side by
+  side, what is drawn is the lines where the two versions' own `+` and `-`
+  lines differ; the lines of a file's header that differ, as where a file
+  comes or goes, but its `index` line and its similarity, which git derives
+  (the screen of what differs from Phabricator leaves them out of the diffs
+  it compares); the messages compared, each line of the mail that differs;
+  and over those, the hunk's header and the line naming the file (its
+  `diff --git`) each is under in its version's diff, where the interdiff
+  has them, though it leaves out the lines between, never a header of
+  other lines. Left out: the lines both versions have alike, the
+  interdiff's own context; every context line of the two diffs, a line
+  whose own sign is a space, whichever version has it; the index lines;
+  the interdiff's own hunks' headers; and a header with nothing kept under
+  it. Two hunk headers of the two versions that differ only in their
+  numbers, as when a change of base moved them, are drawn once, as a header
+  both have, with the new version's numbers, each version's lines before
+  its own over it (in a column per version `==@@ -5,6 +5,8 @@`, not the
+  line with both ranges); two that differ in what follows their numbers
+  too are each kept over its own lines. Each place lines are left out, a
+  line says how many, dim (`⋯ 12 lines are left out here.`, `⋯ 1 line is
+  left out here.`), counting the lines the view draws there: side by side,
+  a row of the two versions' lines is one; of a run of lines each version
+  has alone, those it keeps are together, under the line counting its
+  others with those left out before it, as `-+old` over `++new`. The code
+  says what is left out once, after how to read the view, side by side on
+  its own over the heading (`Only what the patches changed is drawn. The
+  lines both versions have alike, the context lines of their diffs and
+  their index lines are left out, and where lines are left out, a line
+  says how many. Two hunk headers that differ only in their numbers are
+  drawn once, as the new version has them.`); an interdiff with none of
+  its lines kept says so in their place (`The two versions differ only in
+  context, line numbers or index lines, which are left out.`). In the
+  change's views, unified, side by side and compact, the lines the change
+  of base made, those drawn dim, are left out, and so are a hunk, and a
+  file, with nothing else; each place says how many as the interdiff's
+  do, counting the lines of the change, a run's left out over the lines it
+  keeps; the code says so rather than what dim is (`The two are on other
+  bases. Only what the patches changed is drawn: the lines the change of
+  base made, not either patch, are left out, …, and so is a hunk or a file
+  with nothing else; where lines are left out, a line says how many.`); a
+  change left with nothing says so (`The two versions differ only in what
+  the change of base made, which is left out.`); on one base, nothing is
+  left out there. The screen keeps its place from every line to only what
+  the patches changed and back, as from one view to another: the line its
+  cursor is on, else, a line left out, the line kept nearest it, of two as
+  near the one after; back, the line it was on. The lines left out are not
+  drawn at all, so the arrows and the wheel go over what is. In the
+  browser (`stacked web`) and in StackED, the same.
 - Unified split in two shows the patch picked twice, side by side, each
   half a unified view of its own with a line between them, to read one
   place of the patch while going through another: a function's definition

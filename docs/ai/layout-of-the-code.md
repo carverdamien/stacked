@@ -18,8 +18,9 @@
 - `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code); the
   interdiff of two versions of a patch, each of its lines told apart by
   what part of its version's mail it is, and what changed in a line of a
-  hunk as its own version's diff pairs it, for the views of the
-  interdiffs to draw; where each of its lines is in each version's code
+  hunk as its own version's diff pairs it, and where it is in its
+  version's diff, under which file's and hunk's headers, for the views of
+  the interdiffs to draw; where each of its lines is in each version's code
   (`code_places`); whether two diffs of a patch are on two bases
   (`other_bases`); a patch made again on other patches under it, its
   conflicts marked where they disagree, as a pull makes one (`rebased`).
@@ -177,10 +178,14 @@
   draws a patch; `tui/interdiffs.rs`, the views of an interdiff that `1`
   picks on every screen that shows one, as an interdiff, in a column per
   version or side by side, what says how each reads, the menu of them in
-  sections, and where a screen's place is found again in another view;
+  sections, what of an interdiff they draw with only what the patches
+  changed, and the line saying how many are left out, and where a screen's
+  place is found again in another view;
   `tui/change.rs`, the change from one version to another as a patch of
-  its own in the views of the code there, what each screen knows of each
-  version's base, and the line of the interdiff nearest each line of it;
+  its own in the views of the code there, the lines the change of base
+  made left out with only what the patches changed, what each screen
+  knows of each version's base, and the line of the interdiff nearest each
+  line of it;
   `tui/head_why.rs`, the view of why Move HEAD does not
   move HEAD, and what you can do in your checkout so that it can;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
