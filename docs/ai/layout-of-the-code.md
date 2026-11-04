@@ -136,8 +136,9 @@
   program the editor's command runs, as StackED and `stacked web` name it
   while it runs, and the keys they map, each in its context.
 - `home.rs`: where stacked keeps what is yours, ~/.stacked, as the binary
-  works it out as it starts (nowhere, in the tests' own processes), and
-  the files of before moved into it.
+  works it out as it starts (nowhere, in the tests' own processes), the
+  files of before moved into it, and where `stacked web` keeps the token
+  of its address, beside the state.
 - `state.rs`: the databases opened last, by StackED and by stacked's
   editor, StackED's windows to open again, and the searches of the middle,
   kept between runs under a lock.
@@ -217,9 +218,12 @@
   lines, and its buttons, as the dialog of the views of the interdiffs
   draws them too.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
-  its server and the port it listens on, its wasm and its page, the
+  its server and the port it listens on, the token it keeps with a port
+  fixed and the tab it waits for, its wasm and its page, the
   notices it sends the page, which shows them as the system's banners,
-  what the page says over its screen while `$EDITOR` runs,
+  what the page says over its screen while `$EDITOR` runs, or once stacked
+  is gone, the page asking again until it answers, and `stacked web` quit
+  once its last page is closed,
   StackED's icon on its tab (`icon.rs`, below); the build script compiles the wasm,
   or, where Rust lacks the wasm target, stops the build and says what to
   run.

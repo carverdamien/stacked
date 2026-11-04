@@ -4,8 +4,11 @@
 //! `config` reads and writes; and the state, `state.json` (or the file
 //! `$STACKED_APP_STATE` names), which `state` keeps: the databases opened
 //! last, by StackED and by stacked's editor, StackED's windows open, and
-//! the searches made in the editor's middle. A checkout's own settings stay
-//! in the checkout, in `.stacked/local.toml`.
+//! the searches made in the editor's middle. Beside the state, a file of
+//! its own that only you may read, `web-token.json`: the address `stacked
+//! web` listened on with a port the settings fix, kept for its next launch
+//! (`Home::web_token`). A checkout's own settings stay in the checkout, in
+//! `.stacked/local.toml`.
 //!
 //! The binary alone works out where the folder is, from its environment,
 //! once as it starts (`resolve`), and sets it here for the whole process
@@ -72,6 +75,19 @@ impl Home {
     /// none of its own, and moves nothing.
     pub fn pass_on(&self, c: &mut Command) {
         c.env("STACKED_HOME", &self.dir).env("STACKED_CONFIG", &self.config).env("STACKED_APP_STATE", &self.state);
+    }
+
+    /// Where `stacked web` keeps the address it listened on, with a port the
+    /// settings fix, for its next launch: `web-token.json` beside the state,
+    /// wherever the state is, a file of the state's own, which only you may
+    /// read, since it holds the token a page of that address needs
+    /// (`web::listen`); nowhere where the state is nowhere, which keeps
+    /// nothing.
+    pub fn web_token(&self) -> PathBuf {
+        if self.state == Path::new(NOWHERE) {
+            return self.state.clone();
+        }
+        self.state.with_file_name("web-token.json")
     }
 }
 
@@ -408,6 +424,24 @@ mod tests {
             assert!(said.is_empty(), "{said:?}");
             assert_eq!(listing(&home), before);
         }
+    }
+
+    #[test]
+    fn the_address_stacked_web_keeps_is_beside_the_state_and_nowhere_where_the_state_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        // In the folder, beside the state; nothing made for it.
+        let dir = tmp.path().join("folder");
+        let (h, _) = resolve(env(&[("STACKED_HOME", &dir)]), true);
+        assert_eq!(h.web_token(), dir.join("web-token.json"));
+        assert!(listing(tmp.path()).is_empty());
+        // Beside a state named elsewhere, whatever its name.
+        let state = tmp.path().join("elsewhere/kept.json");
+        let (h, _) = resolve(env(&[("STACKED_HOME", &dir), ("STACKED_APP_STATE", &state)]), true);
+        assert_eq!(h.web_token(), tmp.path().join("elsewhere/web-token.json"));
+        // The state nowhere: nowhere too, the folder there or not.
+        assert_eq!(Home::none().web_token(), Path::new(NOWHERE));
+        let (h, _) = resolve(env(&[("STACKED_HOME", &dir), ("STACKED_APP_STATE", Path::new(NOWHERE))]), true);
+        assert_eq!(h.web_token(), Path::new(NOWHERE));
     }
 
     #[test]

@@ -1053,8 +1053,13 @@ fn try_served(home: &Path, dir: &Path, db: &Path, args: &[&str]) -> Result<Serve
 /// if it ends first, all it said, a line each.
 fn started(mut cmd: Command) -> Result<Served, Vec<String>> {
     let mut child = cmd.spawn().unwrap();
-    let mut said = BufReader::new(child.stderr.take().unwrap());
-    let child = Running(child);
+    let said = BufReader::new(child.stderr.take().unwrap());
+    said_where(Running(child), said)
+}
+
+/// `stacked web`, run as `child`, as it says where it is, on stderr,
+/// `said`; or, if it ends first, all it said, a line each.
+fn said_where(child: Running, mut said: BufReader<ChildStderr>) -> Result<Served, Vec<String>> {
     let mut before = Vec::new();
     loop {
         let mut line = String::new();
@@ -1113,6 +1118,32 @@ impl Served {
         let mut rest = String::new();
         self.said.read_to_string(&mut rest).unwrap();
         assert!(status.success(), "{status}: {rest}");
+    }
+
+    /// Whether it still runs.
+    fn running(&mut self) -> bool {
+        self.child.0.try_wait().unwrap().is_none()
+    }
+
+    /// A page of its gone, as its tab is closed or loaded again: its
+    /// events, `page`, closed, and it says it goes, as the page does once it
+    /// is hidden for good.
+    fn close(&self, page: BufReader<TcpStream>) {
+        drop(page);
+        ask(self.port, &format!("127.0.0.1:{}", self.port), &format!("POST /input?t={}", self.token), "g\n");
+    }
+
+    /// Left by itself as Quit leaves it, its last tab closed at `closed`:
+    /// waited for until it has exited, no sooner than 2 seconds after, and
+    /// said why.
+    fn quits(mut self, closed: Instant) {
+        let status = exit_of(&mut self.child);
+        let after = closed.elapsed();
+        let mut rest = String::new();
+        self.said.read_to_string(&mut rest).unwrap();
+        assert!(status.success(), "{status}: {rest}");
+        assert!(after >= Duration::from_secs(2), "quit {after:?} after");
+        assert!(rest.lines().any(|l| l == CLOSED), "{rest}");
     }
 }
 
@@ -1175,6 +1206,10 @@ fn stacked_web_listens_on_any_free_port_each_time_unless_the_settings_say_otherw
         }
         let first = served(&home, tmp.path(), &db, &[]);
         let port = first.port;
+        // Its address kept for no launch after, as its events say.
+        let mut page = events(port, &first.token, 100);
+        let seen = until(&mut page, "which stacked", |l| l.starts_with("data: v "));
+        assert_eq!(version(seen.last().unwrap()).2, "0");
         first.quit();
         // Held here, unless another took it meanwhile: either way, not free.
         let _held = TcpListener::bind(("127.0.0.1", port)).ok();
@@ -1183,6 +1218,8 @@ fn stacked_web_listens_on_any_free_port_each_time_unless_the_settings_say_otherw
         assert_eq!(next.page(&next.token), "HTTP/1.1 200 OK");
         next.quit();
         assert_eq!(std::fs::read_to_string(&settings).ok().as_deref(), written);
+        // A token new each time, kept nowhere.
+        assert!(!web_token(&home).exists(), "a token kept");
     }
 }
 
@@ -1210,15 +1247,19 @@ fn fixed_random_takes_any_free_port_the_first_time_writes_it_in_the_settings_and
         first.quit();
         unless_taken(try_served(&home, tmp.path(), &other, &[]), port).map(|next| ((port, token), next))
     });
-    // Its token a new one, the first one's refused there.
-    assert!(next.before.is_empty(), "{:?}", next.before);
+    // The first one's token kept for the port: the tab opened with it given
+    // 2 seconds to come back, and, none here, a new one, the browser opened
+    // on nothing as `--no-open` says, the first one's refused there.
+    assert_eq!(next.before, [waiting(port, false), renewed()]);
     assert_eq!(next.port, port);
     assert_ne!(next.token, token);
     assert_eq!(next.page(&token), "HTTP/1.1 403 Forbidden");
     assert_eq!(next.page(&next.token), "HTTP/1.1 200 OK");
+    assert_eq!(kept_in(&web_token(&home)), Some((port, next.token.clone())));
     next.quit();
-    // Kept in the settings alone: nothing written in the databases, nor in
-    // the state, which holds the databases opened, as ever.
+    // The port kept in the settings alone, its token beside the state:
+    // nothing written in the databases, nor in the state, which holds the
+    // databases opened, as ever.
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), kept(port));
     assert!(databases() == before, "a database was written");
     let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(home.join("state.json")).unwrap()).unwrap();
@@ -1238,7 +1279,20 @@ fn a_port_set_is_listened_on_and_one_given_with_port_goes_over_the_settings() {
         unless_taken(try_served(&home, tmp.path(), &db, &[]), free).map(|s| (free, s))
     });
     assert_eq!((set.port, set.page(&set.token).as_str()), (free, "HTTP/1.1 200 OK"));
+    let token = set.token.clone();
     set.quit();
+    // Its token kept for that port.
+    let tokens = web_token(&home);
+    assert_eq!(kept_in(&tokens), Some((free, token.clone())));
+    let kept_then = std::fs::read(&tokens).unwrap();
+    // --port giving that very port: a token of its own, the one kept
+    // neither used nor waited for; unless another process took the port
+    // meanwhile.
+    if let Some(s) = unless_taken(try_served(&home, tmp.path(), &db, &["--port", &free.to_string()]), free) {
+        assert!(s.before.is_empty(), "{:?}", s.before);
+        assert_ne!(s.token, token);
+        s.quit();
+    }
     // Over a port set that is in use, --port: the port it gives, any free
     // one for 0.
     let settings = settings_of(&home, &format!("[web]\nport = {used}\n"));
@@ -1255,6 +1309,8 @@ fn a_port_set_is_listened_on_and_one_given_with_port_goes_over_the_settings() {
     settings_of(&home, "[web]\nport = \"fixed-random\"\n");
     served(&home, tmp.path(), &db, &["--port", "0"]).quit();
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[web]\nport = \"fixed-random\"\n");
+    // Nor any token: the one kept as it was.
+    assert!(std::fs::read(&tokens).unwrap() == kept_then, "--port wrote the token kept");
 }
 
 #[test]
@@ -1294,6 +1350,358 @@ fn a_port_fixed_random_cannot_keep_in_the_settings_is_said_and_listened_on_all_t
     assert_eq!(s.page(&s.token), "HTTP/1.1 200 OK");
     s.quit();
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), written);
+}
+
+/// Where `stacked` run with `home` (`$STACKED_HOME`) keeps the address of
+/// `stacked web`, its port fixed by the settings: beside the state.
+fn web_token(home: &Path) -> PathBuf {
+    home.join("web-token.json")
+}
+
+/// What the file at `file` keeps, as `stacked web` keeps it: the port and
+/// its token; none without the file.
+fn kept_in(file: &Path) -> Option<(u16, String)> {
+    let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).unwrap();
+    Some((kept["port"].as_u64().unwrap() as u16, kept["token"].as_str().unwrap().to_string()))
+}
+
+/// The mode of the file at `file`, its permissions alone.
+fn mode_of(file: &Path) -> u32 {
+    std::fs::metadata(file).unwrap().permissions().mode() & 0o777
+}
+
+/// What event `l`, `v BUILD LAUNCH KEPT`, says of the stacked sending the
+/// events: its build, its launch, and whether it keeps its address for the
+/// next launch, `1`, or not, `0`.
+fn version(l: &str) -> (String, String, String) {
+    let fields: Vec<&str> = l.strip_prefix("data: v ").expect(l).split(' ').collect();
+    assert_eq!(fields.len(), 3, "{l}");
+    (fields[0].into(), fields[1].into(), fields[2].into())
+}
+
+/// What `stacked web` says as it starts on `port` with the token the
+/// launch before kept for it, opening the browser (`open`) or not.
+fn waiting(port: u16, open: bool) -> String {
+    let then = if open { "else a new tab is opened on a new address" } else { "else the address is given a new token" };
+    format!("stacked: a tab already open on port {port} has 2 seconds to come back, {then}")
+}
+
+/// What it says once no tab came back.
+fn renewed() -> String {
+    "stacked: no tab came back within 2 seconds, so the address has a new token, and a tab with the old one is refused".into()
+}
+
+/// What it says as it quits, its last tab closed.
+const CLOSED: &str = "stacked: the last tab of the editor was closed, and no tab came back within 2 seconds, so stacked web quits";
+
+/// What a tab come back from another launch is told, as a notice.
+fn running_again() -> (String, String, String) {
+    notice("stacked-web", "stacked", "stacked web is running again: click to switch to this tab.")
+}
+
+/// How long a test lets a tab be gone before it looks whether `stacked
+/// web` quit: a second past the 2 seconds it waits for a tab to come back.
+const PAST: Duration = Duration::from_secs(3);
+
+/// A stand-in, in `dir`, for the program a `stacked web` run for real opens
+/// the browser with, as `$STACKED_OPEN` names it: it opens nothing, and
+/// writes each address it is given on a line of the file this gives with
+/// it. No test opens a browser.
+fn opener_in(dir: &Path) -> (PathBuf, PathBuf) {
+    std::fs::create_dir_all(dir).unwrap();
+    let (path, log) = (dir.join("open.sh"), dir.join("opened.txt"));
+    std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (path, log)
+}
+
+/// `stacked web` on `db`, run in `dir`, its home `home`, as `web_in` runs
+/// it, but opening the browser, with the stand-in `opener` (`opener_in`).
+fn web_opening(home: &Path, dir: &Path, db: &Path, opener: &Path) -> Command {
+    let mut cmd = stacked(home);
+    cmd.args(["-f", db.to_str().unwrap(), "web"]).env("STACKED_OPEN", opener).current_dir(dir).stdin(Stdio::null()).stderr(Stdio::piped());
+    cmd
+}
+
+/// The page at `port` with `token`, as `stacked web` opens it.
+fn address(port: u16, token: &str) -> String {
+    format!("http://127.0.0.1:{port}/?t={token}")
+}
+
+/// The events of the server on `port`, asked for with `query` after
+/// `/events?`, and with `header`, its line ended, if any.
+fn events_with(port: u16, query: &str, header: &str) -> BufReader<TcpStream> {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(s, "GET /events?{query} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{header}\r\n").unwrap();
+    BufReader::new(s)
+}
+
+/// The events of the server on `port` for a page 100 wide, asked for again
+/// as the browser asks once it lost them, saying `had`, the launch it had
+/// them from (`Last-Event-ID`).
+fn events_again(port: u16, token: &str, had: &str) -> BufReader<TcpStream> {
+    events_with(port, &format!("t={token}&cols=100&rows=30"), &format!("Last-Event-ID: {had}\r\n"))
+}
+
+/// `stacked web`, as `cmd` runs it, on `port`, where the launch before
+/// listened with `token`, kept for it: its events asked for with that token
+/// as soon as it listens, as the tab of that launch asks again each second,
+/// saying the launch it had them from, `had`. The launch, as it says where
+/// it is, and those events, their status line read; None if another
+/// process took the port first, or if the events were asked for too late,
+/// the token renewed first, as a machine this loaded may make them.
+fn come_back(mut cmd: Command, port: u16, token: &str, had: &str) -> Option<(Served, BufReader<TcpStream>)> {
+    let mut child = cmd.spawn().unwrap();
+    let said = BufReader::new(child.stderr.take().unwrap());
+    let mut child = Running(child);
+    let started = Instant::now();
+    let asked = loop {
+        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
+            write!(s, "GET /events?t={token}&cols=100&rows=30 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nLast-Event-ID: {had}\r\n\r\n").unwrap();
+            break Some(s);
+        }
+        if child.0.try_wait().unwrap().is_some() || started.elapsed() > PATIENCE {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let served = unless_taken(said_where(child, said), port)?;
+    let mut events = BufReader::new(asked.expect("never listened on"));
+    let mut status = String::new();
+    events.read_line(&mut status).unwrap();
+    (status.trim_end() == "HTTP/1.1 200 OK").then_some((served, events))
+}
+
+/// The events of the server on `port` for a page 100 wide, asked for as a
+/// page loaded again asks for them, once they start (`v`); none if the
+/// server is gone, or ends them first.
+fn back(port: u16, token: &str) -> Option<BufReader<TcpStream>> {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    write!(s, "GET /events?t={token}&cols=100&rows=30 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").ok()?;
+    let mut events = BufReader::new(s);
+    loop {
+        let mut line = String::new();
+        if events.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if line.starts_with("data: v ") {
+            return Some(events);
+        }
+    }
+}
+
+/// What `attempt` makes of the launches it starts, tried again while it
+/// gives back None, as `why` says why it could not be tried: up to ten
+/// times, so that only stacked can fail it.
+fn tried_again<T>(why: &str, mut attempt: impl FnMut() -> Option<T>) -> T {
+    (0..10).find_map(|_| attempt()).unwrap_or_else(|| panic!("each of ten tries {why}"))
+}
+
+#[test]
+fn the_next_launch_on_a_fixed_port_has_the_tab_already_open_come_back_and_opens_no_new_one() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let tokens = web_token(&home);
+    let mut tries = 0;
+    let (port, first, (build, had), log, next, mut page) = tried_again("found its port taken first, or came back too late", || {
+        tries += 1;
+        let (opener, log) = opener_in(&tmp.path().join(format!("try-{tries}")));
+        let port = free_port();
+        settings_of(&home, &format!("[web]\nport = {port}\n"));
+        // No token kept yet: one of its own, kept for its port in a file
+        // only you may read, beside the state, and the browser opened on its
+        // address at once, nothing said before where the editor is.
+        let s = unless_taken(started(web_opening(&home, tmp.path(), &db, &opener)), port)?;
+        assert!(s.before.is_empty(), "{:?}", s.before);
+        assert_eq!(kept_in(&tokens), Some((port, s.token.clone())));
+        assert_eq!(mode_of(&tokens), 0o600);
+        assert_eq!(links_opened(&log, 1), [address(port, &s.token)]);
+        // Its tab, told which launch sends its events, which keeps its
+        // address for the next.
+        let mut tab = events(port, &s.token, 100);
+        let (build, had, kept) = version(until(&mut tab, "which stacked", |l| l.starts_with("data: v ")).last().unwrap());
+        assert_eq!(kept, "1");
+        let first = s.token.clone();
+        s.quit();
+        // The next launch, the tab asking for its events again as soon as it
+        // listens, as the browser does each second, saying the launch it had
+        // them from.
+        let (next, page) = come_back(web_opening(&home, tmp.path(), &db, &opener), port, &first, &had)?;
+        Some((port, first, (build, had), log, next, page))
+    });
+    // Come back: said so, where the editor is said after it, the first
+    // one's token, kept as it was; no new tab opened.
+    assert_eq!(next.before, [waiting(port, true), "stacked: the tab already open came back".to_string()]);
+    assert_eq!(next.token, first);
+    assert_eq!(kept_in(&tokens), Some((port, first.clone())));
+    // The tab told first which launch sends its events, the browser to ask
+    // for them again a second after losing them; then, come back from
+    // another launch, that stacked web runs again, for the banner it shows
+    // while it is not what you look at; then the screen whole.
+    let seen = until(&mut page, "the screen", |l| l.starts_with("data: s "));
+    let data: Vec<&String> = seen.iter().filter(|l| l.starts_with("data: ")).collect();
+    let (same, launch, kept) = version(data[0]);
+    assert!(same == build && launch != had && kept == "1", "{seen:#?}");
+    assert!(seen.contains(&"retry: 1000".to_string()) && seen.contains(&format!("id: {launch}")), "{seen:#?}");
+    assert_eq!(notices(&seen), [running_again()]);
+    assert_eq!(data.len(), 3, "{seen:#?}");
+    until(&mut page, "the patches", |l| l.contains("Bug 2 - add b"));
+    assert_eq!(next.page(&first), "HTTP/1.1 200 OK");
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1, "a new tab opened");
+    next.quit();
+}
+
+#[test]
+fn with_no_tab_back_within_2_seconds_the_next_launch_on_a_fixed_port_renews_its_token_and_opens_a_new_tab() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let tokens = web_token(&home);
+    let mut tries = 0;
+    let (port, first, log, next, took) = tried_again("found its port taken first", || {
+        tries += 1;
+        let (opener, log) = opener_in(&tmp.path().join(format!("try-{tries}")));
+        let port = free_port();
+        settings_of(&home, &format!("[web]\nport = {port}\n"));
+        let s = unless_taken(started(web_opening(&home, tmp.path(), &db, &opener)), port)?;
+        let first = s.token.clone();
+        assert_eq!(links_opened(&log, 1), [address(port, &first)]);
+        s.quit();
+        let at = Instant::now();
+        let next = unless_taken(started(web_opening(&home, tmp.path(), &db, &opener)), port)?;
+        Some((port, first, log, next, at.elapsed()))
+    });
+    // No tab came: 2 seconds given it, then a new token, kept in the first
+    // one's place, as only you may read it, said, and the browser opened on
+    // the new address.
+    assert!(took >= Duration::from_secs(2), "{took:?}");
+    assert_eq!(next.before, [waiting(port, true), renewed()]);
+    assert_ne!(next.token, first);
+    assert_eq!(kept_in(&tokens), Some((port, next.token.clone())));
+    assert_eq!(mode_of(&tokens), 0o600);
+    assert_eq!(links_opened(&log, 2), [address(port, &first), address(port, &next.token)]);
+    // The first one's token refused from then on, the events its tab asks
+    // for again too, which its page then says it can be closed; the new one
+    // served.
+    let host = format!("127.0.0.1:{port}");
+    assert_eq!(next.page(&first), "HTTP/1.1 403 Forbidden");
+    assert_eq!(ask(port, &host, &format!("GET /events?t={first}&cols=100&rows=30"), "").0, "HTTP/1.1 403 Forbidden");
+    assert_eq!(next.page(&next.token), "HTTP/1.1 200 OK");
+    next.quit();
+}
+
+#[test]
+fn a_tab_come_back_from_another_launch_is_told_stacked_web_runs_again_unless_notifications_are_off() {
+    let (tmp, db) = setup();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let screen = |l: &str| l.starts_with("data: s ");
+    // A page come: told which launch sends its events, then the screen, and
+    // no notice.
+    let mut page = events(port, &token, 100);
+    let seen = until(&mut page, "the screen", screen);
+    let (_, launch, _) = version(seen.iter().find(|l| l.starts_with("data: v ")).unwrap());
+    assert!(notices(&seen).is_empty(), "{seen:#?}");
+    // Its events asked for again saying that launch, as once the machine
+    // slept: no notice.
+    let mut same = events_again(port, &token, &launch);
+    let seen = until(&mut same, "the screen", screen);
+    assert!(notices(&seen).is_empty(), "{seen:#?}");
+    // Saying another, as a tab come back after a launch does: told, before
+    // the screen; and so too a page loaded again, saying it in its address.
+    let mut again = events_again(port, &token, "0123456789abcdef");
+    assert_eq!(notices(&until(&mut again, "the screen", screen)), [running_again()]);
+    let mut loaded = events_with(port, &format!("t={token}&cols=100&rows=30&l=0123456789abcdef"), "");
+    assert_eq!(notices(&until(&mut loaded, "the screen", screen)), [running_again()]);
+    // `web.notifications = false` in the settings: none.
+    let home = tmp.path().join("home");
+    settings_of(&home, "[web]\nnotifications = false\n");
+    let s = served(&home, tmp.path(), &db, &[]);
+    let mut again = events_again(s.port, &s.token, "0123456789abcdef");
+    let seen = until(&mut again, "the screen", screen);
+    assert!(notices(&seen).is_empty(), "{seen:#?}");
+    s.quit();
+}
+
+#[test]
+fn closing_the_last_tab_quits_as_quit_does_once_no_tab_came_back_within_2_seconds() {
+    let (tmp, db) = setup();
+    let made = made_ahead(tmp.path());
+    let s = served(&tmp.path().join("home"), tmp.path(), &db, &[]);
+    let mut page = events(s.port, &s.token, 400);
+    until(&mut page, "the worktree made ahead", |l| l.contains(MADE));
+    assert!(made.join(".git").exists(), "made ahead");
+    // The tab closed: its page says it goes, its events closed, and none
+    // comes back. Left as Quit leaves it: said why, the worktree made ahead
+    // removed.
+    let closed = Instant::now();
+    s.close(page);
+    s.quits(closed);
+    assert!(gone(&made), "removed once the editor is left");
+}
+
+#[test]
+fn a_tab_loaded_again_says_it_goes_comes_back_within_2_seconds_and_quits_nothing() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let (mut s, mut page) = tried_again("came back later than 2 seconds", || {
+        let s = served(&home, tmp.path(), &db, &[]);
+        let mut page = events(s.port, &s.token, 100);
+        until(&mut page, "the patches", |l| l.contains("Bug 2 - add b"));
+        // Loaded again: the page goes, and the page loaded comes at once.
+        let closed = Instant::now();
+        s.close(page);
+        let again = back(s.port, &s.token)?;
+        (closed.elapsed() < Duration::from_secs(2)).then_some((s, again))
+    });
+    // Past the 2 seconds, it still runs, and serves the page come back.
+    std::thread::sleep(PAST);
+    assert!(s.running(), "it quit");
+    until(&mut page, "the patches", |l| l.contains("Bug 2 - add b"));
+    ask(s.port, &format!("127.0.0.1:{}", s.port), &format!("POST /input?t={}", s.token), "k Down -\n");
+    until(&mut page, "the second patch", |l| l.contains("+bee"));
+    s.quit();
+}
+
+#[test]
+fn a_tab_cut_off_without_saying_it_goes_quits_nothing_nor_does_a_page_going_before_any_came() {
+    let (tmp, db) = setup();
+    let mut s = served(&tmp.path().join("home"), tmp.path(), &db, &[]);
+    // Before any page came: one says it goes, as a page closed before it
+    // asked for its events does, and nothing quits.
+    ask(s.port, &format!("127.0.0.1:{}", s.port), &format!("POST /input?t={}", s.token), "g\n");
+    std::thread::sleep(PAST);
+    assert!(s.running(), "it quit");
+    // A page come, then cut off without saying it goes, as when the machine
+    // sleeps or the browser puts its tab aside: nothing quits.
+    let mut page = events(s.port, &s.token, 100);
+    until(&mut page, "the patches", |l| l.contains("Bug 2 - add b"));
+    drop(page);
+    std::thread::sleep(PAST);
+    assert!(s.running(), "it quit");
+    // It comes back, as the browser asks again, and is served.
+    let mut page = events(s.port, &s.token, 100);
+    until(&mut page, "the patches again", |l| l.contains("Bug 2 - add b"));
+    s.quit();
+}
+
+#[test]
+fn closing_one_of_two_tabs_quits_nothing_while_the_other_stays_and_closing_the_other_quits() {
+    let (tmp, db) = setup();
+    let mut s = served(&tmp.path().join("home"), tmp.path(), &db, &[]);
+    let mut one = events(s.port, &s.token, 100);
+    until(&mut one, "the patches", |l| l.contains("Bug 2 - add b"));
+    let mut other = events(s.port, &s.token, 100);
+    until(&mut other, "the patches", |l| l.contains("Bug 2 - add b"));
+    // One closed: nothing quits, and the other is served as ever.
+    s.close(one);
+    std::thread::sleep(PAST);
+    assert!(s.running(), "it quit");
+    ask(s.port, &format!("127.0.0.1:{}", s.port), &format!("POST /input?t={}", s.token), "k Down -\n");
+    until(&mut other, "the second patch", |l| l.contains("+bee"));
+    // The other closed too, the last: left.
+    let closed = Instant::now();
+    s.close(other);
+    s.quits(closed);
 }
 
 /// Work landed on stack `s` of `db`: an answer, the tool it could not use,
@@ -2465,12 +2873,14 @@ fn while_the_editor_runs_the_page_says_so_over_its_screen_a_page_come_meanwhile_
     edit_first_patch(s.port, &s.token, &mut first);
     let said = "data: e slowedit";
     until(&mut first, "the editor's word", |l| l == said);
-    // A page come while the editor runs: told it at once, before any screen,
-    // as the editor's thread reads nothing meanwhile.
+    // A page come while the editor runs: told it at once, after which
+    // stacked serves it, before any screen, as the editor's thread reads
+    // nothing meanwhile.
     assert!(there(&tmp.path().join("ran")), "the editor never ran");
     let mut second = events(s.port, &s.token, 400);
-    let seen = until(&mut second, "its word", |l| l.starts_with("data: "));
+    let seen = until(&mut second, "its word", |l| l.starts_with("data: ") && !l.starts_with("data: v "));
     assert_eq!(seen.last().map(String::as_str), Some(said), "{seen:#?}");
+    assert_eq!(seen.iter().filter(|l| l.starts_with("data: ")).count(), 2, "{seen:#?}");
     // The editor done: each page sent the screen whole, which takes the
     // place of the word, the bottom line saying what came of it.
     std::fs::write(tmp.path().join("exit"), "").unwrap();

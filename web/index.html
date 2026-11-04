@@ -16,15 +16,14 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #screen { margin: 0; font: 14px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; user-select: none; cursor: default; }
 #screen div { height: 1.3em; overflow: hidden; }
 .cur { outline: 1px solid var(--fg); outline-offset: -1px; }
-#gone, #editing { position: fixed; inset: 0; display: none; place-items: center; background: #000c; color: #fff; font: 16px sans-serif; }
-/* Over the screen while $EDITOR runs, the mouse over it, not the screen:
-   what is done meanwhile is dropped. */
-#editing { text-align: center; white-space: pre-line; }
+/* Over the screen while $EDITOR runs, or once the server is lost, the
+   mouse over it, not the screen: what is done meanwhile is dropped. */
+#gone, #editing { position: fixed; inset: 0; display: none; place-items: center; background: #000c; color: #fff; font: 16px sans-serif; text-align: center; white-space: pre-line; }
 </style>
 </head>
 <body>
 <pre id="screen"></pre>
-<div id="gone">stacked has quit: start it again, then reload.</div>
+<div id="gone"></div>
 <div id="editing"></div>
 <script>
 // Only carries things: the server's lines to the wasm, what the wasm makes
@@ -35,6 +34,22 @@ const token = new URLSearchParams(location.search).get('t');
 const screen = document.getElementById('screen'), gone = document.getElementById('gone'), editing = document.getElementById('editing');
 const enc = new TextEncoder(), dec = new TextDecoder();
 let w, cw = 8, ch = 16, pending = '', sending = false;
+// The server's lines (an EventSource), which the browser asks for again by
+// itself a second after it lost them, and each second after, at the same
+// address with the same token, saying the launch they came from; whether
+// they come now; what the first of them says, which stacked sends them
+// (`v`): the build of the page and its wasm, the launch, which the tab
+// keeps for the page loaded again, and whether that launch keeps its
+// address for the next; and whether the editor quit since the last screen.
+let events = null, connected = false, build = '', launch = '', kept = false, quit = false;
+try { launch = sessionStorage.getItem('stacked-launch') || ''; } catch (_) {}
+// What the page says over its screen without the server.
+const said = {
+  quit: 'stacked has quit.\nThis tab waits for stacked web to start again on this address, then goes on by itself.',
+  lost: 'stacked cannot be reached.\nThis tab waits for stacked web to answer again on this address, then goes on by itself.',
+  renewed: 'stacked web started again with a new address.\nThis tab can be closed.',
+  over: 'stacked has quit.\nThe next stacked web opens a tab of its own, so this tab can be closed.',
+};
 const read = n => dec.decode(new Uint8Array(w.memory.buffer, w.out(), n));
 const call = (f, text, ...rest) => {
   const b = enc.encode(text), p = w.alloc(b.length);
@@ -49,12 +64,23 @@ const flush = () => {
   pending = '';
   fetch('/input?t=' + token, {method: 'POST', body}).finally(() => { sending = false; flush(); });
 };
+const shown = el => el.style.display === 'grid';
 // While $EDITOR runs, said over the screen, the server drops what the page
 // does: it is not sent, but the page's size, for the screen after to fit.
+// Without the server, nothing is: the page says its size once the server
+// answers again.
 const send = line => {
-  if (!line || (editing.style.display === 'grid' && !line.startsWith('s '))) return;
+  if (!line || shown(gone) || (shown(editing) && !line.startsWith('s '))) return;
   pending += line + '\n';
   flush();
+};
+// Said over the screen, which stays as it was, without the server: what
+// was not sent yet is dropped, as what the page does meanwhile is.
+const over = text => {
+  editing.style.display = 'none';
+  gone.textContent = text;
+  gone.style.display = 'grid';
+  pending = '';
 };
 // A notice of the editor's, a banner of the system's, only while the page
 // is not what you look at: on it, the editor's own banner says it. Clicked,
@@ -89,21 +115,76 @@ const size = () => {
   row.remove();
   return [Math.floor(innerWidth / cw), Math.floor(innerHeight / ch)];
 };
+const heard = e => {
+  const out = call(w.screen, e.data), nl = out.indexOf('\n');
+  const [op, a, b, c] = (nl < 0 ? out : out.slice(0, nl)).split(' ');
+  // What is said over the screen, while $EDITOR runs or without the
+  // server, goes with the next screen, which the server sends whole once
+  // $EDITOR exits, and to a page that comes.
+  if (op === 'size') {
+    quit = false;
+    editing.style.display = 'none';
+    gone.style.display = 'none';
+    screen.replaceChildren(...Array.from({length: +b}, () => document.createElement('div')));
+  }
+  else if (op === 'row' && screen.children[+a]) screen.children[+a].innerHTML = out.slice(nl + 1);
+  // The editor quit: the browser asks for the lines again each second, as
+  // a launch that keeps its address listens on it again; one that keeps
+  // none never does.
+  else if (op === 'bye') {
+    connected = false;
+    quit = true;
+    if (kept) over(said.quit);
+    else { e.target.close(); events = null; over(said.over); }
+  }
+  else if (op === 'notice') notice(...out.slice(nl + 1).split('\n'));
+  else if (op === 'editing') { gone.style.display = 'none'; editing.textContent = out.slice(nl + 1); editing.style.display = 'grid'; }
+  // Which stacked sends the lines: one whose build is not the page's, newer
+  // or older, has its own page loaded, which comes back as this one would;
+  // else the page keeps which launch it is, and whether it keeps its
+  // address.
+  else if (op === 'version') {
+    if (build && a !== build) return location.reload();
+    build = a;
+    launch = b;
+    kept = c === '1';
+    try { sessionStorage.setItem('stacked-launch', b); } catch (_) {}
+  }
+};
+// The server's lines, asked for with the page's size, and with the launch
+// the tab had them from last, if it knows one (as the browser says it too,
+// asking again), for the server to tell a tab come back from another
+// launch so. Come, the page says its size, which may differ from what the
+// browser asks again with. Lost, said over the screen: refused, the token
+// is not the server's, as stacked started again with a new one, and the
+// browser asks no more; else it asks again each second by itself, but for
+// a launch that kept no address, gone for good once it quit.
+const connect = () => {
+  const [cols, rows] = size();
+  const es = events = new EventSource(`/events?t=${token}&cols=${cols}&rows=${rows}` + (launch ? `&l=${launch}` : ''));
+  es.onopen = () => { connected = true; pending += `s ${size().join(' ')}\n`; flush(); };
+  es.onmessage = heard;
+  es.onerror = () => {
+    connected = false;
+    if (es.readyState === EventSource.CLOSED) { events = null; over(said.renewed); }
+    else if (quit && !kept) { es.close(); events = null; over(said.over); }
+    else over(quit ? said.quit : said.lost);
+  };
+};
+// Closed, loaded again, or left for another page: the server told that
+// the page goes, a line of its own, for stacked web to quit once its last
+// page is gone and none came back (src/web.rs `all_gone`); its lines
+// closed first, for the server to see them closed at once. Shown again as
+// it was, from the browser's history, the page asks for them again.
+addEventListener('pagehide', () => {
+  if (events) { events.close(); events = null; }
+  if (connected) navigator.sendBeacon('/input?t=' + token, 'g\n');
+  connected = false;
+});
+addEventListener('pageshow', e => { if (e.persisted && w && !events) connect(); });
 WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instance}) => {
   w = instance.exports;
-  const [cols, rows] = size();
-  const events = new EventSource(`/events?t=${token}&cols=${cols}&rows=${rows}`);
-  events.onmessage = e => {
-    const out = call(w.screen, e.data), nl = out.indexOf('\n');
-    const [op, a, b] = (nl < 0 ? out : out.slice(0, nl)).split(' ');
-    // What is said over the screen while $EDITOR runs goes with the next
-    // screen, which the server sends whole once $EDITOR exits.
-    if (op === 'size') { editing.style.display = 'none'; screen.replaceChildren(...Array.from({length: +b}, () => document.createElement('div'))); }
-    else if (op === 'row' && screen.children[+a]) screen.children[+a].innerHTML = out.slice(nl + 1);
-    else if (op === 'bye') { events.close(); editing.style.display = 'none'; gone.style.display = 'grid'; }
-    else if (op === 'notice') notice(...out.slice(nl + 1).split('\n'));
-    else if (op === 'editing') { editing.textContent = out.slice(nl + 1); editing.style.display = 'grid'; }
-  };
+  connect();
   addEventListener('keydown', e => {
     const line = call(w.key, e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
     if (line) { e.preventDefault(); send(line); }

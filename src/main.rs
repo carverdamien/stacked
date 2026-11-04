@@ -93,18 +93,22 @@ enum Cmd {
     Demo,
     /// The editor in a browser: a server on this machine, and the browser
     /// opened on it. The cursor follows the mouse: a click is Enter, a right
-    /// click Space; writing a comment, a click outside its box is Esc.
-    /// `stacked web` is built by default, with the `web` feature:
+    /// click Space; writing a comment, a click outside its box is Esc. With
+    /// a port the settings fix, the next launch gives the tab already open
+    /// 2 seconds to come back before it opens a new one. Closing the last
+    /// tab quits, unless a tab comes back within 2 seconds, as a reload
+    /// does. `stacked web` is built by default, with the `web` feature:
     /// `--no-default-features --features app,demo,moz-phab,try-push` builds
     /// stacked without it.
     #[cfg(feature = "web")]
     Web {
         /// The port of 127.0.0.1 to listen on this time, 0 for any free
-        /// one. Without it, the settings' web.port says which: "random"
-        /// (unless set), any free one each time; "fixed-random", any free
-        /// one the first time, which stacked writes in the settings as
-        /// web.kept_port and listens on each time after; or a port from 1
-        /// to 65535. A port in use is said, and no other is tried.
+        /// one, with a new token. Without it, the settings' web.port says
+        /// which: "random" (unless set), any free one each time;
+        /// "fixed-random", any free one the first time, which stacked writes
+        /// in the settings as web.kept_port and listens on each time after;
+        /// or a port from 1 to 65535. A port in use is said, and no other is
+        /// tried.
         #[arg(long)]
         port: Option<u16>,
         /// Only say where it is: do not open the browser.
@@ -928,17 +932,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         Cmd::Demo => stacked::demo::run()?,
         #[cfg(feature = "web")]
         Cmd::Web { port, no_open } => {
-            let (bound, unkept) = stacked::web::listen(port, &stacked::config::get().web, &stacked::config::path())?;
+            let tokens = stacked::home::get().web_token();
+            let (bound, unkept) = stacked::web::listen(port, &stacked::config::get().web, &stacked::config::path(), &tokens)?;
             if let Some(why) = unkept {
                 eprintln!("stacked: {why}");
             }
-            let url = bound.url();
-            eprintln!("stacked: the editor is at {url} · quit it there, or ctrl-c here");
-            if !no_open {
-                stacked::web::open_browser(&url);
-            }
             stacked::web::catch_signals();
-            bound.serve(path)?;
+            // Where it is said as it serves, with the token kept for the
+            // next launch, or once the tab of the launch before came back or
+            // did not.
+            bound.serve(path, !no_open)?;
         }
         #[cfg(feature = "app")]
         Cmd::App { bundle: Some(dir) } => {

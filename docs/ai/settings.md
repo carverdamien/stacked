@@ -334,7 +334,15 @@ settings:
   cannot be written in, or that would not read back with it, is said
   (`port 51234 cannot be kept in the settings as web.kept_port, so the
   next launch with web.port = "fixed-random" takes any free port again:
-  …`), and the port taken is listened on all the same. A port in use, set,
+  …`), and the port taken is listened on all the same. With
+  `"fixed-random"` or a port, the token of the address is kept too, for the
+  next launch on that port, which gives the tab already open there 2
+  seconds to come back before it takes a new token and opens a new tab (In
+  a browser, above): never in this file, which you may share, but in
+  `web-token.json` beside `state.json`, a file that only you may read or
+  write. With `"random"`, or `--port`, the token is new each launch, and
+  that file is neither read nor written: a token kept there stays as it
+  was, unused, until a launch on its port fixed again. A port in use, set,
   kept or given, is said in a line, `port 8080 of 127.0.0.1 is in use`,
   and `stacked web` exits with 1, trying no other. `notifications`, `true`
   unless set: the page is sent the editor's notices, of every stack, which

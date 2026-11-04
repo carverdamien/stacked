@@ -15,13 +15,23 @@
 //! meanwhile is dropped, as StackED drops what is done in its window.
 //!
 //! It listens on the port `--port` names, else on the one the settings'
-//! `[web]` say (`listen`); the token is new each time, whatever the port.
+//! `[web]` say (`listen`). The token is new each time, but with a port the
+//! settings fix: there it is kept for the next launch, in a file of
+//! stacked's own beside its state (`home::Home::web_token`), and that
+//! launch listens with it, and gives the tab already open on it `WAIT` to
+//! come back before it takes a new one and opens the browser (`welcome`).
+//! A page that loses the server says so over its screen, and the browser
+//! asks for it again each second, at the same address with the same token,
+//! until it answers, or refuses the token (web/index.html). A page closed
+//! says so; once the last has, and none came back within `WAIT`, the
+//! editor is left as Quit leaves it (`all_gone`).
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -29,6 +39,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::{Port, Web, program};
@@ -44,8 +55,9 @@ const CURSOR: u32 = 1 << 16;
 /// What comes to the editor from the browsers.
 enum Input {
     /// A browser come, by its number among those `Coming` holds until this
-    /// is read, and its screen, `cols` by `rows`.
-    Join(usize, u16, u16),
+    /// is read, its screen, `cols` by `rows`, and whether it comes back from
+    /// another launch, its tab open since then (`running_again`).
+    Join(usize, u16, u16, bool),
     /// A line it sent: a key, a click, its size.
     Line(String),
 }
@@ -59,11 +71,39 @@ enum Input {
 /// told at once, and one come just before, which the editor's thread does
 /// not know yet, is told as it starts. And what the browsers send meanwhile
 /// is dropped as it is read, but a new size (`kept_while_editing`).
+///
+/// Under the same lock, what the threads answering the browsers learn, for
+/// the launch and the editor's thread to act on: the token a request needs,
+/// and, while the launch waits for the tab of the launch before, whether a
+/// page came with it, each changed under the lock by the one or the other,
+/// so that a page is either come back or refused (`came_back`); the
+/// browsers' events open, and when a page last said it goes, by which the
+/// editor's thread knows its last page gone (`all_gone`); and whether the
+/// editor is left.
 #[derive(Default)]
 struct Coming {
     browsers: Vec<(usize, Sender<String>)>,
     next: usize,
     editing: Option<String>,
+    /// The token each request needs: the launch's own, else the one the
+    /// launch before kept, until its tab is found gone (`came_back`).
+    token: String,
+    /// The launch waits for the tab opened with the token the launch before
+    /// kept (`Bound::kept`): any request of a page's with it, but its lines,
+    /// is that tab come back, `back`.
+    waiting: bool,
+    back: bool,
+    /// The browsers' events open now, each counted from when it comes until
+    /// its page closes it, or it is ended here (`watch`); and whether one
+    /// ever was.
+    open: usize,
+    ever: bool,
+    /// When a page last said it goes (`going`), unless a browser's events
+    /// came since.
+    going: Option<Instant>,
+    /// The editor is left (`leave`): a browser's events that come after are
+    /// told so at once, rather than kept waiting for what never comes.
+    left: bool,
 }
 
 /// `coming`, locked: as it was left, should a thread holding it have
@@ -80,6 +120,14 @@ fn lock(coming: &Mutex<Coming>) -> MutexGuard<'_, Coming> {
 /// clicked.
 fn kept_while_editing(line: &str) -> bool {
     line.split_whitespace().next() == Some("s")
+}
+
+/// Whether `line`, read from a browser, says its page goes (`g`): closed,
+/// loaded again, or left for another page, as the page says once it is
+/// hidden for good (web/index.html). Counted as it comes, while `$EDITOR`
+/// runs too, and never the editor's to read (`all_gone`).
+fn going(line: &str) -> bool {
+    line.split_whitespace().eq(["g"])
 }
 
 /// Browser `id`, come, taken out of those `coming` holds: where it is sent
@@ -126,22 +174,38 @@ impl Drop for Answered {
 /// How long the editor left waits for the requests it is answering.
 const TELLING: Duration = Duration::from_secs(5);
 
-/// The server, listening: its port, and the token its pages need.
+/// How long a launch with the token the launch before kept waits for the
+/// tab opened with it to come back, before it takes a new token and opens
+/// the browser there (`came_back`); and how long, once the last page said
+/// it goes, the editor waits for a page to come, as a page loaded again
+/// does, before it is left (`all_gone`).
+const WAIT: Duration = Duration::from_secs(2);
+
+/// How long after a page loses the server the browser asks for it again,
+/// and again after that, as each page is told as its events start.
+const RETRY: Duration = Duration::from_secs(1);
+
+/// The server, listening: its port, the token its pages need, and, with a
+/// port the settings fix, where that token is kept for the next launch, and
+/// whether it is the one the launch before kept there for this port.
 pub struct Bound {
     listener: TcpListener,
     pub port: u16,
     pub token: String,
+    keep: Option<PathBuf>,
+    kept: bool,
 }
 
-/// Listens on `port` of 127.0.0.1, any free one for 0. A port in use is
-/// said so, in a line naming it, and no other is tried.
+/// Listens on `port` of 127.0.0.1, any free one for 0, with a new token,
+/// kept nowhere. A port in use is said so, in a line naming it, and no
+/// other is tried.
 pub fn bind(port: u16) -> Result<Bound> {
     let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| match e.kind() {
         std::io::ErrorKind::AddrInUse if port != 0 => Error(format!("port {port} of 127.0.0.1 is in use")),
         _ => Error(format!("cannot listen on 127.0.0.1:{port}: {e}")),
     })?;
     let port = listener.local_addr().map_err(|e| Error(e.to_string()))?.port();
-    Ok(Bound { listener, port, token: token() })
+    Ok(Bound { listener, port, token: token(), keep: None, kept: false })
 }
 
 /// Listens as `stacked web` does: on `given`, the port `--port` names, as
@@ -152,10 +216,16 @@ pub fn bind(port: u16) -> Result<Bound> {
 /// in use is said, and no other is tried. With the server, why the port
 /// taken could not be kept, if it could not: it is listened on all the
 /// same, and the next launch takes any free one again.
-pub fn listen(given: Option<u16>, web: &Web, settings: &Path) -> Result<(Bound, Option<String>)> {
-    let port = match (given, web.port, web.kept_port) {
-        (Some(p), ..) | (None, Port::Fixed(p), _) | (None, Port::FixedRandom, Some(p)) => p,
-        (None, Port::Random, _) => 0,
+///
+/// With a port the settings fix, `"fixed-random"` or a number, the token is
+/// the one the launch before kept for that port in the file at `tokens`, if
+/// it kept one there (`Bound::kept`), else a new one, kept there as the
+/// launch serves; with a port given, or `"random"`, a new one, and the file
+/// is neither read nor written, a token kept there staying as it was.
+pub fn listen(given: Option<u16>, web: &Web, settings: &Path, tokens: &Path) -> Result<(Bound, Option<String>)> {
+    let (mut bound, unkept) = match (given, web.port, web.kept_port) {
+        (Some(p), ..) | (None, Port::Fixed(p), _) | (None, Port::FixedRandom, Some(p)) => (bind(p)?, None),
+        (None, Port::Random, _) => (bind(0)?, None),
         (None, Port::FixedRandom, None) => {
             let bound = bind(0)?;
             let unkept = crate::config::set(settings, "web.kept_port", &[bound.port.to_string()]).err().map(|e| {
@@ -164,37 +234,227 @@ pub fn listen(given: Option<u16>, web: &Web, settings: &Path) -> Result<(Bound, 
                     bound.port
                 )
             });
-            return Ok((bound, unkept));
+            (bound, unkept)
         }
     };
-    Ok((bind(port)?, None))
+    if given.is_none() && web.port != Port::Random {
+        if let Some(token) = kept_token(tokens, bound.port) {
+            bound.token = token;
+            bound.kept = true;
+        }
+        bound.keep = Some(tokens.to_path_buf());
+    }
+    Ok((bound, unkept))
+}
+
+/// The address a launch keeps for the next, its port fixed by the
+/// settings: the port, and the token a page opened on it holds. In a file
+/// only you may read, beside stacked's state (`home::Home::web_token`).
+#[derive(Serialize, Deserialize)]
+struct Kept {
+    port: u16,
+    token: String,
+}
+
+/// The token the launch before kept in `file` for `port`: none if there is
+/// no file, or anything but a file there (the null device), it cannot be
+/// read, it keeps another port, or what it keeps is not a token, as `token`
+/// makes them.
+fn kept_token(file: &Path, port: u16) -> Option<String> {
+    if !std::fs::metadata(file).ok()?.is_file() {
+        return None;
+    }
+    let kept: Kept = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
+    let a_token = !kept.token.is_empty() && kept.token.chars().all(|c| c.is_ascii_hexdigit());
+    (kept.port == port && a_token).then_some(kept.token)
+}
+
+/// `token` kept in `file` as the token of `port`, for the next launch: in a
+/// file that only you may read or write, made so, written whole beside it,
+/// then renamed over it, so that it is never seen half written, nor by
+/// another. Nowhere (the null device, or anything but a file there) keeps
+/// nothing.
+fn keep_token(file: &Path, port: u16, token: &str) -> std::io::Result<()> {
+    if std::fs::metadata(file).is_ok_and(|m| !m.is_file()) {
+        return Ok(());
+    }
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let text = serde_json::to_string(&Kept { port, token: token.into() }).map_err(std::io::Error::other)? + "\n";
+    let mut part = file.as_os_str().to_owned();
+    part.push(format!(".{}", std::process::id()));
+    let part = PathBuf::from(part);
+    // One a process of this number left before, as it died writing it.
+    let _ = std::fs::remove_file(&part);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&part)
+        .and_then(|mut f| {
+            // 0600 whatever the umask, which could take more away.
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            f.write_all(text.as_bytes())
+        })
+        .and_then(|()| std::fs::rename(&part, file));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
+/// What the threads answering the browsers know of the launch, as it is
+/// until it ends: its port, which a request's host names; which launch it
+/// is, which a browser's events start with, and which the browser says
+/// again as it asks for them again; and whether it keeps its address for
+/// the next launch, which a page may come back to.
+struct Serving {
+    port: u16,
+    launch: String,
+    kept: bool,
+}
+
+impl Serving {
+    /// The line each browser's events start with, as web/client.rs reads
+    /// it: `v BUILD LAUNCH KEPT`, the build of the page and its wasm
+    /// (`build`), this launch, and 1 if it keeps its address for the next,
+    /// else 0.
+    fn version(&self) -> String {
+        format!("v {} {} {}", build(), self.launch, u8::from(self.kept))
+    }
+}
+
+/// The page and its wasm, named by a hash of both: a page that comes back
+/// to a stacked whose build is not its own loads that stacked's page
+/// (web/index.html), as what the server sends may differ.
+fn build() -> &'static str {
+    static BUILT: OnceLock<String> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut hash = sha1_smol::Sha1::new();
+        hash.update(PAGE.as_bytes());
+        hash.update(CLIENT);
+        hash.digest().to_string()[..16].to_string()
+    })
 }
 
 impl Bound {
-    /// The page to open, the token in it.
-    pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/?t={}", self.port, self.token)
+    /// Serves the editor on the database at `path` until it is quit there,
+    /// or its last page is closed (`all_gone`): where it is said in the
+    /// terminal `stacked web` was started from, and the browser opened there
+    /// if `open`, once the launch knows which address that is (`welcome`).
+    pub fn serve(self, path: &Path, open: bool) -> Result<()> {
+        self.serving(path, Some(open))
     }
 
-    /// Serves the editor on the database at `path` until it is quit there.
-    pub fn serve(self, path: &Path) -> Result<()> {
+    /// Serves the editor on the database at `path`: as `serve` does, the
+    /// browser opened or not as `launch` says; with none, saying nothing and
+    /// opening nothing, as the tests' servers do (`start`).
+    fn serving(self, path: &Path, launch: Option<bool>) -> Result<()> {
         let (tx, rx) = mpsc::channel();
-        let Bound { listener, port, token } = self;
+        let Bound { listener, port, token: first, keep, kept } = self;
+        let serving = Arc::new(Serving { port, launch: token(), kept: keep.is_some() });
+        let waiting = kept && launch.is_some();
+        let coming = Arc::new(Mutex::new(Coming { token: first, waiting, ..Coming::default() }));
         let answering = Answering::default();
         let counting = answering.clone();
-        let coming = Arc::new(Mutex::new(Coming::default()));
-        let shared = coming.clone();
+        let (shared, on) = (coming.clone(), serving.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (token, tx, coming, answered) = (token.clone(), tx.clone(), shared.clone(), counting.one());
+                let (serving, tx, coming, answered) = (on.clone(), tx.clone(), shared.clone(), counting.one());
                 std::thread::spawn(move || {
-                    let _ = handle(stream, &token, port, &tx, &coming);
+                    let _ = handle(stream, &serving, &tx, &coming);
                     drop(answered);
                 });
             }
         });
+        if let Some(open) = launch {
+            welcome(&coming, port, keep, kept, open);
+        }
         run(path, rx, &coming, &answering)
     }
+}
+
+/// What a launch says as it serves, in the terminal it was started from,
+/// and what it opens: with a token of its own, kept for the next launch if
+/// the settings fix its port, where the editor is, at once, and the browser
+/// opened there if `open`; with the token the launch before kept, that the
+/// tab opened with it has `WAIT` to come back, waited for away from the
+/// editor, which serves meanwhile (`came_back`).
+fn welcome(coming: &Arc<Mutex<Coming>>, port: u16, keep: Option<PathBuf>, kept: bool, open: bool) {
+    if kept {
+        let then = if open { "else a new tab is opened on a new address" } else { "else the address is given a new token" };
+        say(&format!("a tab already open on port {port} has {} seconds to come back, {then}", WAIT.as_secs()));
+        let (coming, started) = (coming.clone(), Instant::now());
+        std::thread::spawn(move || came_back(&coming, port, keep, open, started));
+        return;
+    }
+    let token = lock(coming).token.clone();
+    if let Some(file) = keep {
+        kept_or_said(&file, port, &token);
+    }
+    at(port, &token, open);
+}
+
+/// The tab opened with the token the launch before kept, given `WAIT` from
+/// `started` to come back, a request of a page's with that token but its
+/// lines: come, said so, with the address in use; else the token renewed,
+/// under the lock the requests are checked under, so that a page with the
+/// old one is refused from then on, kept for the next launch, and said,
+/// with where the editor is now, the browser opened there if `open`.
+/// Nothing once the editor is left meanwhile.
+fn came_back(coming: &Mutex<Coming>, port: u16, keep: Option<PathBuf>, open: bool, started: Instant) {
+    let (back, token) = loop {
+        {
+            let mut c = lock(coming);
+            if c.left {
+                return;
+            }
+            if c.back || started.elapsed() >= WAIT {
+                c.waiting = false;
+                if !c.back {
+                    c.token = token();
+                }
+                break (c.back, c.token.clone());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    if back {
+        say("the tab already open came back");
+        at(port, &token, false);
+        return;
+    }
+    say(&format!("no tab came back within {} seconds, so the address has a new token, and a tab with the old one is refused", WAIT.as_secs()));
+    if let Some(file) = keep {
+        kept_or_said(&file, port, &token);
+    }
+    at(port, &token, open);
+}
+
+/// Where the editor is now, on `port` with `token`, said, and the browser
+/// opened there if `open`.
+fn at(port: u16, token: &str, open: bool) {
+    let url = format!("http://127.0.0.1:{port}/?t={token}");
+    say(&format!("the editor is at {url} · quit it there, or ctrl-c here"));
+    if open {
+        open_browser(&url);
+    }
+}
+
+/// `token` kept in `file` for `port`, for the next launch; else said why
+/// not, without the token.
+fn kept_or_said(file: &Path, port: u16, token: &str) {
+    if let Err(e) = keep_token(file, port, token) {
+        say(&format!("the token of this address cannot be kept in {}, so the next launch opens a new tab: {e}", file.display()));
+    }
+}
+
+/// `said` in the terminal `stacked web` was started from, after
+/// `stacked: `: not with eprintln!, which panics with nowhere to say it, as
+/// once that terminal closed.
+fn say(said: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "stacked: {said}");
 }
 
 /// Opens the browser on `url`, as stacked opens a web link
@@ -205,7 +465,7 @@ pub fn open_browser(url: &str) {
     let url = url.to_string();
     std::thread::spawn(move || {
         if let Err(why) = crate::refs::open_url(&url) {
-            eprintln!("stacked: {why}");
+            say(&why);
         }
     });
 }
@@ -257,7 +517,12 @@ pub fn catch_signals() {
 /// saying that the editor is gone.
 fn leave(app: &App, browsers: Vec<Sender<String>>, coming: &Mutex<Coming>, answering: &Answering) {
     // Each sent its last, then nothing more: its events end once written.
-    let came = std::mem::take(&mut lock(coming).browsers);
+    // Those that come after are told so at once (`handle`).
+    let came = {
+        let mut c = lock(coming);
+        c.left = true;
+        std::mem::take(&mut c.browsers)
+    };
     for b in browsers.into_iter().chain(came.into_iter().map(|(_, b)| b)) {
         let _ = b.send("bye".into());
     }
@@ -266,12 +531,42 @@ fn leave(app: &App, browsers: Vec<Sender<String>>, coming: &Mutex<Coming>, answe
     answering.wait();
 }
 
+/// Whether the editor's last page is gone: one said it goes (`going`) at
+/// least `WAIT` ago, no browser's events came since (a page loaded again
+/// asks for them), none is open, and one was, as a launch whose tab never
+/// came is not quit so. A page cut off without saying it goes, as when the
+/// machine sleeps or the browser puts its tab aside, quits nothing: it
+/// comes back. Once `WAIT` is past, what the page said is forgotten, so
+/// that a page cut off later quits nothing either.
+fn all_gone(coming: &Mutex<Coming>) -> bool {
+    let mut c = lock(coming);
+    match c.going {
+        Some(at) if at.elapsed() >= WAIT => {
+            c.going = None;
+            c.open == 0 && c.ever
+        }
+        _ => false,
+    }
+}
+
+/// What a tab come back from another launch is told, as a notice of the
+/// editor's, for the page to show as the system's banner while it is not
+/// what you look at; a click on it switches to the tab. Of no run, so that
+/// the click does nothing more (`App::noticed`).
+fn running_again() -> Notice {
+    Notice {
+        run: "stacked-web".into(),
+        title: "stacked".into(),
+        body: "stacked web is running again: click to switch to this tab.".into(),
+    }
+}
+
 /// The editor, as the terminal runs it: what the browsers send done, its
 /// screen drawn after, the rows that changed sent them, after the notices
 /// of what it learned meanwhile; while `$EDITOR` runs, the browsers told so
 /// first, those `coming` holds too, what they send dropped, and sent the
-/// screen whole after; until it is left, once what it is `answering` is
-/// answered.
+/// screen whole after; until it is left, as it is quit, or as its last page
+/// is gone (`all_gone`), once what it is `answering` is answered.
 fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Answering) -> Result<()> {
     let mut app = App::new(path)?;
     // What it learns, told the browsers, unless the settings say not to.
@@ -299,13 +594,22 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
             leave(&app, browsers, coming, answering);
             return Ok(());
         }
+        // Its last tab closed, and none come back since: left so too.
+        if all_gone(coming) {
+            say(&format!(
+                "the last tab of the editor was closed, and no tab came back within {} seconds, so stacked web quits",
+                WAIT.as_secs()
+            ));
+            leave(&app, browsers, coming, answering);
+            return Ok(());
+        }
         // All that came meanwhile, before it is drawn: a paste is many keys.
         // And whether `$EDITOR` ran, the screen after it then to send whole.
         let mut whole = false;
         let mut ran = false;
         for input in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
             match input {
-                Input::Join(id, cols, rows) => {
+                Input::Join(id, cols, rows, again) => {
                     let Some(tx) = came(coming, id) else { continue };
                     // What the editor learns of the database as the browser
                     // comes was there before it: read first, and its notices
@@ -314,6 +618,13 @@ fn run(path: &Path, rx: Receiver<Input>, coming: &Mutex<Coming>, answering: &Ans
                     app.refresh();
                     let told: Vec<String> = app.take_notices().iter().map(notice).collect();
                     tell(&mut browsers, &told);
+                    // A tab come back from another launch: told stacked web
+                    // runs again, for the banner it shows while it is not
+                    // what you look at, as the notices are, unless the
+                    // settings say not to.
+                    if again && app.cfg.web.notifications {
+                        let _ = tx.send(notice(&running_again()));
+                    }
                     browsers.push(tx);
                     size = fitted(cols, rows);
                     whole = true;
@@ -602,17 +913,23 @@ fn icons() -> &'static [Vec<u8>; 2] {
 /// rows as they change (server-sent events), or a browser's lines. Only
 /// from a page of this machine's, holding the token, the icon too: the page
 /// links it with the token, and `/favicon.ico`, which a browser may ask for
-/// on its own, without it, is refused as all else is. A browser's events
-/// start among those `coming` holds, told first if `$EDITOR` runs; and its
-/// lines are dropped as they are read while `$EDITOR` runs, but a new size.
-fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>, coming: &Mutex<Coming>) -> std::io::Result<()> {
+/// on its own, without it, is refused as all else is. While the launch
+/// waits for the tab of the launch before, a request of a page's with the
+/// token, but its lines, is that tab come back, under the lock the token is
+/// renewed under. A browser's events start among those `coming` holds,
+/// told first which stacked serves them, then if `$EDITOR` runs, and are
+/// counted open until their page closes them (`watch`); once the editor is
+/// left, they are told so at once. A browser's lines are dropped as they
+/// are read while `$EDITOR` runs, but a new size; and its page going is
+/// counted, never read by the editor.
+fn handle(stream: TcpStream, serving: &Serving, tx: &Sender<Input>, coming: &Mutex<Coming>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut out = stream;
     let mut first = String::new();
     reader.read_line(&mut first)?;
     let mut words = first.split_whitespace();
     let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
-    let (mut length, mut host) = (0usize, String::new());
+    let (mut length, mut host, mut last) = (0usize, String::new(), String::new());
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 {
@@ -626,14 +943,26 @@ fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>, coming:
             match k.trim().to_ascii_lowercase().as_str() {
                 "content-length" => length = v.trim().parse().unwrap_or(0),
                 "host" => host = v.trim().to_string(),
+                // The launch the browser had its events from, as it asks for
+                // them again (`write_events`).
+                "last-event-id" => last = v.trim().to_string(),
                 _ => {}
             }
         }
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let param = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('='));
+    let port = serving.port;
     let ours = host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}");
-    if !ours || param("t") != Some(token) {
+    let allowed = ours && {
+        let mut c = lock(coming);
+        let fine = param("t") == Some(c.token.as_str());
+        if fine && c.waiting && method == "GET" {
+            c.back = true;
+        }
+        fine
+    };
+    if !allowed {
         return reply(&mut out, "403 Forbidden", "text/plain", b"not for this page");
     }
     match (method, path) {
@@ -643,47 +972,64 @@ fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>, coming:
         ("GET", "/icon-64.png") => reply(&mut out, "200 OK", "image/png", &icons()[1]),
         ("GET", "/events") => {
             let n = |k: &str| param(k).and_then(|v| v.parse().ok()).unwrap_or(0);
+            // From another launch: the one the page had its events from, as
+            // the browser says it asking for them again, else as the page
+            // says it, loaded again since (`l`).
+            let had = Some(last.as_str()).filter(|l| !l.is_empty()).or_else(|| param("l"));
+            let again = had.is_some_and(|l| !l.is_empty() && l != serving.launch);
             let (rows_tx, rows) = mpsc::channel();
-            // Come, under the lock that `$EDITOR` starts under: told first
-            // if it runs, else told by the editor's thread if it starts
-            // before it reads this join.
+            // Come, under the lock that `$EDITOR` starts under, and that the
+            // editor is left under: told first which stacked serves it, then
+            // if `$EDITOR` runs, else told by the editor's thread if it
+            // starts before it reads this join, and counted open; or, the
+            // editor left, told so, and not come.
             let id = {
                 let mut c = lock(coming);
-                if let Some(said) = &c.editing {
-                    let _ = rows_tx.send(said.clone());
-                }
-                let id = c.next;
-                c.next += 1;
-                c.browsers.push((id, rows_tx));
-                id
-            };
-            let _ = tx.send(Input::Join(id, n("cols"), n("rows")));
-            out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n\r\n")?;
-            out.flush()?;
-            loop {
-                match rows.recv_timeout(Duration::from_secs(15)) {
-                    Ok(m) => {
-                        write!(out, "data: {m}\n\n")?;
-                        while let Ok(m) = rows.try_recv() {
-                            write!(out, "data: {m}\n\n")?;
-                        }
+                let _ = rows_tx.send(serving.version());
+                if c.left {
+                    let _ = rows_tx.send("bye".into());
+                    drop(rows_tx);
+                    None
+                } else {
+                    if let Some(said) = &c.editing {
+                        let _ = rows_tx.send(said.clone());
                     }
-                    // Still there? A closed page is found out writing.
-                    Err(RecvTimeoutError::Timeout) => out.write_all(b": still here\n\n")?,
-                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                    let id = c.next;
+                    c.next += 1;
+                    c.browsers.push((id, rows_tx));
+                    c.open += 1;
+                    c.ever = true;
+                    c.going = None;
+                    Some(id)
                 }
-                out.flush()?;
+            };
+            if let Some(id) = id {
+                let _ = tx.send(Input::Join(id, n("cols"), n("rows"), again));
             }
+            // Read until the page closes them, as they are written: counted
+            // open no longer as soon as it does, whatever is written then.
+            std::thread::scope(|s| {
+                if id.is_some() {
+                    s.spawn(|| watch(&mut reader, coming));
+                }
+                let written = write_events(&mut out, &rows, &serving.launch);
+                // Ended, for the page and for `watch`.
+                let _ = out.shutdown(Shutdown::Both);
+                written
+            })
         }
         ("POST", "/input") => {
             let mut body = vec![0; length.min(1 << 20)];
             reader.read_exact(&mut body)?;
             // Read under the lock that `$EDITOR`'s run starts and ends
             // under: what comes while it runs dropped, but a new size; what
-            // comes before or after it done.
-            let c = lock(coming);
+            // comes before or after it done. A page going, counted whenever
+            // it comes (`all_gone`).
+            let mut c = lock(coming);
             for line in String::from_utf8_lossy(&body).lines() {
-                if c.editing.is_none() || kept_while_editing(line) {
+                if going(line) {
+                    c.going = Some(Instant::now());
+                } else if c.editing.is_none() || kept_while_editing(line) {
                     let _ = tx.send(Input::Line(line.to_string()));
                 }
             }
@@ -691,6 +1037,51 @@ fn handle(stream: TcpStream, token: &str, port: u16, tx: &Sender<Input>, coming:
             reply(&mut out, "204 No Content", "text/plain", b"")
         }
         _ => reply(&mut out, "404 Not Found", "text/plain", b"nothing here"),
+    }
+}
+
+/// A browser's events, their connection read from `reader`, though the
+/// page sends nothing on it, until the page closes it, or it is cut, or it
+/// is ended here: then counted open no longer, and ended for the thread
+/// that writes them too, whose next write fails.
+fn watch(reader: &mut BufReader<TcpStream>, coming: &Mutex<Coming>) {
+    let mut buf = [0u8; 64];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(n) if n > 0 => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            _ => break,
+        }
+    }
+    lock(coming).open -= 1;
+    let _ = reader.get_ref().shutdown(Shutdown::Both);
+}
+
+/// What the editor sends a browser, as it comes from `rows`, written to
+/// `out` as server-sent events, each line an event: with the first, how
+/// long after losing them the browser asks for them again (`RETRY`), and
+/// `launch`, this launch, as their id, which the browser says as it asks
+/// again; and every fifteen seconds that nothing comes, a comment, by which
+/// a closed page is found out writing. Until the editor sends no more, as
+/// it is left, or the page is gone.
+fn write_events(out: &mut TcpStream, rows: &Receiver<String>, launch: &str) -> std::io::Result<()> {
+    out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n\r\n")?;
+    out.flush()?;
+    let mut fields = format!("retry: {}\nid: {launch}\n", RETRY.as_millis());
+    loop {
+        match rows.recv_timeout(Duration::from_secs(15)) {
+            Ok(m) => {
+                write!(out, "{fields}data: {m}\n\n")?;
+                fields.clear();
+                while let Ok(m) = rows.try_recv() {
+                    write!(out, "data: {m}\n\n")?;
+                }
+            }
+            // Still there? A closed page is found out writing.
+            Err(RecvTimeoutError::Timeout) => out.write_all(b": still here\n\n")?,
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+        out.flush()?;
     }
 }
 
@@ -705,11 +1096,11 @@ fn reply(out: &mut TcpStream, status: &str, kind: &str, body: &[u8]) -> std::io:
 }
 
 /// For the tests: serves the database at `path` on a free port, away from
-/// the caller: where, and the token.
+/// the caller, saying nothing and opening nothing: where, and the token.
 pub fn start(path: PathBuf) -> Result<(u16, String)> {
     let bound = bind(0)?;
     let (port, token) = (bound.port, bound.token.clone());
-    std::thread::spawn(move || bound.serve(&path));
+    std::thread::spawn(move || bound.serving(&path, None));
     Ok((port, token))
 }
 
@@ -750,5 +1141,66 @@ mod tests {
         let line = client::key("ArrowUp", false, false, false, false);
         assert_eq!(key(&line.split_whitespace().skip(1).collect::<Vec<_>>()), Some(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
         assert_eq!(fitted(5, 5000), (40, 200));
+    }
+
+    #[test]
+    fn which_stacked_serves_a_page_and_the_page_going_are_lines_each_side_reads() {
+        // The line a browser's events start with, as the client reads it:
+        // the build, the launch, whether its address is kept.
+        let serving = Serving { port: 1, launch: token(), kept: true };
+        assert_eq!(client::screen(&serving.version()), format!("version {} {} 1", build(), serving.launch));
+        let unkept = Serving { kept: false, ..serving };
+        assert_eq!(client::screen(&unkept.version()), format!("version {} {} 0", build(), unkept.launch));
+        // The build: of the page and its wasm, the same each time.
+        assert_eq!(build().len(), 16);
+        assert_eq!(build(), build());
+        // The page going: `g` alone.
+        assert!(going("g") && going(" g "));
+        assert!(!going("g 1") && !going("k c 67 -") && !going(""));
+    }
+
+    #[test]
+    fn a_token_is_kept_for_its_port_in_a_file_only_you_may_read_written_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("home").join("web-token.json");
+        let mode = |f: &Path| std::fs::metadata(f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(kept_token(&file, 8080), None, "none kept yet");
+        // Kept, its folder made: for its port alone, the file 0600, nothing
+        // left beside it.
+        let first = token();
+        keep_token(&file, 8080, &first).unwrap();
+        assert_eq!(kept_token(&file, 8080), Some(first.clone()));
+        assert_eq!(kept_token(&file, 8081), None, "kept for another port");
+        assert_eq!(mode(&file), 0o600);
+        let names: Vec<_> = std::fs::read_dir(file.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["web-token.json"]);
+        // Another for another port, in its place: 0600 again, though the
+        // file was opened to others meanwhile.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let next = token();
+        keep_token(&file, 9090, &next).unwrap();
+        assert_eq!((kept_token(&file, 8080), kept_token(&file, 9090)), (None, Some(next)));
+        assert_eq!(mode(&file), 0o600);
+        // What is not a token, or cannot be read: none.
+        std::fs::write(&file, "{\"port\": 8080, \"token\": \"a b&c\"}").unwrap();
+        assert_eq!(kept_token(&file, 8080), None);
+        std::fs::write(&file, "{\"port\": 8080, \"token\": \"\"}").unwrap();
+        assert_eq!(kept_token(&file, 8080), None);
+        std::fs::write(&file, "not json").unwrap();
+        assert_eq!(kept_token(&file, 8080), None);
+        // Nowhere keeps nothing, and is not written; nor is a folder in its
+        // place, nor anything beside it.
+        let nowhere = Path::new(crate::home::NOWHERE);
+        keep_token(nowhere, 8080, &first).unwrap();
+        assert_eq!(kept_token(nowhere, 8080), None);
+        assert!(!Path::new(&format!("{}.{}", crate::home::NOWHERE, std::process::id())).exists());
+        let folder = tmp.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        keep_token(&folder, 8080, &first).unwrap();
+        assert_eq!(kept_token(&folder, 8080), None);
+        assert!(std::fs::read_dir(&folder).unwrap().next().is_none());
+        let mut names: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        names.sort();
+        assert_eq!(names, ["folder", "home"]);
     }
 }

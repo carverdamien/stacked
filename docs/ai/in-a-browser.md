@@ -98,8 +98,9 @@ said in a line, `port 8080 of 127.0.0.1 is in use`, and `stacked web` does
 not start, trying no other. `--no-open` only says where it is.
 
 It listens on 127.0.0.1 only, and only a page holding the token in the
-address it opened (a new one each time, whatever the port) may see it or
-drive it: a page from elsewhere could otherwise send it keys. The page's
+address it opened (a new one each time, but with a port the settings fix,
+below) may see it or drive it: a page from elsewhere could otherwise send
+it keys. The page's
 tab shows StackED's icon
 (In a window of its own: StackED, below), 32 pixels square, or 64 on a
 screen of high density, each size drawn once and written as a PNG by
@@ -130,11 +131,75 @@ dropped; what it read before, or reads after, is done. The page sends
 nothing meanwhile but its size, and the mouse is over what is said, not
 over the screen. Quit is
 quit, and the page says so. A ctrl-c there, a kill, or that terminal
-closing quits too. Either way, as when the editor in a terminal is left,
+closing quits too, and so does closing the editor's last tab (below).
+Either way, as when the editor in a terminal is left,
 the agents' worktrees made ahead are removed, and the asks still running
 are listed there; and `stacked web` ends once each page is told (a few
 seconds at most, for a page that reads nothing). A ctrl-c while `$EDITOR`
 runs there goes to `$EDITOR` alone.
+
+With a port the settings fix, `"fixed-random"` or a number, the address is
+kept for the next launch: `stacked web` keeps its token, for that port
+alone, in `web-token.json` beside `state.json` (where `$STACKED_HOME`, or
+`$STACKED_APP_STATE`, puts the state; nowhere where the state is kept
+nowhere), a file that only you may read or write, written whole beside it
+then renamed into place, and never in the settings' file, which you may
+share, nor in a database. The next launch on that port listens with that
+token and opens no tab at once: it says `a tab already open on port 51234
+has 2 seconds to come back, else a new tab is opened on a new address`, and
+gives the tab already open on that address 2 seconds, one constant, to
+come back, a request of its page with that token, but its lines (its
+events asked for again, as the page asks for them each second while
+stacked is gone). Come back, it says `the tab already open came back`, then
+where the editor is, as ever, and opens nothing. Else it takes a new token,
+which it keeps in the place of the other, says `no tab came back within 2
+seconds, so the address has a new token, and a tab with the old one is
+refused`, then where the editor is, and opens the browser there, as a
+launch with no token kept yet does at once; a page with the old token is
+refused from then on. With `--no-open` it waits and renews the token all
+the same, opening nothing (`…, else the address is given a new token`).
+With `"random"`, or `--port`, the token is new each launch, and the file is
+neither read nor written: a token kept there stays as it was, unused, and a
+launch on its port fixed again waits for its tab, as above. A file the
+token cannot be kept in is said (`the token of this address cannot be kept
+in …, so the next launch opens a new tab: …`), and the launch goes on.
+
+When stacked quits, or the page's events are lost, the page says so over
+its screen, darkened, as while `$EDITOR` runs: `stacked has quit.`, then on
+a line of its own `This tab waits for stacked web to start again on this
+address, then goes on by itself.`; or, its events lost with no word from
+the editor, `stacked cannot be reached.`, then `This tab waits for stacked
+web to answer again on this address, then goes on by itself.`. The browser
+asks for the events again each second, at the same address with the same
+token, saying the launch it had them from (the events' `Last-Event-ID`);
+what the page does meanwhile is not sent. Once stacked answers, it sends
+the screen whole, which takes the place of what was said over it, and the
+page says its size: the wasm and the page's script stay as they were
+loaded, unless the stacked that answers is of another build (its page or
+its wasm differs, newer or older), whose page is then loaded in the tab.
+Refused, as stacked started again with a new token, the page says `stacked
+web started again with a new address.`, then `This tab can be closed.`, and
+asks no more. A launch that keeps no address never listens on the same one
+again: once it quits, its page says `stacked has quit.`, then `The next
+stacked web opens a tab of its own, so this tab can be closed.`, and asks
+no more. A tab that comes back from another launch while it is not what you
+look at shows a banner, as the notices below do, titled `stacked`:
+`stacked web is running again: click to switch to this tab.`; a click on
+it brings the tab forward, and does nothing more. With `web.notifications =
+false`, or the browser's permission refused, nothing is shown.
+
+Closing the editor's tab quits `stacked web`: the page says it goes when it
+is hidden for good (`pagehide`: closed, loaded again, or left for another
+page), in a line of its own sent as a beacon, its events closed. Once the
+last page with its events open has said so, and no page asks for its
+events within 2 seconds, `stacked web` says `the last tab of the editor was
+closed, and no tab came back within 2 seconds, so stacked web quits`, and
+quits as Quit does. A reload, which says it goes and comes back at once,
+quits nothing; nor does closing one tab of several while another stays. A
+page cut off without saying it goes, as when the machine sleeps or the
+browser puts its tab aside, quits nothing: it comes back, as above. Nor
+does anything quit so before a page ever came: the first launch's tab
+counts as soon as it asks for its events.
 
 While the page is not what you look at, hidden behind another tab or
 window, or in a window that does not have the focus, it shows the editor's
@@ -199,6 +264,18 @@ starts, which the editor's thread does not know yet, is told as it starts.
 The threads that read the pages' lines read them under that lock too,
 which the pages are told under that the editor runs and sent the screen
 after under: a line read once a page could have that screen is done.
+Under that lock too: the token a request needs, which the launch renews
+under it while it waits for the tab of the launch before, so that a page
+of that tab either came back before or is refused after; the pages'
+events open, each counted from when it comes until its page closes it, a
+thread of its own reading it for that, and when a page last said it goes,
+by which the editor's thread knows its last page gone; and whether the
+editor is left, a page's events that come after told so at once.
+Each page's events start with which stacked sends them (`v BUILD LAUNCH
+KEPT`): the build of the page and its wasm, the launch, and whether that
+launch keeps its address; and with how long the browser waits before it
+asks for them again, once lost (a second), and the launch as their id,
+which the browser says as it asks again.
 A page of an older stacked does nothing with a notice, nor with what says
 that the editor runs, as with any line it does not know. The page sends
 its keys, its clicks and its wheel back, the wheel
@@ -211,14 +288,17 @@ then Space at once, opens the stack's menu with the stack's comments to
 ask about, as a right click on the stack's header does. What the page does
 is wasm
 (`web/client.rs`: the rows made HTML, the notices what the page shows of
-them, `$EDITOR` running the words said over the screen, the keys, the
+them, `$EDITOR` running the words said over the screen, which stacked sends
+the lines what the page keeps of it, the keys, the
 clicks and the wheel made lines for the server, the
 wheel's small turns in pixels kept until they make a notch, 40 pixels, and
 each turn in lines or in pages a notch, whatever its size), carried by a
-hundred lines of JS (`web/index.html`), which reads the wheel's mode
-before its turn: Firefox says a mouse's notches in lines only to a page
-that reads the mode first; and which shows the notices, and asks the
-browser's permission for them. The
+hundred and fifty lines of JS (`web/index.html`), which reads the wheel's
+mode before its turn: Firefox says a mouse's notches in lines only to a
+page that reads the mode first; which shows the notices, and asks the
+browser's permission for them; and which says over the screen that
+stacked is gone, while the browser asks for the lines again, and says the
+page goes as it is hidden for good. The
 editor knows whether the mouse is in use, and what the wheel scrolls
 under it (`tui/wheel.rs`), as it does for StackED; and what a press on
 HEAD's row is, a click or a drag (`tui/drag.rs`).

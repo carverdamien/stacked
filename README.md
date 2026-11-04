@@ -327,6 +327,9 @@ keys.
   time (unless set), `"fixed-random"`, any free port the first time, which
   stacked writes in your settings and listens on every time after, or a
   port number; a port in use is said, and `stacked web` does not start.
+  With `"fixed-random"` or a port number, the next launch gives the tab
+  already open 2 seconds to come back before it opens a new one, and
+  either way, closing the editor's last tab quits `stacked web`.
   While you are not looking at the page, it shows your system's banners
   when work of any stack lands for your review, a run fails or a try push
   is done, if you let the browser show them when it asks, once

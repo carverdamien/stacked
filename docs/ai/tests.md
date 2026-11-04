@@ -1298,17 +1298,51 @@ listens on, a free one found for a test by binding 0 first, as the code
 does, and all tried again on another, up to ten times, should another
 process take that one before `stacked web` listens on it, as it then says,
 so that only stacked can fail them (any free one each time, unset or `"random"`, the one taken before
-held meanwhile, nothing written in the settings; with `"fixed-random"`,
+held meanwhile, nothing written in the settings, the page's events saying
+the address kept for no launch after, and no token kept; with `"fixed-random"`,
 any free one the first time, written in the settings beside `port` as
 `kept_port`, the rest of the file as it was, then that one on another
-database, its token a new one, the first one's refused there, nothing
-written in the databases nor in `state.json`; a port set listened on, the
-port kept passed over though it is in use; `--port` going over a port set
-that is in use, 0 any free one, and over `"fixed-random"` keeping nothing;
+database, with the token the first kept for it, its tab given 2 seconds to
+come back, none there, then a new token, said so, `--no-open` opening
+nothing, the first one's refused there, the new one kept beside the state,
+nothing written in the databases nor in `state.json`; a port set listened
+on, the port kept passed over though it is in use, its token kept for it,
+and `--port` giving that very port a token of its own, nothing waited for;
+`--port` going over a port set
+that is in use, 0 any free one, and over `"fixed-random"` keeping nothing,
+nor any token, the one kept as it was;
 a port in use, set, kept or given, said in a line, `stacked web` exiting
 with 1, the settings as they were; and the port `"fixed-random"` took, in
 a file where it would not read back, its table's header written `[ web
-]`, said, and listened on all the same, the file as it was), the ask dialog (opened with
+]`, said, and listened on all the same, the file as it was), the address
+of a launch on a port the settings set (no token kept yet, one of its own
+kept for it beside the state, in a file of mode 0600, the browser opened
+at once by a stand-in for its opener, `$STACKED_OPEN`, nothing said before
+where the editor is; the next launch there, the tab asking for its events
+again as soon as it listens, saying the launch it had them from
+(`Last-Event-ID`): come back, said so, the first one's token kept and
+served, no new tab opened, the tab told first which launch sends its
+events (`v BUILD LAUNCH KEPT`, the build the same, the launch another,
+its address kept), with the browser to ask again a second after losing
+them (`retry: 1000`, the launch as their `id`), then that stacked web runs
+again (`n stacked-web US stacked US stacked web is running again: click to
+switch to this tab.`), then the screen whole; with no tab back, the next
+launch there waiting 2 seconds, no less, then taking a new token, kept in
+the first one's place, said so, a new tab opened on it, and the first
+one's refused, its tab's events too; each tried again on another port should
+another process take it first, or the tab come back later than 2
+seconds), a tab come back from another launch told that stacked web runs
+again, before the screen, whether it says that launch as the browser does
+or in the address of a page loaded again (`l`), none told for the same
+launch, nor with `web.notifications = false`; the last tab closed, saying
+it goes (`g`) and its events closed, `stacked web` quitting as Quit does,
+no sooner than 2 seconds after, saying why, the worktree made ahead
+removed; a tab loaded again, saying it goes and back at once, quitting
+nothing past the 2 seconds, and served (tried again should it come back
+later); a page saying it goes before any came, then one cut off without
+saying it goes, quitting nothing, the page served once it comes back; and
+of two tabs, one closed quitting nothing, the other served, then the other
+closed quitting, the ask dialog (opened with
 nothing set from `Ask agent about all…`, clicked, its permission set by
 clicks on its line and on an option of the list that opens under it, then
 stepped by → and back by ←, its effort picked in the list Enter opens, ↑
@@ -1376,7 +1410,8 @@ notice saying so (`The try push is done: 1 of its 2 tasks failed. Its
 summary waits for your review.`); `$EDITOR` running, in a `stacked web`
 run for real, its stand-in a script that waits for a file: the first patch
 edited from its menu, the page told first, `e slowedit`, the program it
-runs, a page come while it runs told it at once, before any screen, and,
+runs, a page come while it runs told it at once, after which stacked
+serves it, before any screen, and,
 the editor done, each page sent the screen whole, no row before it, the
 bottom line saying `nothing changed`; and an editor that cannot run told
 all the same, `e noedit`, then the screen whole at once, the bottom line
@@ -1388,7 +1423,12 @@ page sent the screen whole after at that size, the bottom line saying
 `nothing changed`, the first patch still in the middle, no menu, no
 comment, nothing written in the database, then a key sent after done;
 and
-`web.rs` tests the rows and the lines both ways, with the client's own tests
+`web.rs` tests the rows and the lines both ways, the line a page's events
+start with as the client reads it, its build the same each time, the page
+going (`g`) alone, and a token kept for its port alone, in a file of mode
+0600 whatever the umask or a mode opened meanwhile, written whole beside
+it, nothing left there, none read of what is not a token, and nothing kept
+nowhere, nor where a folder is in its place, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the wheel said once it turned a notch, with the cell under the mouse
 (none over no cell), what it turned short of a notch kept, the wheel
@@ -1406,8 +1446,12 @@ browser sends the click before the focus or after; and a notice made what
 the page shows of it, its tag, its title, its body and the line its click
 sends the server, each on a line of its own, a new line in its title or
 its body a space, and nothing for one short of a field, or whose run is
-empty or holds a space; and `$EDITOR` running made the words said over
-the screen, by the program it runs, `the editor` when none is named. With
+empty or holds a space; `$EDITOR` running made the words said over
+the screen, by the program it runs, `the editor` when none is named; and
+which stacked serves the page made what the page keeps of it, nothing for
+one short of a field or with one more, an empty field, one the page could
+not say again in its address, or whether the address is kept neither 1
+nor 0. With
 the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
 it, with no window: nothing drawn before the window's size, a key, a
 click, 1 on the versions of a patch opening the dialog of the views of
@@ -2101,8 +2145,10 @@ as by its text. Those in
 one `$STACKED_HOME` names, a file named over it, nowhere with neither);
 the files of before moved in once by a run of yours and said, never over a
 file there, a link moved as a link, and nothing moved that an override
-names the place of; what stacked runs told the same places; and nowhere in
-a test's own process. Those in `phab.rs` show a comment read as it was
+names the place of; what stacked runs told the same places; the token of
+`stacked web`'s address kept beside the state, wherever the state is, and
+nowhere where the state is nowhere; and nowhere in a test's own process.
+Those in `phab.rs` show a comment read as it was
 last edited, its versions before kept with it, by when it was first
 written, one removed none; from a Phabricator that gives no suggested
 edits, an inline comment that is a suggested edit alone, with no words and

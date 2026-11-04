@@ -11,8 +11,14 @@
 //! what the editor learned of run RUN, for the page to show as the system's
 //! banner while it is not what you look at; `e PROGRAM`, `$EDITOR` running
 //! PROGRAM, for the page to say over its screen until the next screen
-//! comes. A page of an older stacked does nothing with a line it does not
-//! know, such as a notice.
+//! comes; `v BUILD LAUNCH KEPT`, first each time the page asks for the
+//! lines, which stacked sends them: the build of the page and its wasm
+//! (BUILD), for a page loaded from another build to load this one's, the
+//! launch of stacked (LAUNCH), which the page says again as it asks for the
+//! lines once it lost them, and whether that launch keeps its address for
+//! the next (KEPT, 1, else 0), which the page may come back to. A page of an
+//! older stacked does nothing with a line it does not know, such as a
+//! notice.
 //!
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
 //! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
@@ -24,7 +30,10 @@
 //! over the cell where the mouse was last seen while the page did not have
 //! it; `d X Y` for that, the left button down; `o`, the mouse gone from the
 //! screen, or the page losing the focus; `n RUN`, the notice of run RUN
-//! clicked, which brought the page forward.
+//! clicked, which brought the page forward; `g`, the page going, closed,
+//! loaded again or left for another page, which the page's JS sends alone
+//! as it is hidden for good, for stacked web to quit once its last page is
+//! gone.
 
 /// Where the cursor is, in a run's modifiers: past ratatui's own.
 pub const CURSOR: u32 = 1 << 16;
@@ -54,13 +63,17 @@ const PIXELS: u32 = 0;
 /// What the page does with one of the server's lines: `size COLS ROWS`;
 /// `row Y`, and on the next line the row's HTML; `bye`; `notice`, and on
 /// the next lines what `notice` makes of it; `editing`, and on the next
-/// lines what to say over the screen (`editing`); else nothing.
+/// lines what to say over the screen (`editing`); `version` and what it
+/// keeps of the stacked serving it (`version`); else nothing.
 pub fn screen(msg: &str) -> String {
     if let Some(n) = msg.strip_prefix("n ") {
         return notice(n);
     }
     if let Some(program) = msg.strip_prefix("e ") {
         return format!("editing\n{}", editing(program));
+    }
+    if let Some(v) = msg.strip_prefix("v ") {
+        return version(v);
     }
     let mut parts = msg.splitn(3, ' ');
     match (parts.next(), parts.next(), parts.next()) {
@@ -85,6 +98,22 @@ fn notice(n: &str) -> String {
     }
     let line = |s: &str| s.replace(['\n', '\r'], " ");
     format!("notice\n{run}\n{}\n{}\nn {run}", line(title), line(body))
+}
+
+/// What the page keeps of the stacked serving it, `BUILD LAUNCH KEPT`:
+/// `version BUILD LAUNCH KEPT`, the build of the page and its wasm, the
+/// launch of stacked, and whether that launch keeps its address for the
+/// next, 1, or not, 0. Nothing for a line short of a field or with one more,
+/// or with a build or a launch of more than letters and digits, which the
+/// page could not say again in an address.
+fn version(v: &str) -> String {
+    let fields: Vec<&str> = v.split(' ').collect();
+    let [build, launch, kept] = fields[..] else { return String::new() };
+    let plain = |f: &str| !f.is_empty() && f.chars().all(|c| c.is_ascii_alphanumeric());
+    if !plain(build) || !plain(launch) || !matches!(kept, "0" | "1") {
+        return String::new();
+    }
+    format!("version {build} {launch} {kept}")
 }
 
 /// What the page says over its screen while `$EDITOR` runs `program`, in
@@ -502,6 +531,21 @@ mod tests {
             "editing\nThe text is open in the editor, in the terminal `stacked web` was started from if the editor runs in one.\nstacked goes on once the editor exits."
         );
         assert_eq!(screen("e"), "");
+    }
+
+    #[test]
+    fn which_stacked_serves_the_page_is_kept_for_the_page_to_come_back() {
+        // Its build, its launch, and whether its address is kept.
+        assert_eq!(screen("v 0a1b2c3d4e5f6a7b 9f8e7d 1"), "version 0a1b2c3d4e5f6a7b 9f8e7d 1");
+        assert_eq!(screen("v 0a1b2c3d4e5f6a7b 9f8e7d 0"), "version 0a1b2c3d4e5f6a7b 9f8e7d 0");
+        // One short of a field, or with one more, an empty one, one the page
+        // could not say again in its address, kept neither 1 nor 0: nothing.
+        assert_eq!(screen("v 0a1b 9f8e"), "");
+        assert_eq!(screen("v 0a1b 9f8e 1 more"), "");
+        assert_eq!(screen("v  9f8e 1"), "");
+        assert_eq!(screen("v 0a1b 9f&l=x 1"), "");
+        assert_eq!(screen("v 0a1b 9f8e yes"), "");
+        assert_eq!(screen("v"), "");
     }
 
     #[test]
