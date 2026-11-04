@@ -62,6 +62,8 @@ pub mod head_why;
 pub use head_why::HeadWhy;
 mod interdiffs;
 pub use crate::config::{InterLayout, InterLines};
+pub mod notices;
+pub use notices::Notice;
 pub mod places;
 pub mod reviewing;
 pub use reviewing::Reviewing;
@@ -2496,6 +2498,9 @@ pub struct App {
     /// The runs still going when the database was last read: when one
     /// lands, the status line says what came of it.
     going: Vec<String>,
+    /// What landed since, as notices for the pages of `stacked web`, until
+    /// it takes them: kept only once it asks for them (`keep_notices`).
+    notices: Option<Vec<Notice>>,
     judged: Option<Judged>,
     /// The checkout stacked runs in, whose HEAD the patches pane shows,
     /// and what a stack is imported from; `$EDITOR` runs there too. The
@@ -3041,6 +3046,7 @@ impl App {
             body_h: 20,
             body_w: 80,
             going: going(&db),
+            notices: None,
             judged: None,
             checkout: dir.to_path_buf(),
             import_with: (false, false),
@@ -4928,6 +4934,9 @@ impl App {
         }
         #[cfg(feature = "try-push")]
         self.try_push_news(&was);
+        // Of every stack, a notice for the pages of `stacked web`, if it
+        // keeps them.
+        self.notice_landed(&was);
         self.going = going(&self.db);
         if let Some((change, id)) = on {
             self.follow(&change, &id);

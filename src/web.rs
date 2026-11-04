@@ -1,8 +1,12 @@
 //! `stacked web`: the editor in a browser. A server on this machine runs
 //! the editor as the terminal does, its screen drawn into a buffer of the
 //! browser's size; the browser is sent the rows that changed, and sends
-//! back its keys and clicks. Its half is wasm (web/client.rs, built by the
-//! build script), carried by a little JS (web/index.html).
+//! back its keys and clicks. It is sent too, unless the settings' `[web]`
+//! say otherwise (`notifications`), the notices of what the editor learns
+//! of every stack (`tui::notices`), which the page shows as the system's
+//! banners while it is not what you look at. Its half is wasm
+//! (web/client.rs, built by the build script), carried by a little JS
+//! (web/index.html).
 //!
 //! Only this machine's pages, holding the token the browser was opened
 //! with, may see it or drive it: a page from elsewhere could otherwise send
@@ -27,7 +31,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::config::{Port, Web};
 use crate::db::{Error, Result};
-use crate::tui::{App, Effect};
+use crate::tui::{App, Effect, Notice};
 
 const PAGE: &str = include_str!("../web/index.html");
 const CLIENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/client.wasm"));
@@ -216,10 +220,15 @@ fn leave(app: &App, browsers: Vec<Sender<String>>, answering: &Answering) {
 }
 
 /// The editor, as the terminal runs it: what the browsers send done, its
-/// screen drawn after, the rows that changed sent them; until it is left,
-/// once what it is `answering` is answered.
+/// screen drawn after, the rows that changed sent them, after the notices
+/// of what it learned meanwhile; until it is left, once what it is
+/// `answering` is answered.
 fn run(path: &Path, rx: Receiver<Input>, answering: &Answering) -> Result<()> {
     let mut app = App::new(path)?;
+    // What it learns, told the browsers, unless the settings say not to.
+    if app.cfg.web.notifications {
+        app.keep_notices();
+    }
     // Opened: on StackED's File → Open Recent too.
     crate::state::opened_in_editor(path);
     app.launch();
@@ -246,6 +255,13 @@ fn run(path: &Path, rx: Receiver<Input>, answering: &Answering) -> Result<()> {
         for input in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
             match input {
                 Input::Join(tx, cols, rows) => {
+                    // What the editor learns of the database as the browser
+                    // comes was there before it: read first, and its notices
+                    // told the browsers there before alone, so that a page
+                    // is told only of what lands once it is there.
+                    app.refresh();
+                    let told: Vec<String> = app.take_notices().iter().map(notice).collect();
+                    tell(&mut browsers, &told);
                     browsers.push(tx);
                     size = fitted(cols, rows);
                     whole = true;
@@ -280,7 +296,9 @@ fn run(path: &Path, rx: Receiver<Input>, answering: &Answering) -> Result<()> {
         let cursor = app.draw(&mut buf);
         let now = rows(&buf, cursor);
         let whole = whole || now.len() != shown.len();
-        let mut sent = Vec::new();
+        // The notices first: a page sent the screen that says what landed
+        // was sent its notice.
+        let mut sent: Vec<String> = app.take_notices().iter().map(notice).collect();
         if whole {
             sent.push(format!("s {} {}", size.0, size.1));
         }
@@ -289,7 +307,7 @@ fn run(path: &Path, rx: Receiver<Input>, answering: &Answering) -> Result<()> {
                 sent.push(row.clone());
             }
         }
-        browsers.retain(|b| sent.iter().all(|m| b.send(m.clone()).is_ok()));
+        tell(&mut browsers, &sent);
         shown = now;
     }
 }
@@ -299,13 +317,28 @@ fn fitted(cols: u16, rows: u16) -> (u16, u16) {
     (cols.clamp(40, 400), rows.clamp(10, 200))
 }
 
+/// `lines` sent to each of the browsers, in order: those gone, whose events
+/// ended, forgotten.
+fn tell(browsers: &mut Vec<Sender<String>>, lines: &[String]) {
+    browsers.retain(|b| lines.iter().all(|m| b.send(m.clone()).is_ok()));
+}
+
+/// Notice `n` as web/client.rs reads it: `n RUN US TITLE US BODY`, the run
+/// it is of, its title and its body, each with its control characters
+/// spaces, US among them, as a row's text has them.
+fn notice(n: &Notice) -> String {
+    let plain = |s: &str| s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
+    format!("n {}\u{1f}{}\u{1f}{}", plain(&n.run), plain(&n.title), plain(&n.body))
+}
+
 /// What a line a browser sent does: a key pressed (`k NAME MODS`, `k c HEX
 /// MODS`), a click on a cell (`m X Y l|r`), the left button pressed for
 /// it, which HEAD's row holds for a drag (`App::down`), the wheel turned N
 /// lines over a cell (`w X Y N`, down, up below 0; `w N` over none), the
 /// mouse over another (`v X Y`), over another with the left button down
 /// (`d X Y`), or gone from the screen (`o`), the left button let go over a
-/// cell (`u X Y`; `u` over none), a new size (`s COLS ROWS`).
+/// cell (`u X Y`; `u` over none), a new size (`s COLS ROWS`), the notice of
+/// run RUN clicked, the page brought forward (`n RUN`, `App::noticed`).
 fn act(app: &mut App, line: &str, size: &mut (u16, u16)) -> Effect {
     let parts: Vec<&str> = line.split_whitespace().collect();
     match parts.as_slice() {
@@ -351,6 +384,10 @@ fn act(app: &mut App, line: &str, size: &mut (u16, u16)) -> Effect {
             if let (Ok(c), Ok(r)) = (cols.parse(), rows.parse()) {
                 *size = fitted(c, r);
             }
+            Effect::None
+        }
+        ["n", run] => {
+            app.noticed(run);
             Effect::None
         }
         _ => Effect::None,

@@ -7,7 +7,10 @@
 //! its runs one after the other, RS (\x1e) between them, each its style, US
 //! (\x1f), its text, a style `FG,BG,MODS` (a colour: none for the page's,
 //! 0 to 15, or #rrggbb; MODS ratatui's modifiers, and CURSOR where the
-//! cursor is); `bye`, the editor gone.
+//! cursor is); `bye`, the editor gone; `n RUN US TITLE US BODY`, a notice of
+//! what the editor learned of run RUN, for the page to show as the system's
+//! banner while it is not what you look at. A page of an older stacked
+//! does nothing with a line it does not know, such as a notice.
 //!
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
 //! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
@@ -18,7 +21,8 @@
 //! while the page has the focus, or, when the page gets the focus back,
 //! over the cell where the mouse was last seen while the page did not have
 //! it; `d X Y` for that, the left button down; `o`, the mouse gone from the
-//! screen, or the page losing the focus.
+//! screen, or the page losing the focus; `n RUN`, the notice of run RUN
+//! clicked, which brought the page forward.
 
 /// Where the cursor is, in a run's modifiers: past ratatui's own.
 pub const CURSOR: u32 = 1 << 16;
@@ -46,8 +50,12 @@ const NOTCH: f64 = 40.0;
 const PIXELS: u32 = 0;
 
 /// What the page does with one of the server's lines: `size COLS ROWS`;
-/// `row Y`, and on the next line the row's HTML; `bye`; else nothing.
+/// `row Y`, and on the next line the row's HTML; `bye`; `notice`, and on
+/// the next lines what `notice` makes of it; else nothing.
 pub fn screen(msg: &str) -> String {
+    if let Some(n) = msg.strip_prefix("n ") {
+        return notice(n);
+    }
     let mut parts = msg.splitn(3, ' ');
     match (parts.next(), parts.next(), parts.next()) {
         (Some("s"), Some(cols), Some(rows)) => format!("size {cols} {rows}"),
@@ -55,6 +63,22 @@ pub fn screen(msg: &str) -> String {
         (Some("bye"), ..) => "bye".into(),
         _ => String::new(),
     }
+}
+
+/// A notice of the server's, `RUN US TITLE US BODY`, made what the page
+/// shows as the system's banner: its tag, which a banner of the same run
+/// takes the place of, as when two pages show it; its title; its body; and
+/// the line for the server once it is clicked, `n RUN`, each on a line of
+/// its own. Nothing for one short of a field, or whose run is empty or
+/// holds a space, which the line for the server could not say.
+fn notice(n: &str) -> String {
+    let mut fields = n.split('\u{1f}');
+    let (Some(run), Some(title), Some(body)) = (fields.next(), fields.next(), fields.next()) else { return String::new() };
+    if run.is_empty() || run.contains(char::is_whitespace) {
+        return String::new();
+    }
+    let line = |s: &str| s.replace(['\n', '\r'], " ");
+    format!("notice\n{run}\n{}\n{}\nn {run}", line(title), line(body))
 }
 
 /// A colour of the server's: the page's own (none), one of the sixteen, or
@@ -434,6 +458,22 @@ mod tests {
         assert!(row_html("#102030,4,10\u{1f}d").contains("color:#102030;background:#2472c8;opacity:.6;text-decoration:underline"));
         assert_eq!(screen("bye"), "bye");
         assert_eq!(screen("what"), "");
+    }
+
+    #[test]
+    fn a_notice_is_a_banner_for_the_page_its_click_a_line_for_the_server() {
+        // Its tag, its title, its body, and the line its click sends, each
+        // on a line of its own, whatever spaces they hold.
+        let n = "n run-1\u{1f}stacked: bug-2084854\u{1f}A landed ask waits for your review: 1 reply.";
+        assert_eq!(screen(n), "notice\nrun-1\nstacked: bug-2084854\nA landed ask waits for your review: 1 reply.\nn run-1");
+        // A new line in a title or a body is a space, so that each stays on
+        // its own line.
+        assert_eq!(screen("n r\u{1f}a\nb\u{1f}c\r\nd"), "notice\nr\na b\nc  d\nn r");
+        // One short of a field, or whose run is empty or holds a space:
+        // nothing.
+        assert_eq!(screen("n run-1\u{1f}stacked: s"), "");
+        assert_eq!(screen("n \u{1f}stacked: s\u{1f}Done."), "");
+        assert_eq!(screen("n a run\u{1f}stacked: s\u{1f}Done."), "");
     }
 
     #[test]

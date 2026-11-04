@@ -327,6 +327,10 @@ keys.
   time (unless set), `"fixed-random"`, any free port the first time, which
   stacked writes in your settings and listens on every time after, or a
   port number; a port in use is said, and `stacked web` does not start.
+  While you are not looking at the page, it shows your system's banners
+  when work of any stack lands for your review, a run fails or a try push
+  is done, if you let the browser show them when it asks, once
+  (`web.notifications = false` turns them off).
   `$EDITOR` opens in the terminal where you started `stacked web`.
 - **StackED**: `stacked app` opens the editor in a window of its own, with
   no terminal and no browser. Its File menu opens more databases, each in a

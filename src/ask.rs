@@ -4722,7 +4722,7 @@ const TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 const KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What the summary of an ask you stopped starts with.
-const STOPPED_SAID: &str = "you stopped the agent";
+pub const STOPPED_SAID: &str = "you stopped the agent";
 
 /// Stops run `id`'s agent, and lands its ask as failed, at once: said
 /// first in its stream, so that whatever lands it says that you stopped

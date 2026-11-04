@@ -114,23 +114,79 @@ are listed there; and `stacked web` ends once each page is told (a few
 seconds at most, for a page that reads nothing). A ctrl-c while `$EDITOR`
 runs there goes to `$EDITOR` alone.
 
+While the page is not what you look at, hidden behind another tab or
+window, or in a window that does not have the focus, it shows the editor's
+notices through the browser's notifications, which macOS shows as banners:
+of every stack of the database, not only the one shown, the work that lands
+and waits for your review, said as the banner says it, an ask's change or
+answer (`A landed ask waits for your review: 1 reply, asked "Why add
+b?".`), a follow-up's work come into the review of the work it follows up
+(`A follow-up landed: its work came into the review of the work it follows
+up: 1 reply.`), a lint of the stack (`A lint of the stack waits for your
+review: what the linter reported.`), a reconcile with HEAD (`A reconcile
+with HEAD waits for your review: …`) and a pull from Phabricator made (`A
+pull from Phabricator waits for your review: …`), and work landed after an
+edit under review said so (`… waits for your review after an edit under
+review: …`); a run that fails, said as the bottom line says it (`The
+agent's change failed: the agent failed (1): rate limited.`, `The linter
+could not lint the stack s: …`, `The reconcile with HEAD failed: …`, `The
+pull from Phabricator failed: …`, `The try push was not made: …`; failed
+with a tool the agent could not use, `… Its work waits for your review.`
+after it), but one you stopped or dropped yourself, in this editor or in
+any other (an agent stopped, or dropped as the work it went on from was
+rejected, sent back or edited by hand, the linter stopped, what waited its
+turn dropped, a try push stopped); and a try push followed that is over,
+done on Treeherder with how many of its tasks failed (`The try push is
+done: 1 of its 2 tasks failed. Its summary waits for your review.`; none
+failed, `none of its 2 tasks failed`; and how many never ended or were not
+seen on Treeherder after it), or not pushed to try (`The try push did not
+get to try, as Lando says FAILED: …. Its summary waits for your review.`).
+Each is titled with its stack, `stacked: bug-2084854`, its body cut at 300
+characters, and is of a run that was going when the editor read the
+database before, and landed since: a page is never told of what was there
+when it came, as `stacked web` started or later. On screen, nothing is
+shown: the editor's own banner and bottom line say it. Two pages hidden
+show one banner for each notice, the second taking the place of the first.
+A click on one brings the page forward and closes it; then, on the main
+screen with nothing open on it, the editor shows the notice's stack and
+opens the review of what it tells, as Enter on its line of the banner does
+(for a follow-up, the review of the work it follows up), or, for a
+failure, says it again in the bottom line; with a menu, a dialog or a
+comment being written open, or on any other screen, nothing more is done,
+so that what is open is never left for a notice. The browser asks once
+whether the page may show them, on the first click or key that reaches it
+(but Esc, which browsers do not let a page ask on), as a page may ask only
+then; once you answer, never again. It keeps your answer for the page's
+address, its port included: with `web.port = "random"`, a new port each
+launch, it asks at each launch, and with `"fixed-random"` or a port, once.
+Refused, or in a browser without notifications, nothing is shown, and the
+page works as ever. `web.notifications = false` (Settings, below) sends
+none.
+
 The server runs the editor as the terminal does, drawn into a buffer of the
-page's size, and sends the page the rows that changed (server-sent events);
-the page sends its keys, its clicks and its wheel back, the wheel with the
-cell under the mouse and the lines it turned, and with the left button
-down, each cell the mouse goes over, then the cell where the button is
-let go. Keys that come together are drawn
+page's size, and sends the page the rows that changed (server-sent events),
+after the notices of what it learned meanwhile (`tui/notices.rs`), so that
+a page sent the screen that says what landed was sent its notice; a page
+that comes is sent none of what the editor learns as it comes, the
+database read first, its notices sent to the pages there before. A page of
+an older stacked does nothing with a notice, as with any line it does not
+know. The page sends its keys, its clicks and its wheel back, the wheel
+with the cell under the mouse and the lines it turned, and with the left
+button down, each cell the mouse goes over, then the cell where the button
+is let go; and a notice clicked, by its run. Keys that come together are drawn
 once, after the last, and each is done on the screen as the keys before it
 left it, as in a terminal, which draws the screen after each key: Home,
 then Space at once, opens the stack's menu with the stack's comments to
 ask about, as a right click on the stack's header does. What the page does
 is wasm
-(`web/client.rs`: the rows made HTML, the keys, the clicks and the wheel
-made lines for the server, the wheel's small turns in pixels kept until
-they make a notch, 40 pixels, and each turn in lines or in pages a notch,
-whatever its size), carried by fifty lines of JS (`web/index.html`),
-which reads the wheel's mode before its turn: Firefox says a mouse's
-notches in lines only to a page that reads the mode first. The
+(`web/client.rs`: the rows made HTML, the notices what the page shows of
+them, the keys, the clicks and the wheel made lines for the server, the
+wheel's small turns in pixels kept until they make a notch, 40 pixels, and
+each turn in lines or in pages a notch, whatever its size), carried by a
+hundred lines of JS (`web/index.html`), which reads the wheel's mode
+before its turn: Firefox says a mouse's notches in lines only to a page
+that reads the mode first; and which shows the notices, and asks the
+browser's permission for them. The
 editor knows whether the mouse is in use, and what the wheel scrolls
 under it (`tui/wheel.rs`), as it does for StackED; and what a press on
 HEAD's row is, a click or a drag (`tui/drag.rs`).

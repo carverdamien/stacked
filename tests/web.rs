@@ -2045,3 +2045,247 @@ fn one_picks_only_what_the_patches_changed_of_a_patch_s_versions_in_the_browser_
     until(&mut events, "what is left out, said", |l| text(l).contains("lines are left out here."));
     until(&mut events, "the line each version says", |l| text(l).trim_end().ends_with("++Two"));
 }
+
+/// On `db`, run `id` of stack `stack`, its ask of kind `way` ("answer",
+/// "change") on the whole stack, going on with its agent, its process this
+/// one, for as long as the test runs: asked "Why add b?".
+fn going_on(db: &Path, id: &str, stack: &str, way: &str) {
+    stacked::db::Db::edit(db, |d| {
+        let from = d.head(stack).unwrap().0;
+        d.add_run(stacked::db::Run {
+            id: id.into(),
+            what: way.into(),
+            stack: stack.into(),
+            state: stacked::db::RunState::Started,
+            request: "Why add b?".into(),
+            pid: Some(std::process::id()),
+            ask: Some(serde_json::json!({"way": way, "scope": "stack", "from": from, "notes": []})),
+            time: stacked::db::now(),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// On `db`, run `id`, going on, landed: done, its reply waiting for your
+/// review, to the comment of its stack that asked "Why add b?", which it
+/// writes.
+fn answer_landed(db: &Path, id: &str) {
+    stacked::db::Db::edit(db, |d| {
+        let r = d.run(id).cloned().unwrap();
+        let asking = stacked::db::Note { change: stacked::db::stack_change(&r.stack), id: format!("{id}-c1"), text: "Why add b?".into(), ..Default::default() };
+        d.set_note(asking.clone())?;
+        let reply = stacked::held::Reply { change: asking.change, id: asking.id, text: "For the bees.".into(), tag: r.what.clone(), ..Default::default() };
+        d.add_run(stacked::db::Run {
+            state: stacked::db::RunState::Done,
+            pid: None,
+            summary: "its work waits for your review: 1 reply".into(),
+            held: Some(stacked::held::Held { at: stacked::db::now(), replies: vec![reply], ..Default::default() }),
+            ..r
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// On `db`, run `id`, going on, landed: failed, as `summary` says.
+fn failed(db: &Path, id: &str, summary: &str) {
+    stacked::db::Db::edit(db, |d| {
+        let r = d.run(id).cloned().unwrap();
+        d.add_run(stacked::db::Run { state: stacked::db::RunState::Failed, pid: None, summary: summary.into(), ..r }).map(|_| ())
+    })
+    .unwrap();
+}
+
+/// The notices among the events `seen`: each its run, its title and its
+/// body.
+fn notices(seen: &[String]) -> Vec<(String, String, String)> {
+    seen.iter()
+        .filter_map(|l| {
+            let mut fields = l.strip_prefix("data: n ")?.split('\u{1f}');
+            Some((fields.next()?.to_string(), fields.next()?.to_string(), fields.next()?.to_string()))
+        })
+        .collect()
+}
+
+/// A notice as `notices` has it.
+fn notice(run: &str, title: &str, body: &str) -> (String, String, String) {
+    (run.into(), title.into(), body.into())
+}
+
+/// Whether event `l` is a notice.
+fn is_notice(l: &str) -> bool {
+    l.starts_with("data: n ")
+}
+
+#[test]
+fn what_lands_for_review_or_fails_on_any_stack_is_a_notice_and_a_click_on_one_opens_its_review_in_the_browser() {
+    let (tmp, db) = setup();
+    // Stack t too, made last: the one the editor shows.
+    let out = stacked(&tmp.path().join("home"))
+        .current_dir(tmp.path().join("src"))
+        .args(["-f", db.to_str().unwrap(), "import", "t", "HEAD~1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    going_on(&db, "run-answer", "s", "answer");
+    going_on(&db, "run-change", "t", "change");
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    let seen = until(&mut events, "t's banner", |l| text(l).contains("the agent works on 1 ask"));
+    assert!(notices(&seen).is_empty(), "{seen:#?}");
+    // The answer on s, the stack not shown, lands for your review: its
+    // notice, titled with its stack, says so as the banner would.
+    answer_landed(&db, "run-answer");
+    let seen = until(&mut events, "the answer's notice", is_notice);
+    assert_eq!(notices(&seen), [notice("run-answer", "stacked: s", "A landed ask waits for your review: 1 reply, asked \"Why add b?\".")]);
+    // The change on t fails: as the bottom line says it.
+    failed(&db, "run-change", "the agent failed (1): rate limited");
+    let seen = until(&mut events, "the failure's notice", is_notice);
+    assert_eq!(notices(&seen), [notice("run-change", "stacked: t", "The agent's change failed: the agent failed (1): rate limited.")]);
+    // The answer's notice clicked: stack s shown, the review of its work
+    // open.
+    ask(port, &host, &input, "n run-answer\n");
+    until(&mut events, "the review", |l| text(l).contains(" the agent's work: 1 reply"));
+}
+
+#[test]
+fn what_was_there_when_a_page_came_is_told_it_by_no_notice_in_the_browser() {
+    let (_tmp, db) = setup();
+    // Landed before `stacked web` started: an answer, waiting for your
+    // review, and a change that failed. And two asks going on.
+    going_on(&db, "run-before", "s", "answer");
+    answer_landed(&db, "run-before");
+    going_on(&db, "run-failed", "s", "change");
+    failed(&db, "run-failed", "the agent failed (1): rate limited");
+    going_on(&db, "run-first", "s", "answer");
+    going_on(&db, "run-next", "s", "change");
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let mut first = events(port, &token, 120);
+    let mut seen = until(&mut first, "the banner", |l| text(l).contains("1 landed ask waits for your review"));
+    // What lands next: its notice alone.
+    answer_landed(&db, "run-first");
+    seen.extend(until(&mut first, "the notice", is_notice));
+    assert_eq!(notices(&seen), [notice("run-first", "stacked: s", "A landed ask waits for your review: 1 reply, asked \"Why add b?\".")]);
+    // A second page, come after it landed: none of it, but the next landing,
+    // as the first page is told it too.
+    let mut second = events(port, &token, 120);
+    let mut seen = until(&mut second, "its banner", |l| text(l).contains("2 landed asks wait for your review"));
+    failed(&db, "run-next", "the agent failed (1): rate limited");
+    seen.extend(until(&mut second, "its notice", is_notice));
+    let next = || notice("run-next", "stacked: s", "The agent's change failed: the agent failed (1): rate limited.");
+    assert_eq!(notices(&seen), [next()]);
+    assert_eq!(notices(&until(&mut first, "the next notice", is_notice)), [next()]);
+}
+
+#[test]
+fn no_notice_is_sent_with_notifications_false_in_the_settings_in_the_browser() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    settings_of(&home, "[web]\nnotifications = false\n");
+    going_on(&db, "run-answer", "s", "answer");
+    going_on(&db, "run-change", "s", "change");
+    let s = served(&home, tmp.path(), &db, &[]);
+    let mut events = events(s.port, &s.token, 120);
+    let mut seen = until(&mut events, "the banner", |l| text(l).contains("the agent works on 2 asks"));
+    // Each said on the screen as ever, and no notice: a notice is sent
+    // before the screen that says what it tells.
+    answer_landed(&db, "run-answer");
+    seen.extend(until(&mut events, "the landing", |l| text(l).contains("1 landed ask waits for your review")));
+    failed(&db, "run-change", "the agent failed (1): rate limited");
+    seen.extend(until(&mut events, "the failure", |l| text(l).contains("the agent's change failed: the agent failed (1): rate limited")));
+    assert!(notices(&seen).is_empty(), "{seen:#?}");
+    s.quit();
+}
+
+/// The revision Lando's job 4242 pushed to try, as the stand-in for Lando
+/// and Treeherder has it.
+#[cfg(feature = "try-push")]
+const ON_TRY: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// The stand-in for Lando and Treeherder, for this process's editors,
+/// which look at the pushes they follow each time they launch what may go:
+/// Lando's job 4242 pushed to try as revision `ON_TRY`, which Treeherder
+/// has as its push 77, its tasks done, `test-a` as success, `test-b` as
+/// testfailed. Nothing else is answered, and nothing reaches Lando nor
+/// Treeherder.
+#[cfg(feature = "try-push")]
+fn lando_and_treeherder() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| {
+        stacked::try_push::look_every(0);
+        stacked::try_push::web_stand_in(Some(Box::new(|url: &str| {
+            let job = serde_json::json!({"id": 4242, "status": "LANDED", "commit_id": ON_TRY});
+            let push = serde_json::json!({"results": [{"id": 77, "revision": ON_TRY}]});
+            let jobs = serde_json::json!({
+                "results": [["test-a", "completed", "success", "T1", 0], ["test-b", "completed", "testfailed", "T2", 0]],
+                "job_property_names": ["job_type_name", "state", "result", "task_id", "retry_id"],
+                "next": null,
+            });
+            match url {
+                "https://lando.moz.tools/landing_jobs/4242/" => Ok(job.to_string()),
+                "https://treeherder.mozilla.org/api/jobs/?push_id=77&count=2000" => Ok(jobs.to_string()),
+                u if u == format!("https://treeherder.mozilla.org/api/project/try/push/?revision={ON_TRY}") => Ok(push.to_string()),
+                _ => Err(format!("the stand-in for Lando and Treeherder does not answer {url}")),
+            }
+        })));
+    });
+}
+
+/// On stack `s` of `db`, its comment `s-try`, and the try push it asked
+/// for, of the tasks `test-a` and `test-b`: pushed by Lando's job 4242,
+/// followed, and not looked at yet.
+#[cfg(feature = "try-push")]
+fn pushed_to_try(db: &Path) {
+    use stacked::try_push::{Lando, Push, Step};
+    stacked::db::Db::edit(db, |d| {
+        let rev = d.head("s").unwrap().0;
+        let asking = stacked::db::Note { change: stacked::db::stack_change("s"), id: "s-try".into(), text: "Run the tests on try.".into(), ..Default::default() };
+        d.set_note(asking.clone())?;
+        let push = Push {
+            change: asking.change,
+            id: asking.id,
+            work: "run-tasks".into(),
+            rev,
+            patches: 2,
+            whole: true,
+            labels: vec!["test-a".into(), "test-b".into()],
+            step: Step::Pushed,
+            link: Some("https://treeherder.mozilla.org/jobs?repo=try&landoInstance=lando-prod-2025&landoCommitID=4242".into()),
+            lando: Some(Lando { instance: "lando-prod-2025".into(), job: 4242 }),
+            ..Default::default()
+        };
+        d.add_run(stacked::db::Run {
+            id: "run-push".into(),
+            what: stacked::db::TRY_PUSH.into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Started,
+            push: Some(Box::new(push)),
+            time: stacked::db::now(),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[cfg(feature = "try-push")]
+#[test]
+fn a_try_push_followed_done_on_treeherder_is_a_notice_saying_how_many_of_its_tasks_failed_in_the_browser() {
+    let (_tmp, db) = setup();
+    lando_and_treeherder();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the patches", |l| text(l).contains("Bug 2 - add b"));
+    // Pushed, then followed once the editor knows of it: done on
+    // Treeherder, one of its two tasks failed, its summary waiting for your
+    // review.
+    pushed_to_try(&db);
+    let seen = until(&mut events, "the push's notice", is_notice);
+    assert_eq!(notices(&seen), [notice("run-push", "stacked: s", "The try push is done: 1 of its 2 tasks failed. Its summary waits for your review.")]);
+}

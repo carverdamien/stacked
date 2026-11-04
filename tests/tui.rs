@@ -26683,3 +26683,194 @@ fn in_the_review_of_what_landed_only_what_the_patches_changed_keeps_the_cursor_o
     inter_view(&mut app, "Every line");
     assert_eq!(work_row(&mut app).as_deref(), Some("++Two"));
 }
+
+/// On `db`, run `id` of stack `stack`, of kind `what`, going on, its process
+/// this one, for as long as the test runs; asked "Why add b?", and, an ask,
+/// as `ask` says, the stack it was asked on put in it.
+fn going_on(db: &Path, id: &str, stack: &str, what: &str, ask: Option<serde_json::Value>) {
+    Db::edit(db, |d| {
+        let from = d.head(stack).unwrap().0;
+        let ask = ask.map(|mut a| {
+            a["from"] = from.into();
+            a
+        });
+        d.add_run(stacked::db::Run {
+            id: id.into(),
+            what: what.into(),
+            stack: stack.into(),
+            state: stacked::db::RunState::Started,
+            request: "Why add b?".into(),
+            pid: Some(std::process::id()),
+            ask,
+            time: stacked::db::now(),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// An ask of kind `way` on the whole stack, about no comment, as `going_on`
+/// is given it, with `more` besides.
+fn ask_of(way: &str, more: serde_json::Value) -> Option<serde_json::Value> {
+    let mut a = serde_json::json!({"way": way, "scope": "stack", "notes": []});
+    if let (Some(a), Some(more)) = (a.as_object_mut(), more.as_object()) {
+        a.extend(more.clone());
+    }
+    Some(a)
+}
+
+/// On `db`, the comment `c-why` on each of the stacks `s` and `t`, "Why add
+/// b?": what the work `with_a_reply` lands answers.
+fn why_asked(db: &Path) {
+    Db::edit(db, |d| {
+        for stack in ["s", "t"] {
+            d.set_note(Note { change: stack_change(stack), id: "c-why".into(), text: "Why add b?".into(), ..Default::default() })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// What lands a run going on: of the run as it was, the run landed.
+type Landing = Box<dyn FnOnce(stacked::db::Run) -> stacked::db::Run>;
+
+/// On `db`, each of `runs`, going on, landed as its landing makes it: all
+/// in one edit.
+fn land_all(db: &Path, runs: Vec<(&str, Landing)>) {
+    Db::edit(db, |d| {
+        for (id, landed) in runs {
+            let r = d.run(id).cloned().unwrap();
+            d.add_run(landed(r))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// Run `r` landed, done, its reply to the comment `c-why` of its stack
+/// (`why_asked`) waiting for your review.
+fn with_a_reply(r: stacked::db::Run) -> stacked::db::Run {
+    let reply = stacked::held::Reply { change: stack_change(&r.stack), id: "c-why".into(), text: "For the bees.".into(), tag: r.what.clone(), ..Default::default() };
+    stacked::db::Run {
+        state: stacked::db::RunState::Done,
+        pid: None,
+        summary: "its work waits for your review: 1 reply".into(),
+        held: Some(stacked::held::Held { at: stacked::db::now(), replies: vec![reply], ..Default::default() }),
+        ..r
+    }
+}
+
+/// What lands a run going on as failed, `summary` its summary.
+fn failed_so(summary: &'static str) -> Landing {
+    Box::new(move |r| stacked::db::Run { state: stacked::db::RunState::Failed, pid: None, summary: summary.into(), ..r })
+}
+
+#[test]
+fn a_notice_tells_what_lands_for_review_or_fails_on_any_stack_and_nothing_of_what_was_there_or_of_what_you_stopped() {
+    let (_tmp, db, _src) = setup();
+    why_asked(&db);
+    // Before the editor opens: an answer on s landed, waiting for your
+    // review, and a change that failed.
+    going_on(&db, "run-old", "s", "answer", ask_of("answer", serde_json::json!({})));
+    going_on(&db, "run-old-change", "s", "change", ask_of("change", serde_json::json!({})));
+    land_all(&db, vec![("run-old", Box::new(with_a_reply)), ("run-old-change", failed_so("the agent failed (1): rate limited"))]);
+    // Going on as it opens, on t, the stack not shown, and on s: an answer
+    // asked at max; a change; an answer you stop, and one dropped as the
+    // work it went on from was rejected; the linter; and a follow-up asked
+    // from the review of the answer landed before.
+    going_on(&db, "run-max", "t", "answer", ask_of("answer", serde_json::json!({"effort": "max"})));
+    going_on(&db, "run-change", "s", "change", ask_of("change", serde_json::json!({})));
+    going_on(&db, "run-stopped", "s", "answer", ask_of("answer", serde_json::json!({})));
+    going_on(&db, "run-dropped", "s", "answer", ask_of("answer", serde_json::json!({"dropped": true})));
+    going_on(&db, "run-lint", "t", stacked::db::LINT, None);
+    going_on(&db, "run-follow", "s", "answer", ask_of("answer", serde_json::json!({"on": "run-old", "follow": true})));
+    let mut app = open(&db).unwrap();
+    app.keep_notices();
+    assert_eq!(app.stack, "s");
+    app.refresh();
+    let none = app.take_notices();
+    assert!(none.is_empty(), "{none:?}");
+    // They land.
+    let lint: Landing = Box::new(|r| {
+        let errors = stacked::lint::Errors { files: vec!["a.txt".into()], code: Some(1), lines: vec!["a.txt:2: shouting".into()], ..Default::default() };
+        let report = stacked::lint::Report { command: "./lint.sh".into(), errors: vec![errors], ..Default::default() };
+        stacked::db::Run {
+            state: stacked::db::RunState::Done,
+            pid: None,
+            summary: "1 error reported".into(),
+            held: Some(stacked::held::Held { at: stacked::db::now(), lint: Some(report), ..Default::default() }),
+            ..r
+        }
+    });
+    let came_in: Landing = Box::new(|r| stacked::db::Run {
+        state: stacked::db::RunState::Done,
+        pid: None,
+        summary: "its work came into the review of the work it follows up: 1 reply".into(),
+        ..r
+    });
+    land_all(
+        &db,
+        vec![
+            ("run-max", Box::new(with_a_reply)),
+            ("run-change", failed_so("the agent failed (1): rate limited")),
+            ("run-stopped", failed_so("you stopped the agent")),
+            ("run-dropped", failed_so("dropped: the work it went on from was rejected; asked again")),
+            ("run-lint", lint),
+            ("run-follow", came_in),
+        ],
+    );
+    let notices = until(&mut app, |app| Some(app.take_notices()).filter(|n| !n.is_empty()), |_| "no notice".into());
+    let said: Vec<(&str, &str, &str)> = notices.iter().map(|n| (n.run.as_str(), n.title.as_str(), n.body.as_str())).collect();
+    assert_eq!(
+        said,
+        [
+            ("run-max", "stacked: t", "A landed ask waits for your review: 1 reply, asked at max: \"Why add b?\"."),
+            ("run-change", "stacked: s", "The agent's change failed: the agent failed (1): rate limited."),
+            ("run-lint", "stacked: t", "A lint of the stack waits for your review: what the linter reported."),
+            ("run-follow", "stacked: s", "A follow-up landed: its work came into the review of the work it follows up: 1 reply."),
+        ]
+    );
+    // Taken: none left, and none until more lands.
+    app.refresh();
+    let none = app.take_notices();
+    assert!(none.is_empty(), "{none:?}");
+    // The follow-up's clicked: the review of the work it follows up open.
+    app.noticed("run-follow");
+    assert_eq!((app.screen, app.reviewing.as_ref().map(|rv| rv.run.as_str())), (Screen::Review, Some("run-old")));
+}
+
+#[test]
+fn a_notice_clicked_goes_to_its_stack_and_its_review_only_with_nothing_open() {
+    let (_tmp, db, _src) = setup();
+    why_asked(&db);
+    going_on(&db, "run-max", "t", "answer", ask_of("answer", serde_json::json!({"effort": "max"})));
+    going_on(&db, "run-change", "s", "change", ask_of("change", serde_json::json!({})));
+    let mut app = open(&db).unwrap();
+    app.keep_notices();
+    land_all(&db, vec![("run-max", Box::new(with_a_reply)), ("run-change", failed_so("the agent failed (1): rate limited"))]);
+    let notices = until(&mut app, |app| Some(app.take_notices()).filter(|n| !n.is_empty()), |_| "no notice".into());
+    assert_eq!(notices.iter().map(|n| n.run.as_str()).collect::<Vec<_>>(), ["run-max", "run-change"]);
+    // A menu open: nothing is left for the notice.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    app.noticed("run-max");
+    assert!(matches!(app.mode, Mode::Menu(_)));
+    assert_eq!((app.stack.as_str(), app.screen), ("s", Screen::Main));
+    // Nothing open: its stack shown, and the review of its work open.
+    keys(&mut app, &[KeyCode::Esc]);
+    app.noticed("run-max");
+    assert_eq!((app.stack.as_str(), app.screen), ("t", Screen::Review));
+    assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.as_str()), Some("run-max"));
+    // On another screen, the review: nothing either.
+    app.noticed("run-change");
+    assert_eq!((app.stack.as_str(), app.screen), ("t", Screen::Review));
+    // Back on the main screen, the failure's: its stack shown, and why it
+    // failed said again in the bottom line, as when it landed.
+    app.screen = Screen::Main;
+    app.noticed("run-change");
+    assert_eq!((app.stack.as_str(), app.screen), ("s", Screen::Main));
+    assert_eq!(app.status, "the agent's change failed: the agent failed (1): rate limited");
+    // A run that is not there: nothing.
+    app.noticed("run-none");
+    assert_eq!((app.stack.as_str(), app.screen), ("s", Screen::Main));
+}

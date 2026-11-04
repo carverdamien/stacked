@@ -191,7 +191,10 @@
   line of it;
   `tui/head_why.rs`, the view of why Move HEAD does not
   move HEAD, and what you can do in your checkout so that it can;
-  `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
+  `tui/banner.rs`, the banner of the agent's work; `tui/notices.rs`, the
+  notices of `stacked web`, what the editor learns of every stack as it
+  reads the database again, said for the system's banners, and a click on
+  one in the page; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/wheel.rs`, the wheel of the browser and of StackED: whether the
   mouse is in use, what the wheel scrolls under it then, and ↑↓ after a
@@ -204,8 +207,9 @@
   each time, then Ask Now, Ask Later or Cancel; and a review's `Send it
   back to the agent…`, then Send Now or Cancel.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
-  its server and the port it listens on, its wasm and its page, StackED's
-  icon on its tab (`icon.rs`, below); the build script compiles the wasm,
+  its server and the port it listens on, its wasm and its page, the
+  notices it sends the page, which shows them as the system's banners,
+  StackED's icon on its tab (`icon.rs`, below); the build script compiles the wasm,
   or, where Rust lacks the wasm target, stops the build and says what to
   run.
 - `app.rs`: `stacked app`, StackED: the editor on a thread of its own, and

@@ -904,6 +904,10 @@ fn pushed_said(p: &Push, link: &str, k: usize) -> String {
     crate::refs::attach(&text, &[Pointing { n: Some(k), to: Pointer::Link(link.to_string()) }])
 }
 
+/// The summary of a try push you stopped before mach said it pushed: it
+/// failed, as you stopped it.
+pub const STOPPED: &str = "stopped before mach said it pushed";
+
 /// Stops try push `id`: once pushed, following it, which cannot stop it in
 /// CI; before mach said it pushed, the push, its process stopped, mach with
 /// it. The comment unlocks, and a reply on it says so, with the push's link
@@ -941,7 +945,7 @@ pub fn stop(db_path: &Path, id: &str) -> Result<String> {
                 false => "nothing was pushed.",
             };
             let said = format!("The try push was stopped while mach ran, before it said it pushed: {ending}");
-            end(db_path, id, RunState::Failed, "stopped before mach said it pushed", &|_| said.clone())?;
+            end(db_path, id, RunState::Failed, STOPPED, &|_| said.clone())?;
             Ok(format!("the try push was stopped: {ending}"))
         }
     }
@@ -1311,6 +1315,41 @@ pub fn seen_of(rows: &[Map<String, Value>], p: &Push, revision: &str) -> Seen {
     seen
 }
 
+/// What the summary of a try push done starts with, its tasks' results
+/// after it: `done: 27 success, 2 testfailed`.
+const DONE: &str = "done: ";
+
+/// What the summary of a try push Lando did not push to try starts with,
+/// why after it, as Lando says: `Lando did not push it to try: FAILED`.
+const NOT_PUSHED: &str = "Lando did not push it to try: ";
+
+/// What try push `r`, over and waiting for your review, came to, said: done
+/// on Treeherder, with how many of its tasks failed, and how many never
+/// ended or were not seen there, if any; or not pushed to try, as Lando
+/// says. None for any other run: one under way, stopped, or that failed.
+pub fn over_said(r: &Run) -> Option<String> {
+    let p = r.push.as_ref().filter(|_| r.state == RunState::Done && r.held.is_some())?;
+    if let Some(why) = r.summary.strip_prefix(NOT_PUSHED) {
+        return Some(format!("the try push did not get to try, as Lando says {why}"));
+    }
+    let seen = p.seen.as_ref().filter(|_| r.summary.starts_with(DONE))?;
+    let tasks = if seen.total == 1 { "task" } else { "tasks" };
+    let mut said = vec![match seen.failed.len() {
+        0 => format!("none of its {} {tasks} failed", thousands(seen.total)),
+        n => format!("{} of its {} {tasks} failed", thousands(n), thousands(seen.total)),
+    }];
+    // As its summary counts them.
+    let still = seen.total - seen.done - seen.unseen_count().min(seen.total - seen.done);
+    if still > 0 {
+        said.push(format!("{} never ended", thousands(still)));
+    }
+    let unseen = seen.unseen_count();
+    if unseen > 0 {
+        said.push(format!("{} {} not seen on Treeherder", thousands(unseen), if unseen == 1 { "was" } else { "were" }));
+    }
+    Some(format!("the try push is done: {}", and(&said)))
+}
+
 /// One look at try push `id`, followed, if it is due one: taken under the
 /// lock, so that no other look is made meanwhile, then Lando and Treeherder
 /// read away from it, then what they say kept. Its stream says what
@@ -1348,8 +1387,8 @@ pub fn follow(db_path: &Path, id: &str) -> Result<Option<String>> {
             Looked::NotPushed { status, error, page } => {
                 let error = error.trim_end_matches('.');
                 let why = if error.is_empty() { status.clone() } else { format!("{status}: {error}") };
-                said.push(format!("Lando did not push it to try: {why}"));
-                let summary = format!("Lando did not push it to try: {why}");
+                said.push(format!("{NOT_PUSHED}{why}"));
+                let summary = format!("{NOT_PUSHED}{why}");
                 let news = format!("the try push did not get to try, as Lando says {why}: its summary waits for your review");
                 let first = crate::refs::next_of(&db.note(&p.change, &p.id).cloned().unwrap_or_default());
                 over = Some((summary, news, not_pushed_said(&why, page.as_deref(), first)));
@@ -1380,7 +1419,7 @@ pub fn follow(db_path: &Path, id: &str) -> Result<Option<String>> {
                     if done {
                         let link = p.link.clone().unwrap_or_default();
                         let first = crate::refs::next_of(&db.note(&p.change, &p.id).cloned().unwrap_or_default());
-                        over = Some((format!("done: {}", results_said(&seen)), format!("the try push is done: {}: its summary waits for your review", results_said(&seen)), summary_said(&p, &seen, &link, first)));
+                        over = Some((format!("{DONE}{}", results_said(&seen)), format!("the try push is done: {}: its summary waits for your review", results_said(&seen)), summary_said(&p, &seen, &link, first)));
                     }
                     p.seen = Some(seen);
                 }
@@ -2460,6 +2499,34 @@ mod tests {
         assert_eq!(progress_said(&p), "pushed, its tasks not on Treeherder yet");
         p.seen = Some(Seen { total: 30, done: 12, failed: vec![Shown::default()], ..Default::default() });
         assert_eq!(progress_said(&p), "12 of 30 tasks done, 1 failed");
+    }
+
+    #[test]
+    fn a_push_over_is_said_with_how_many_of_its_tasks_failed_or_why_lando_did_not_push_it() {
+        let failed = |label: &str| Shown { label: label.into(), result: "testfailed".into(), ..Default::default() };
+        let over = |seen: Seen, summary: &str| Run {
+            state: RunState::Done,
+            summary: summary.into(),
+            held: Some(crate::held::Held::default()),
+            push: Some(Box::new(Push { seen: Some(seen), ..push(&["a", "b"], None, false) })),
+            ..Default::default()
+        };
+        // Done: how many of its tasks failed, none too; then how many never
+        // ended, and how many were not seen on Treeherder.
+        let r = over(Seen { total: 2, done: 2, failed: vec![failed("b")], ..Default::default() }, "done: 1 success, 1 testfailed");
+        assert_eq!(over_said(&r).as_deref(), Some("the try push is done: 1 of its 2 tasks failed"));
+        let r = over(Seen { total: 1, done: 1, ..Default::default() }, "done: 1 success");
+        assert_eq!(over_said(&r).as_deref(), Some("the try push is done: none of its 1 task failed"));
+        let seen = Seen { total: 30, done: 26, failed: vec![failed("a"), failed("b")], unseen: vec![("c".into(), 1)], ..Default::default() };
+        let r = over(seen, "done: 24 success, 2 testfailed, 3 not done, 1 not seen on Treeherder");
+        assert_eq!(over_said(&r).as_deref(), Some("the try push is done: 2 of its 30 tasks failed, 3 never ended and 1 was not seen on Treeherder"));
+        // Not pushed to try: why, as Lando says.
+        let r = over(Seen::default(), "Lando did not push it to try: FAILED: no such tree");
+        assert_eq!(over_said(&r).as_deref(), Some("the try push did not get to try, as Lando says FAILED: no such tree"));
+        // Failed, followed no longer, or still followed: none.
+        assert_eq!(over_said(&Run { state: RunState::Failed, ..r.clone() }), None);
+        assert_eq!(over_said(&Run { held: None, summary: "stopped following".into(), ..r.clone() }), None);
+        assert_eq!(over_said(&Run { state: RunState::Started, ..r }), None);
     }
 
     #[test]

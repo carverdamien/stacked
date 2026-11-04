@@ -1205,7 +1205,20 @@ sending the summary alone, no diff, no Changes Planned and no reviewers,
 the bottom line saying what came of it, and once it is fetched again
 after the submit, the diff alone differing, the update grayed, the menu
 saying why), and the comments pane's states (expanded,
-compact, hidden) and the compact view of the code as they were. With the `web` feature, `tests/web.rs`
+compact, hidden) and the compact view of the code as they were; and the
+notices of `stacked web`, kept once it asks for them (`keep_notices`): of
+every stack, an answer asked at max landed for review on the stack not
+shown, a change failed, a lint of the stack reporting what it did not fix,
+and a follow-up come into the review of the work it follows up, each its
+run, its stack in its title and its body as `stacked web` sends it; none
+for what landed before the editor opened, the work waiting for review and
+the failure, none for an answer you stopped nor for one dropped, and none
+left once they are taken; the follow-up's clicked, the review of the work
+it follows up open; and a notice clicked with a menu open, nothing done,
+then with nothing open, its stack shown and the review of its work open,
+the failure's on the review, nothing done, then on the main screen, its
+stack shown and why it failed said again in the bottom line, and one of a
+run that is not there, nothing. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, StackED's icon at the two sizes the page links
 for its tab, asked for as the page asks, with the token, and refused
@@ -1291,7 +1304,23 @@ showing what differs on a screen of its own, Esc going back to the line,
 and its revision pulled from its menu, an item clicked, by the same
 stand-in, its diff a new version of the patch and a reviewer's comment
 held for review, the review then opened from the banner, its operation
-marked on its own; and
+marked on its own; the notices, each sent as `n RUN US TITLE US BODY` (an
+answer landing for review on the stack not shown, `stacked: s`, `A landed
+ask waits for your review: 1 reply, asked "Why add b?".`, then a change
+failing on the stack shown, `stacked: t`, `The agent's change failed: the
+agent failed (1): rate limited.`, each alone, and the answer's clicked
+(`n RUN`), its stack shown and the review of its work open), none for
+what was there as `stacked web` started (work waiting for review, a
+failure), the next landing alone, and a second page, come after it, told
+none of it, but the landing after, which the first page is told too; and,
+`web.notifications = false` in the settings of a `stacked web` run for
+real, none sent, the landing and the failure said on the screen all the
+same; and, with the `try-push` feature, a try push followed by the editor
+once it knows of it, its look answered by a stand-in for Lando and
+Treeherder (`try_push::web_stand_in`, and `try_push::look_every` with no
+wait between looks), done on Treeherder, one of its two tasks failed, its
+notice saying so (`The try push is done: 1 of its 2 tasks failed. Its
+summary waits for your review.`); and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the wheel said once it turned a notch, with the cell under the mouse
@@ -1306,7 +1335,11 @@ the mouse followed only while the page has the focus: the cell where
 the mouse was last seen while the page did not have the focus said at once
 when the page has it again (unless the mouse left the page), so that the
 click that gives the page the focus back acts on that cell, whether the
-browser sends the click before the focus or after. With
+browser sends the click before the focus or after; and a notice made what
+the page shows of it, its tag, its title, its body and the line its click
+sends the server, each on a line of its own, a new line in its title or
+its body a space, and nothing for one short of a field, or whose run is
+empty or holds a space. With
 the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
 it, with no window: nothing drawn before the window's size, a key, a
 click, 1 on the versions of a patch opening the menu of the views of the
@@ -1558,6 +1591,11 @@ GitHub, and hg.mozilla.org's but try in a git-cinnabar clone), a base none
 of them has, and the commits mach would push; and a push's tasks counted as
 Treeherder shows them (each by its last run, each run of a rebuild, those
 not seen), its summary, and where Lando answers, as `.lando.ini` says;
+and what a push over came to, as `stacked web`'s notice says it: done,
+with how many of its tasks failed, none too, then how many never ended and
+how many were not seen on Treeherder, or not pushed to try, as Lando says;
+and nothing for one that failed, is followed no longer or is followed
+still;
 `ask.rs`, that a try push's ask is given what an answer is and its own
 list, not the linter a change is given, and is asked for its tasks and
 their runs; that its prompt names the list of the tasks mach can push in
@@ -1879,11 +1917,20 @@ changed, other lines refused and nothing written, `stacked web`'s port,
 read beside it and one that is no port said, both written as any setting
 is, the rest of the file as it was, the kept port passed over and kept
 while `port` is another, values refused with the file as it was, and both
-printed, built with `web`, and read back the same; and `[web]` the
-settings' file's alone: a checkout's own that sets it, wrong too, as the
-settings' file has it, each key said to be passed over, the rest of it
-read, neither marked as the checkout's nor the one in use there, refused
-to `--local` for writing and for reading, and taken out there; those in `change.rs`,
+printed, built with `web`, and read back the same; its notices, sent
+unless set, `true` and `false` read, any other value, of any kind, said
+and the notices sent, the rest of the file read, `false` written beside
+the port, the rest of the file as it was, another value refused with the
+file as it was, and printed with its comment, built with `web`, and read
+back the same; and `[web]` the
+settings' file's alone: a checkout's own that sets it, wrong too, its
+notifications too, as the settings' file has it, each key said to be
+passed over, the rest of it read, neither marked as the checkout's nor
+the one in use there, refused to `--local` for writing and for reading,
+and taken out there; those in `tui/notices.rs`, a notice's body made a
+sentence, its first letter a capital, a full stop after it unless it
+ends with one, `?` or `…`, and in the place of the colon a summary ends
+with when nothing is said after it; those in `change.rs`,
 the change from one version to another on one base, each file from the
 one to the other, nothing dim, the same
 files no change; across a change of base, the line it made in place of

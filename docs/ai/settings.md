@@ -335,8 +335,16 @@ settings:
   next launch with web.port = "fixed-random" takes any free port again:
   …`), and the port taken is listened on all the same. A port in use, set,
   kept or given, is said in a line, `port 8080 of 127.0.0.1 is in use`,
-  and `stacked web` exits with 1, trying no other. Nothing of it is kept
-  in a database, nor in `state.json`. A checkout's own `.stacked/local.toml`
+  and `stacked web` exits with 1, trying no other. `notifications`, `true`
+  unless set: the page is sent the editor's notices, of every stack, which
+  it shows as the system's banners while it is not what you look at (In a
+  browser, above); `false` sends none. Any other value, of any kind, is
+  said (`web.notifications: "off" is not true or false`), and `true` kept;
+  `stacked config` refuses to write it (`web.notifications is true or
+  false, not "off"`). The browser keeps its permission to show them for
+  the page's address, its port included: with `port = "random"` it asks
+  at each launch, and with `"fixed-random"` or a port, once. Nothing of
+  it is kept in a database, nor in `state.json`. A checkout's own `.stacked/local.toml`
   that sets them has them passed over, each said (`web.port is read only
   from the settings' file, never from a checkout's own .stacked/local.toml:
   here it is passed over`), and not marked as the checkout's by `stacked
