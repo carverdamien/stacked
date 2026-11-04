@@ -51,7 +51,10 @@ The wheel scrolls what is under the mouse while the mouse is in use: from
 the mouse going over another cell, or a click, until the next key, a key
 typed into a comment too. The view of the pane or of the box under the
 mouse moves by the lines the wheel turned, a line for each notch, and
-stops at its first and its last lines, where the arrows stop it. Where the
+stops at its first and its last lines, where the arrows stop it. In
+Firefox, each notch of a mouse's wheel is a line, whatever the lines
+Firefox says for it; a turn said in pixels, a trackpad's and any wheel's
+in Chrome and Safari, is a line for each 40 pixels. Where the
 cursor follows the mouse (the middle, the half of the middle split in two
 under the mouse, the banner, a menu longer than its box, the lists of the
 screens of their own, History…'s stack diff, what the search found, the
@@ -120,8 +123,11 @@ then Space at once, opens the stack's menu with the stack's comments to
 ask about, as a right click on the stack's header does. What the page does
 is wasm
 (`web/client.rs`: the rows made HTML, the keys, the clicks and the wheel
-made lines for the server, the wheel's small turns kept until they make a
-notch, 40 pixels), carried by fifty lines of JS (`web/index.html`). The
+made lines for the server, the wheel's small turns in pixels kept until
+they make a notch, 40 pixels, and each turn in lines or in pages a notch,
+whatever its size), carried by fifty lines of JS (`web/index.html`),
+which reads the wheel's mode before its turn: Firefox says a mouse's
+notches in lines only to a page that reads the mode first. The
 editor knows whether the mouse is in use, and what the wheel scrolls
 under it (`tui/wheel.rs`), as it does for StackED; and what a press on
 HEAD's row is, a click or a drag (`tui/drag.rs`).

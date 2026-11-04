@@ -95,9 +95,15 @@ WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instan
   addEventListener('blur', () => send(read(w.blur())));
   addEventListener('focus', () => send(read(w.focus())));
   screen.addEventListener('contextmenu', e => e.preventDefault());
+  // The wheel's mode is read before its turn, in that order: Firefox says
+  // a mouse's notches in lines only to a page that reads the mode first,
+  // and in pixels to any other, so that a notch would not always be a row
+  // (web/client.rs `wheel`).
   addEventListener('wheel', e => {
+    const mode = e.deltaMode;
+    const dy = e.deltaY;
     const r = screen.getBoundingClientRect();
-    send(read(w.wheel(e.clientX - r.left, e.clientY - r.top, cw, ch, e.deltaY)));
+    send(read(w.wheel(e.clientX - r.left, e.clientY - r.top, cw, ch, dy, mode)));
   });
   addEventListener('paste', e => { e.preventDefault(); send(call(w.paste, e.clipboardData.getData('text'))); });
   addEventListener('resize', () => send('s ' + size().join(' ')));

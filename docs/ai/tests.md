@@ -1281,7 +1281,11 @@ marked on its own; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the wheel said once it turned a notch, with the cell under the mouse
-(none over no cell), what it turned short of a notch kept, the mouse
+(none over no cell), what it turned short of a notch kept, the wheel
+turned in lines or in pages a line for each turn, whatever its size (3, 1
+and −2 lines, a page), none for a turn sideways alone, nothing kept of
+those turns, and what the pixels kept left as it was by turns in lines
+between them, the mouse
 moved with the left button down said as `d` where it would be `v`, and
 the button let go with its cell (none off the screen), and
 the mouse followed only while the page has the focus: the cell where

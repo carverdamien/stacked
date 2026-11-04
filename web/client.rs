@@ -39,6 +39,12 @@ const PALETTE: [&str; 16] = [
 /// The pixels the wheel turns for a line.
 const NOTCH: f64 = 40.0;
 
+/// A turn of the wheel said in pixels, as the page's `deltaMode` says it:
+/// a trackpad's, and any wheel's in Chrome and Safari. Else it is said in
+/// lines (1) or in pages (2): a mouse's notch, as Firefox says it to a page
+/// that reads the mode first (web/index.html).
+const PIXELS: u32 = 0;
+
 /// What the page does with one of the server's lines: `size COLS ROWS`;
 /// `row Y`, and on the next line the row's HTML; `bye`; else nothing.
 pub fn screen(msg: &str) -> String {
@@ -269,18 +275,31 @@ pub fn focus(mouse: &mut Mouse) -> String {
     format!("v {} {}", at.0, at.1)
 }
 
-/// The wheel turned `dy` pixels at `(x, y)` pixels of the screen, its cells
-/// `cw` by `ch`, kept with what it turned before: once it turned a notch or
-/// more, made a line for the server, the cell under the mouse and the lines
-/// turned, one for each notch, down (up, below 0). The editor scrolls what
-/// is under the mouse, or takes them for ↑↓.
-pub fn wheel(turned: &mut f64, x: f64, y: f64, cw: f64, ch: f64, dy: f64) -> String {
-    *turned += dy;
-    let mut lines = 0i64;
-    while turned.abs() >= NOTCH {
-        lines += turned.signum() as i64;
-        *turned -= NOTCH * turned.signum();
-    }
+/// The wheel turned `dy` at `(x, y)` pixels of the screen, its cells `cw`
+/// by `ch`: once it turned a notch or more, made a line for the server, the
+/// cell under the mouse and the lines turned, one for each notch, down (up,
+/// below 0). Turned in pixels (`mode`, `PIXELS`), it is kept with what it
+/// turned before, a notch for each 40 pixels. Turned in lines or in pages,
+/// as Firefox says a mouse's notch, each turn is a notch, whatever the
+/// lines or the pages it says, and what the pixels kept is left as it was:
+/// a line on the screen for each notch, always. The editor scrolls what is
+/// under the mouse, or takes them for ↑↓.
+pub fn wheel(turned: &mut f64, x: f64, y: f64, cw: f64, ch: f64, dy: f64, mode: u32) -> String {
+    let lines = match mode {
+        PIXELS => {
+            *turned += dy;
+            let mut lines = 0i64;
+            while turned.abs() >= NOTCH {
+                lines += turned.signum() as i64;
+                *turned -= NOTCH * turned.signum();
+            }
+            lines
+        }
+        // A notch, down or up as it turns; turned sideways alone, none.
+        _ if dy > 0.0 => 1,
+        _ if dy < 0.0 => -1,
+        _ => 0,
+    };
     match (lines, cell(x, y, cw, ch)) {
         (0, _) => String::new(),
         (n, Some(at)) => format!("w {} {} {n}", at.0, at.1),
@@ -387,9 +406,9 @@ mod wasm {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn wheel(x: f64, y: f64, cw: f64, ch: f64, dy: f64) -> usize {
+    pub extern "C" fn wheel(x: f64, y: f64, cw: f64, ch: f64, dy: f64, mode: u32) -> usize {
         let mut turned = TURNED.lock().unwrap();
-        give(super::wheel(&mut turned, x, y, cw, ch, dy))
+        give(super::wheel(&mut turned, x, y, cw, ch, dy, mode))
     }
 
     #[unsafe(no_mangle)]
@@ -439,16 +458,41 @@ mod tests {
         // Gone from the screen: said; back over the same cell, said again.
         assert_eq!(left(&mut mouse), "o");
         assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, true), "v 3 2");
-        // The wheel: said with the cell under the pointer once it turned a
-        // notch (40 pixels), a line for each, with what it turned before;
-        // over no cell, the lines alone.
+        // The wheel turned in pixels: said with the cell under the pointer
+        // once it turned a notch (40 pixels), a line for each, with what it
+        // turned before; over no cell, the lines alone.
         let mut turned = 0.0;
-        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 30.0), "");
-        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 30.0), "w 2 2 1", "a notch, with what it turned before");
-        assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -100.0), "w 3 2 -2", "two notches up");
-        assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -39.0), "", "short of a notch again");
-        assert_eq!(wheel(&mut turned, 5.0, 5.0, 0.0, 20.0, 119.0), "w 2", "over no cell");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 30.0, PIXELS), "");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 30.0, PIXELS), "w 2 2 1", "a notch, with what it turned before");
+        assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -100.0, PIXELS), "w 3 2 -2", "two notches up");
+        assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -39.0, PIXELS), "", "short of a notch again");
+        assert_eq!(wheel(&mut turned, 5.0, 5.0, 0.0, 20.0, 119.0, PIXELS), "w 2", "over no cell");
         assert_eq!(paste("a\r\nb\t"), "k c 61 -\nk Enter -\nk c 62 -\nk c 20 -");
+    }
+
+    #[test]
+    fn the_wheel_turned_in_lines_or_in_pages_is_a_line_for_each_turn() {
+        // The modes the page passes besides pixels, as `deltaMode` has them.
+        const LINES: u32 = 1;
+        const PAGES: u32 = 2;
+        // In lines, as Firefox says a mouse's notch: a line for each turn,
+        // down or up as it turns, whatever the lines it says, with nothing
+        // kept: 39 pixels after them are short of a notch still.
+        let mut turned = 0.0;
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 3.0, LINES), "w 2 2 1", "three lines");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 1.0, LINES), "w 2 2 1", "a line");
+        assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -2.0, LINES), "w 3 2 -1", "two lines up");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 0.0, LINES), "", "turned sideways alone");
+        // In pages: a line for each turn as well; over no cell, the line alone.
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 1.0, PAGES), "w 2 2 1", "a page");
+        assert_eq!(wheel(&mut turned, 5.0, 5.0, 0.0, 20.0, -1.0, PAGES), "w -1", "a page up, over no cell");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 39.0, PIXELS), "", "nothing kept of the lines");
+        // Turned in lines between turns in pixels: what the pixels kept, 39,
+        // left as it was, so that a pixel more makes their notch.
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 3.0, LINES), "w 2 2 1");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, -3.0, LINES), "w 2 2 -1");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 1.0, PIXELS), "w 2 2 1", "39 pixels kept, and one");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 39.0, PIXELS), "", "nothing more kept since");
     }
 
     #[test]
