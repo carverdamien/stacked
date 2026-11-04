@@ -68,7 +68,8 @@ test's.
 Nor does any test write in, or remove anything from, the folder of the
 agents' rebase plans in the temporary directory, which every stacked
 shares. In `tests/cli.rs` and `tests/try_push.rs`, whose asks a run of
-the binary starts (a try push's keeps its copy of the task graph there),
+the binary starts (a try push's keeps the tasks mach can push and its copy
+of the task graph there),
 the function that gives every run of the binary its home gives it a
 folder of the test's as `$STACKED_TODO` too. The tests'
 own processes keep the plans beside their database, in the test's own
@@ -1442,12 +1443,33 @@ with none accepted that nothing is pushed, and past mach's 1,000 tasks,
 each task counted as many times as it runs, that they would run at the
 lowest priority; the first try push going at once, with no setup, the
 setup's old mark passed over; and a try push batched, sent from the banner on
-its own, and with the batch that `stacked send NAME --batch` sends. The
-push runs a stand-in for mach (`$STACKED_MACH`, which a stacked that keeps
-nothing, as the tests' own, needs, never running a mach of a worktree's),
-the repository's remote of Firefox's a name and a ref, never fetched: the
-push checked with `--no-push`, then made, mach's stdin closed and its
-output not held back, the tasks in one query, the commits it would push
+its own, and with the batch that `stacked send NAME --batch` sends. Before
+each ask's agent starts, the tasks mach can push are listed, by the same
+stand-in for mach as the push's, which has a task graph of its own when a
+test gives it one, the tests of xpcshell in four chunks there: the ask
+waiting for the list, held as mach lists, its comment's line and the
+banner saying so in plain words, the agent not started; mach run as the
+push's check runs it, with the preset of the lowest priority and the query
+every label matches, stdin closed, output not held back, in a worktree for
+pushes held in the ask's run and made ready as a push's, the patch alone
+on its base; the labels written each once, sorted, a label a line, in the
+ask's folder of its own, the worktree then given back and the presets
+file gone; the stream saying what stacked did, the prompt naming the list
+as where every label is and the agent given that prompt; and labels taken
+from the list passing the push's check, pushed from the worktree they were
+listed in. A list mach could not make, and one whose worktree could not
+be made ready (the base on no remote of Firefox's, mach never run), stop
+nothing: the prompt says why in a line, the labels checked against CI's
+task graph as before, the stream saying why after mach's last lines, and
+the ask lands its work. An ask lists in the next worktree for pushes while
+a push waiting for mach's login holds the first, and a push begun as it
+lists takes neither. The push runs a stand-in for mach (`$STACKED_MACH`,
+which a stacked that keeps nothing, as the tests' own, needs, never
+running a mach of a worktree's; the ask's wrapper is given it too, as the
+command line's `send` is), the repository's remote of Firefox's a name and
+a ref, never fetched: the push checked with `--no-push`, then made, mach's
+stdin closed and its output not held back, the tasks in one query, the
+commits it would push
 the patch alone; its login's page and code in the status line and the
 comment's stream, the page opened from the comment's menu; its link a
 reply, a web link, the comment locked until you stop following it, which
@@ -1473,8 +1495,16 @@ a push followed picked up by the next editor from where the database has
 it. `try_push.rs` tests its tasks read from the answer (each label once,
 the first reason kept, one with a space or none left out, a reason with
 references), how many times each runs, from 2 to 20, the prompt, and what
-a round asked again is told; mach's arguments, the tasks in one query, and
-how the stream says them; what `--no-push` says it would push, read and
+a round asked again is told; the prompt with the list of the tasks mach
+can push, where every label is selected from and checked against with grep
+or jq, CI's lists hints beside it, and without it, why in a line, CI's
+task graph what each label is checked against; mach's arguments, the tasks
+in one query, and how the stream says them; mach's arguments to list every
+task, the check's with the preset of the lowest priority and the query
+every label matches, the labels it lists each once, sorted, and what the
+stream says of a list not made; the worktree for pushes held by a push
+until it pushed and by an ask while it lists, by neither once over; what
+`--no-push` says it would push, read and
 compared (the tasks, the runs, the priority); a question mach stopped on,
 its login, its link and Lando's job read from what it writes; that a
 process keeping nothing runs only a stand-in for mach, and reaches
@@ -1485,7 +1515,10 @@ Treeherder shows them (each by its last run, each run of a rebuild, those
 not seen), its summary, and where Lando answers, as `.lando.ini` says;
 `ask.rs`, that a try push's ask is given what an answer is and its own
 list, not the linter a change is given, and is asked for its tasks and
-their runs; `setup.rs`, the column of
+their runs; that its prompt names the list of the tasks mach can push in
+its folder of its own, and, none made, says why in its place; and that its
+stream says in plain words, on its comment's line, that stacked lists them,
+then what came of it; `setup.rs`, the column of
 try pushes, ticked at first as the read-only one, its own once ticked, in
 what saving writes, and line by line `read only` for both read-only kinds;
 `refusals.rs`, what changes things noted for a try push's selection, as

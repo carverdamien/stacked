@@ -33,7 +33,9 @@
 //! one, on the files it changes (`lint::Linter::rule`), and its prompt
 //! says so. An answer works in `.stacked/NAME/answer-only-agent`, made and
 //! taken as a change's is, and is let run nothing that changes anything; so
-//! does the selection of a try push's tasks. A build and test works in
+//! does the selection of a try push's tasks, whose wrapper first lists the
+//! tasks mach can push from the stack, in a worktree for pushes, before
+//! its agent starts (`try_push::list`). A build and test works in
 //! `.stacked/NAME/build`: kept for the next build to build on, what a build
 //! made there left as it is.
 //!
@@ -61,8 +63,9 @@
 //! Whatever else stacked does to its own worktrees is done under it too:
 //! filing what an ask did there, landing one left behind, making the
 //! editor's ahead and removing them, a lint job's and a try push's made
-//! ready. It is never held while an agent works. It is taken before the
-//! database's lock, never under it.
+//! ready, and the one a try push's selection lists the tasks mach can push
+//! in. It is never held while an agent works, nor while mach runs. It is
+//! taken before the database's lock, never under it.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
@@ -212,10 +215,17 @@ pub struct Info {
     pub was: Option<String>,
     /// The folder of its own its agent writes in, outside its worktree,
     /// removed once it lands: a change to the whole stack's, for its rebase
-    /// plan; a try push's selection's that may run curl, for its copy of the
-    /// task graph.
+    /// plan; a try push's selection's, for the tasks mach can push, which
+    /// stacked lists there, and, when it may run curl, its copy of the task
+    /// graph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo: Option<String>,
+    /// A try push's selection, while stacked lists the tasks mach can push
+    /// before its agent starts (`try_push::list`): the worktree for pushes
+    /// it lists them in, taken as a push takes one, so that no push is made
+    /// from it meanwhile, nor another list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing: Option<String>,
     /// The effort the agent is asked at (`--effort`), the one its comments
     /// were queued at; none for an ask made before efforts were picked,
     /// which goes at the agent's own.
@@ -263,6 +273,20 @@ struct Light {
 
 fn light(r: &Run) -> Option<Light> {
     Light::deserialize(r.ask.as_ref()?).ok()
+}
+
+/// The worktree for pushes that run `r`, a try push's selection, lists the
+/// tasks mach can push in, while it does (`Info::listing`): read from its
+/// run without the rest, as it is read of every run going whenever a
+/// worktree for pushes is taken.
+#[cfg(feature = "try-push")]
+pub(crate) fn listing(r: &Run) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Listing {
+        #[serde(default)]
+        listing: Option<String>,
+    }
+    Listing::deserialize(r.ask.as_ref()?).ok()?.listing
 }
 
 /// What telling a follow-up needs of an ask: read from its run without the
@@ -2038,6 +2062,7 @@ fn claim(db: &mut Db) -> Result<Claimed> {
             dropped: false,
             was,
             todo: None,
+            listing: None,
             effort,
             allowed,
             given: String::new(),
@@ -2643,10 +2668,11 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
                  the whole stack.",
                 i.base
             );
-            // Let run curl: where it downloads the task graph, in its folder
-            // of its own.
-            let graph = i.todo.as_deref().filter(|_| curl).map(|d| Path::new(d).join(crate::try_push::GRAPH));
-            crate::try_push::prompt(&what, &here, web, graph.as_deref())
+            // Where its labels are: the tasks mach can push, which stacked
+            // lists in its folder of its own before it starts, as it says if
+            // they could not be; and, let run curl, where it downloads the
+            // task graph, beside them.
+            crate::try_push::prompt(&what, &here, web, &try_labels(i, Ok(()), curl))
         }
     };
     // A follow-up: what it brought back waits for the user's review as it
@@ -2776,6 +2802,25 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
         p.push_str(&format!(" You may use, for this work, what you were refused before: {}.", crate::refusals::listed(&i.allowed)));
     }
     p
+}
+
+/// What try push's selection `i` is told of where its labels are, as
+/// `try_push::labels` says it of the files of its folder of its own: the
+/// tasks mach can push, listed there before its agent starts (`listed`),
+/// else why they could not be; and, when it may run curl (`curl`), the
+/// copy of the task graph it downloads there. Nothing, without a folder.
+#[cfg(feature = "try-push")]
+fn try_labels(i: &Info, listed: std::result::Result<(), &str>, curl: bool) -> String {
+    let Some(dir) = i.todo.as_deref().map(Path::new) else { return String::new() };
+    let tasks = dir.join(crate::try_push::TASKS);
+    let graph = curl.then(|| dir.join(crate::try_push::GRAPH));
+    crate::try_push::labels(listed.map(|()| tasks.as_path()), graph.as_deref())
+}
+
+/// Whether an ask given `tools`, as claude takes them (`--allowedTools`),
+/// may run curl.
+fn curl_given(tools: &str) -> bool {
+    tools.split(',').any(|t| t == "Bash(curl *)")
 }
 
 /// What an ask is told of a tool it is not let use: that nothing it would
@@ -3328,14 +3373,16 @@ fn rebase_todo(base: &Path, dir: &Path, busy: &HashSet<PathBuf>) -> Result<PathB
     Ok(todo)
 }
 
-/// The folder of its own that run `id` of database `db`, a try push's
-/// selection, downloads the task graph into, made empty: in `base`, beside
-/// the rebase plans' folders, and named as they are, so that it goes as
-/// they go, once the ask lands, however it ends, and, should nothing land
-/// it, once nothing in it has changed for a day. Each ask has its own: two
-/// at once each download their own copy.
+/// The folder of its own of run `id` of database `db`, a try push's
+/// selection, made empty: where stacked lists the tasks mach can push
+/// before its agent starts (`try_push::TASKS`), and where the agent, when
+/// it may run curl, downloads the task graph (`try_push::GRAPH`). In
+/// `base`, beside the rebase plans' folders, and named as they are, so that
+/// it goes as they go, once the ask lands, however it ends, and, should
+/// nothing land it, once nothing in it has changed for a day. Each ask has
+/// its own: two at once each have their own list, and their own copy.
 #[cfg(feature = "try-push")]
-fn graph_folder(base: &Path, db: &Path, id: &str) -> Result<PathBuf> {
+fn try_folder(base: &Path, db: &Path, id: &str) -> Result<PathBuf> {
     let dir = base.join(crate::diff::sha1_12(&format!("try push {} {id}", db.display())));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
@@ -3433,15 +3480,16 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     // for this work alone. Kept, to read what it is refused against.
     let tools = with_more(tools_for(i.way, &cmd, agent, &linter), &i.allowed);
     i.given = tools.clone();
-    let curl = tools.split(',').any(|t| t == "Bash(curl *)");
+    let curl = curl_given(&tools);
     let plans = plans(&db_abs);
-    // A try push's selection that may run curl downloads the task graph, to
-    // check its labels against, into a folder of its own that its prompt
-    // names: beside the rebase plans' folders, outside your checkout and
-    // any worktree, kept in the run as theirs is, to remove once it lands.
+    // A try push's selection has a folder of its own that its prompt names:
+    // stacked lists the tasks mach can push there, before its agent starts,
+    // and, when it may run curl, it downloads the task graph there. Beside
+    // the rebase plans' folders, outside your checkout and any worktree,
+    // kept in the run as theirs is, to remove once it lands.
     #[cfg(feature = "try-push")]
-    if i.way == Way::Try && curl {
-        i.todo = Some(graph_folder(&plans, &db_abs, id)?.to_string_lossy().into_owned());
+    if i.way == Way::Try {
+        i.todo = Some(try_folder(&plans, &db_abs, id)?.to_string_lossy().into_owned());
     }
     // Told of the linter it is given, by its command.
     let lints = linter.rule().and(linter.command());
@@ -3459,7 +3507,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         i.todo = todo.parent().map(|d| d.to_string_lossy().into_owned());
     }
     let permission = if reads(i.way) { "default" } else { "acceptEdits" };
-    let mut run = Run {
+    let run = Run {
         ask: Some(serde_json::to_value(&i).unwrap()),
         ..run
     };
@@ -3467,7 +3515,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         // Unless it was landed meanwhile, taken for one left behind: then
         // the folder made for it goes.
         if db.run(id).is_some_and(|r| r.state == RunState::Started) {
-            db.add_run(run.clone())?;
+            db.add_run(run)?;
             Ok(false)
         } else {
             if let Some(dir) = &i.todo {
@@ -3490,8 +3538,8 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         c.env("GIT_SEQUENCE_EDITOR", format!("{} __plan {}", quoted(&exe), quoted(todo)));
         c.env("GIT_EDITOR", "true");
     }
-    // Its folder of its own, its rebase plan's or its copy of the task
-    // graph's, is claude's to write in, as the worktree is.
+    // Its folder of its own, its rebase plan's or a try push's selection's,
+    // is claude's to read and write in, as the worktree is.
     if let Some(dir) = &i.todo {
         c.arg("--add-dir").arg(dir);
     }
@@ -3531,23 +3579,31 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     // plans where this one does too.
     crate::home::get().pass_on(&mut c);
     c.env("STACKED_TODO", &plans);
+    // A try push's selection lists the tasks mach can push in its wrapper,
+    // before its agent starts (`prompt_for`): with the tests' stand-in for
+    // mach, when they set one, as a push runs it.
+    #[cfg(feature = "try-push")]
+    if let Some(mach) = crate::try_push::mach_stand_in().filter(|_| i.way == Way::Try) {
+        c.env("STACKED_MACH", mach);
+    }
     // The agent's commits are read back as patches, then gone: not signed,
     // which would want the user's key for each.
     unsigned(&mut c);
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
     let child = c.spawn().map_err(|e| Error(format!("sh: {e}")))?;
     let pid = child.id();
-    run.pid = Some(pid);
     // Kept, to wait for once it has exited (`reap`), before its pid is
     // written for anyone to ask after.
     started().push(child);
     let stopped = Db::edit(db_path, |db| {
         // Stopped as it started, by a stop that could not know its pid: its
         // agent is stopped here. Else, unless it already landed (claude may
-        // be that quick), its pid is written.
+        // be that quick), its pid is written, on its run as it is by then:
+        // its wrapper may have written it meanwhile, a try push's selection
+        // the worktree it lists the tasks mach can push in.
         let stopped = db.events(id).iter().any(|e| e.get("type").and_then(Value::as_str) == Some(STOP));
-        if !stopped && db.run(id).is_some_and(|r| r.state == RunState::Started) {
-            db.add_run(run)?;
+        if !stopped && let Some(r) = db.run(id).filter(|r| r.state == RunState::Started).cloned() {
+            db.add_run(Run { pid: Some(pid), ..r })?;
         }
         Ok(stopped)
     })?;
@@ -3573,6 +3629,73 @@ fn at_effort(args: Vec<String>, effort: Option<Effort>) -> Vec<String> {
     }
     out.extend(["--effort".to_string(), effort.name().to_string()]);
     out
+}
+
+/// The prompt run `id`'s agent is given, as its wrapper asks for it, just
+/// before the agent starts (`stacked prompt`): as `start` wrote it. A try
+/// push's selection's names the tasks mach can push from the stack, which
+/// stacked lists first, once (`list_tasks`), the ask waiting for them.
+pub fn prompt_for(db_path: &Path, id: &str) -> Result<String> {
+    #[cfg(feature = "try-push")]
+    list_tasks(db_path, id)?;
+    let db = Db::load(db_path)?;
+    let i = db.run(id).and_then(info).ok_or_else(|| Error(format!("no ask {id}")))?;
+    Ok(i.prompt)
+}
+
+/// Before the agent of try push's selection `id` starts, once: the tasks
+/// mach can push from the stack it works on, as far as it works on it,
+/// listed in its folder of its own (`try_push::list`), in its wrapper,
+/// away from the launch lock; the ask waits for the list. Its stream says
+/// so first (`LISTING`), which its comment and the banner show meanwhile,
+/// then what came of it. A list that could not be made stops nothing: its
+/// prompt says why, in a line, in place of what it says of the list, and
+/// the agent checks the labels it selects against CI's task graph alone.
+/// Nothing is listed for an ask whose prompt does not name the list, as a
+/// stacked of before wrote it.
+#[cfg(feature = "try-push")]
+fn list_tasks(db_path: &Path, id: &str) -> Result<()> {
+    let begun = Db::edit(db_path, |db| {
+        let Some(i) = db.run(id).filter(|r| r.state == RunState::Started).and_then(info).filter(|i| i.way == Way::Try) else { return Ok(None) };
+        let Some(dir) = i.todo.clone() else { return Ok(None) };
+        let named = i.prompt.contains(&try_labels(&i, Ok(()), curl_given(&i.given)));
+        let begun = db.events(id).iter().any(|e| e.get("type").and_then(Value::as_str) == Some(LISTING));
+        if !named || begun {
+            return Ok(None);
+        }
+        db.add_event(id, serde_json::json!({"type": LISTING, "text": crate::try_push::LISTING_SAID}))?;
+        Ok(Some((i, dir)))
+    })?;
+    let Some((i, dir)) = begun else { return Ok(()) };
+    let tasks = Path::new(&dir).join(crate::try_push::TASKS);
+    let db = Db::load(db_path)?;
+    let listed = started_from(&db, &i).map_err(|e| e.0).and_then(|s| {
+        let n = i.patch.as_ref().map_or(s.patches.len(), |(_, k)| k + 1);
+        crate::try_push::list(db_path, id, &db, &s, n, &tasks)
+    });
+    drop(db);
+    Db::edit(db_path, |db| {
+        let Some(r) = db.run(id).filter(|r| r.state == RunState::Started).cloned() else { return Ok(()) };
+        let said = match &listed {
+            Ok(said) => said.clone(),
+            Err(why) => crate::try_push::unlisted_said(why),
+        };
+        db.add_event(id, serde_json::json!({"type": LISTING, "text": said}))?;
+        let (Err(why), Some(mut i)) = (&listed, info(&r)) else { return Ok(()) };
+        i.prompt = unlisted(&i, why);
+        db.add_run(Run { ask: Some(serde_json::to_value(&i).unwrap()), ..r })?;
+        Ok(())
+    })
+}
+
+/// The prompt of try push's selection `i`, stacked having failed to list
+/// the tasks mach can push, `why`: why said, in a line, in place of what it
+/// says of the list, and CI's task graph what the labels are checked
+/// against (`try_labels`).
+#[cfg(feature = "try-push")]
+fn unlisted(i: &Info, why: &str) -> String {
+    let curl = curl_given(&i.given);
+    i.prompt.replacen(&try_labels(i, Ok(()), curl), &try_labels(i, Err(why), curl), 1)
 }
 
 /// Appends each line of `input` to run `id`'s events as it comes: JSON as
@@ -4504,11 +4627,23 @@ const STARTING: &str = "stacked";
 /// use for its work alone.
 const ALLOWED: &str = "allowed";
 
+/// The type of the events that say, in plain words, what stacked does for
+/// a try push's selection before its agent starts: that it lists the tasks
+/// mach can push, then what came of it (`list_tasks`).
+const LISTING: &str = "listing";
+
 /// What run `id` is doing as it starts, while its agent has written
-/// nothing yet: the command it runs, as one line.
+/// nothing yet, as the one line its comment shows: the command it runs
+/// (`starting: git am …`); for a try push's selection, what stacked says
+/// as it lists the tasks mach can push, in its own words.
 pub fn starting(db: &Db, id: &str) -> Option<String> {
     let last = db.events(id).pop()?;
-    (last.get("type").and_then(Value::as_str) == Some(STARTING)).then(|| str_of(last.get("text")))
+    let text = str_of(last.get("text"));
+    match last.get("type").and_then(Value::as_str) {
+        Some(STARTING) => Some(format!("starting: {text}")),
+        Some(LISTING) => Some(text),
+        _ => None,
+    }
 }
 
 /// The last `n` lines of what run `id`'s agent wrote, as a transcript:
@@ -4539,6 +4674,7 @@ pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
         let lines = match v.get("type").and_then(Value::as_str) {
             Some("text") => vec![str_of(v.get("text"))],
             Some(STARTING) => vec![format!("$ {}", str_of(v.get("text")))],
+            Some(LISTING) => vec![str_of(v.get("text"))],
             Some(ALLOWED) => vec![format!("✓ {ALLOWED_SAID}: {}", str_of(v.get("text")))],
             Some(STOP) => vec![format!("■ {STOPPED_SAID}")],
             Some("exit") => vec![format!("exit {}", str_of(v.get("code")))],
@@ -4825,9 +4961,9 @@ mod tests {
         let mut events = vec![step("git worktree add --detach /tmp/stacked-r 750b26ffa4ae")];
         // While the agent has written nothing, what it is doing is the last
         // command, as one line.
-        assert_eq!(starting(&streamed(&events), "r").as_deref(), Some("git worktree add --detach /tmp/stacked-r 750b26ffa4ae"));
+        assert_eq!(starting(&streamed(&events), "r").as_deref(), Some("starting: git worktree add --detach /tmp/stacked-r 750b26ffa4ae"));
         events.push(step("git am --keep-non-patch, 3 patches"));
-        assert_eq!(starting(&streamed(&events), "r").as_deref(), Some("git am --keep-non-patch, 3 patches"));
+        assert_eq!(starting(&streamed(&events), "r").as_deref(), Some("starting: git am --keep-non-patch, 3 patches"));
         // Once it writes, it is started; the commands stay at the top of
         // what it wrote.
         events.push(serde_json::json!({"type": "system", "subtype": "init", "model": "m"}));
@@ -4838,6 +4974,50 @@ mod tests {
             ["$ git worktree add --detach /tmp/stacked-r 750b26ffa4ae", "$ git am --keep-non-patch, 3 patches", "● session started · m"]
         );
         assert_eq!(starting(&streamed(&[]), "r"), None);
+    }
+
+    #[test]
+    fn the_stream_says_in_plain_words_that_stacked_lists_the_tasks_mach_can_push() {
+        let step = |t: &str| serde_json::json!({"type": STARTING, "text": t});
+        let listing = |t: &str| serde_json::json!({"type": LISTING, "text": t});
+        let mut events = vec![step("git am --keep-non-patch, 1 patch"), step("claude -p … --permission-mode default, in /w")];
+        events.push(listing("stacked lists the tasks mach can push from the stack"));
+        // As it lists, what the comment's line and the banner show: its
+        // words, not a command.
+        let db = streamed(&events);
+        assert_eq!(starting(&db, "r").as_deref(), Some("stacked lists the tasks mach can push from the stack"));
+        assert_eq!(tail(&db, "r", 1), ["stacked lists the tasks mach can push from the stack"]);
+        // Then what came of it, until the agent writes.
+        events.push(listing("stacked listed the 9 tasks mach can push from the stack"));
+        assert_eq!(starting(&streamed(&events), "r").as_deref(), Some("stacked listed the 9 tasks mach can push from the stack"));
+        events.push(serde_json::json!({"type": "system", "subtype": "init", "model": "m"}));
+        let db = streamed(&events);
+        assert_eq!(starting(&db, "r"), None);
+        assert_eq!(
+            tail(&db, "r", 3),
+            ["stacked lists the tasks mach can push from the stack", "stacked listed the 9 tasks mach can push from the stack", "● session started · m"]
+        );
+    }
+
+    /// A try push's ask: its prompt names the list of the tasks mach can
+    /// push, in its folder of its own; and, none made, says why in place of
+    /// what it says of it, the rest as it was.
+    #[cfg(feature = "try-push")]
+    #[test]
+    fn a_try_push_ask_s_prompt_names_its_list_and_says_why_in_its_place_when_none_is_made() {
+        let dir = "/tmp/stacked-todo/0123456789ab";
+        let given = "Read,Bash(curl *),Bash(jq *)";
+        let mut i: Info = serde_json::from_value(serde_json::json!({"way": "try", "scope": "stack", "from": 0, "notes": [], "todo": dir, "given": given})).unwrap();
+        let listed = try_labels(&i, Ok(()), curl_given(&i.given));
+        assert!(listed.contains(&format!("Every task mach can push from this stack is in `{dir}/mach-tasks.txt`")), "{listed}");
+        assert!(listed.contains(&format!("download it once into `{dir}/full-task-graph.json`")), "{listed}");
+        i.prompt = format!("Before.{listed} After.");
+        let p = unlisted(&i, "`./mach try fuzzy --no-push` failed, exiting with 1");
+        assert!(p.starts_with("Before. stacked could not list the tasks mach can push from this stack: `./mach try fuzzy --no-push` failed, exiting with 1. The labels"), "{p}");
+        assert!(p.contains("check each label you select against it before you answer") && p.ends_with(" After.") && !p.contains("mach-tasks.txt"), "{p}");
+        // Without curl, the line alone; without a folder, nothing.
+        assert!(!try_labels(&i, Ok(()), false).contains("full-task-graph.json"));
+        assert_eq!(try_labels(&Info { todo: None, ..i }, Ok(()), true), "");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! The try push, built with the `try-push` feature: a comment asked as a
-//! try push, the agent's stand-in selecting its tasks, each with why; the
+//! try push, the tasks mach can push listed before the agent's stand-in
+//! starts, which then selects its tasks, each with why; the
 //! tasks landing for review, marked, answered and sent back; and closing
 //! the review with them, which pushes them: `./mach try fuzzy --no-push`
 //! checked, then the push, its login shown, its link a reply, and the
@@ -247,16 +248,21 @@ fn look_until(app: &mut App, db: &Path, there: impl Fn(&stacked::db::Run) -> boo
 }
 
 /// The stand-in for mach, for every test of this file, run as `./mach try
-/// fuzzy` would be in the push's worktree. It writes what it is run with in
-/// `mach-calls` beside the test's database: its arguments; whether it could
-/// read anything; whether its output is held back; how many commits mach
-/// would push; the presets file it is given, and what that holds. Then it
-/// says what mach says: with `--no-push`, the try_task_config.json of the
-/// tasks its queries name, how many times each runs, and the priority the
-/// preset gives; else its login's page and code, waiting while `mach-hold`
-/// is there, then the push's link. `mach-mode` beside the database has it
-/// leave the last task out (`drop`), ask a question (`ask`), or fail as it
-/// pushes (`fail`).
+/// fuzzy` would be in a worktree for pushes. It writes what it is run with
+/// in `mach-calls` beside the test's database, or, run with the query every
+/// label matches (`!WORD`) to list the tasks mach can push, in `mach-lists`:
+/// its arguments; whether it could read anything; whether its output is
+/// held back; how many commits mach would push; where it runs; the presets
+/// file it is given, and what that holds. Then it says what mach says: with
+/// `--no-push`, the try_task_config.json of the tasks its queries name, but
+/// those its task graph does not have, when `mach-graph` beside the
+/// database lists that graph's labels, a line each; or, listing, every task
+/// of that graph (else of a few), as it lists them, once `mach-list-hold`
+/// is not there; how many times each runs, and the priority the preset
+/// gives. Else its login's page and code, waiting while `mach-hold` is
+/// there, then the push's link. `mach-mode` beside the database has it
+/// leave the last task out (`drop`), ask a question (`ask`), fail as it
+/// pushes (`fail`), or fail to make its task graph (`broken`).
 fn fake_mach() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
@@ -264,6 +270,10 @@ fn fake_mach() -> PathBuf {
 git=$(git rev-parse --path-format=absolute --git-common-dir)
 dir="$git/../.."
 mode=$(cat "$dir/mach-mode" 2>/dev/null)
+every=""
+for a in "$@"; do case "$a" in '!'*) every="${a#!}" ;; esac; done
+calls="$dir/mach-calls"
+if [ -n "$every" ]; then calls="$dir/mach-lists"; fi
 {
   printf 'args:'
   for a in "$@"; do printf ' %s' "$a"; done
@@ -271,12 +281,16 @@ mode=$(cat "$dir/mach-mode" 2>/dev/null)
   if read -r line; then echo "stdin: open"; else echo "stdin: closed"; fi
   echo "unbuffered: ${PYTHONUNBUFFERED:-}"
   echo "commits: $(git rev-list --count HEAD --not --remotes=origin)"
+  echo "at: $(pwd -P)"
   if [ -n "$MACH_TRY_PRESET_PATHS" ]; then
     echo "presets: $MACH_TRY_PRESET_PATHS"
     tr -d '\n' < "$MACH_TRY_PRESET_PATHS"
     echo
   fi
-} >> "$dir/mach-calls"
+} >> "$calls"
+graph() {
+  if [ -e "$dir/mach-graph" ]; then cat "$dir/mach-graph"; else printf '%s\n' test-linux2404-64/opt-xpcshell-1 build-linux64/debug source-test-mozlint-eslint; fi
+}
 check=no; rebuild=""; preset=""; labels=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -299,12 +313,24 @@ if [ "$mode" = ask ]; then
   fi
 fi
 if [ "$check" = yes ]; then
+  if [ "$mode" = broken ]; then
+    echo " 0:01.20 Generating full task set"
+    echo "Error running mach:"
+    echo "taskgraph.util.verify.VerificationError: the task graph could not be made"
+    exit 1
+  fi
+  while [ -n "$every" ] && [ -e "$dir/mach-list-hold" ]; do sleep 0.1; done
   echo "Commit message:"
   echo "Fuzzy query=..."
   echo
   echo 'Pushed via `mach try fuzzy`'
   echo "Calculated try_task_config.json:"
-  tasks=$(printf '%s' "$labels" | sed 's/^\^//; s/\$$//' | LC_ALL=C sort)
+  if [ -n "$every" ]; then
+    tasks=$(graph | grep -v -F -e "$every")
+  else
+    tasks=$(printf '%s' "$labels" | sed 's/^\^//; s/\$$//' | LC_ALL=C sort)
+    if [ -e "$dir/mach-graph" ]; then tasks=$(printf '%s\n' "$tasks" | grep -F -x -f "$dir/mach-graph"); fi
+  fi
   if [ "$mode" = drop ]; then tasks=$(printf '%s\n' "$tasks" | sed '$d'); fi
   priority=""
   if [ -n "$preset" ] && grep -q '"lowest"' "$MACH_TRY_PRESET_PATHS"; then priority=lowest; fi
@@ -359,6 +385,12 @@ fn mach_args(db: &Path) -> Vec<String> {
 /// All that the stand-in for mach wrote of how it was run, beside `db`.
 fn mach_calls(db: &Path) -> String {
     std::fs::read_to_string(db.with_file_name("mach-calls")).unwrap_or_default()
+}
+
+/// All that the stand-in for mach wrote of how it was run to list the tasks
+/// mach can push, beside `db`.
+fn mach_lists(db: &Path) -> String {
+    std::fs::read_to_string(db.with_file_name("mach-lists")).unwrap_or_default()
 }
 
 /// The try push's run in `d`, the last one.
@@ -944,19 +976,21 @@ fn each_try_push_ask_downloads_the_task_graph_into_a_folder_of_its_own_gone_once
     let going = tries_going(&mut app, &db, 2);
     assert_ne!(going[0].1, going[1].1, "two asks, two folders");
     // Each folder its own, beside the rebase plans' (the test's own, beside
-    // its database), outside your checkout: its prompt names the copy in it,
-    // to download and to read, and claude is let write there (`--add-dir`).
+    // its database), outside your checkout: its prompt names the list of the
+    // tasks mach can push in it, and the copy, to download and to read, and
+    // claude is let write there (`--add-dir`).
     let plans = db.canonicalize().unwrap().with_file_name("stacked-todo");
     let args = claude_args(&db);
     let d = Db::load(&db).unwrap();
     for (id, dir) in &going {
         assert_eq!(dir.parent(), Some(plans.as_path()), "{}", dir.display());
-        let copy = dir.join("full-task-graph.json");
+        let (list, copy) = (dir.join("mach-tasks.txt"), dir.join("full-task-graph.json"));
+        assert!(list.exists(), "{}", list.display());
         let prompt = stacked::ask::info(d.run(id).unwrap()).unwrap().prompt;
         for said in [
+            format!("Every task mach can push from this stack is in `{}`", list.display()),
             format!("download it once into `{}`, a scratch file in a folder of your own, the one place you may write", copy.display()),
             format!("`curl -sL --compressed -o {}` with its address", copy.display()),
-            format!("`jq '[\"LABEL\", …] - keys' {}`", copy.display()),
         ] {
             assert!(prompt.contains(&said), "{said:?} in {prompt}");
         }
@@ -1027,6 +1061,256 @@ fn a_try_push_ask_is_not_given_the_checkout_s_linter_as_a_change_is() {
     let tools = args[0].lines().skip_while(|l| *l != "--allowedTools").nth(1).unwrap_or_default().to_string();
     assert!(tools.contains("Read,") && !tools.contains("Bash(eslint *)"), "{tools}");
     assert!(!last_prompt(&db).contains("This checkout's linter"), "{}", last_prompt(&db));
+}
+
+/// The try push ask going on `db` whose stream says last, as the editor has
+/// it, that stacked lists the tasks mach can push: its run's id.
+fn listing_run(app: &mut App, db: &Path) -> String {
+    until(
+        app,
+        |app| {
+            let r = app.db.runs().into_iter().rev().find(|r| r.what == "try" && r.state == stacked::db::RunState::Started)?;
+            (stacked::ask::starting(&app.db, &r.id).as_deref() == Some(stacked::try_push::LISTING_SAID)).then(|| r.id.clone())
+        },
+        |_| format!("no try push ask lists the tasks mach can push: {}", mach_lists(db)),
+    )
+}
+
+/// The worktree for pushes that try push ask `id` lists the tasks mach can
+/// push in, as the editor has it, once it holds one.
+fn listing_in(app: &mut App, id: &str) -> PathBuf {
+    until(
+        app,
+        |app| stacked::ask::info(app.db.run(id)?)?.listing.map(PathBuf::from),
+        |app| format!("run {id} holds no worktree for pushes: {:?}", app.db.run(id).map(|r| r.summary.clone())),
+    )
+}
+
+#[test]
+fn a_try_push_ask_waits_for_the_tasks_mach_can_push_its_prompt_naming_their_list_and_its_labels_pass_the_check() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db);
+    // mach's own task graph: the tests of xpcshell in four chunks, where
+    // CI's own graph may have them as one task; unsorted, a label twice.
+    let graph = [
+        "test-linux2404-64/debug-xpcshell-3",
+        "build-linux64/debug",
+        "test-linux2404-64/debug-xpcshell-1",
+        "test-linux2404-64/debug-xpcshell-4",
+        "source-test-mozlint-eslint",
+        "test-linux2404-64/debug-xpcshell-2",
+        "build-linux64/debug",
+    ];
+    std::fs::write(db.with_file_name("mach-graph"), format!("{}\n", graph.join("\n"))).unwrap();
+    // mach held as it lists, then the agent as it answers.
+    let (list_hold, hold) = (db.with_file_name("mach-list-hold"), db.with_file_name("hold"));
+    std::fs::write(&list_hold, "").unwrap();
+    std::fs::write(&hold, "").unwrap();
+    ask_try(&mut app, "Which tasks?");
+    let id = notes_of(&db, 0)[0].id.clone();
+    // The ask waits for the list, in a worktree for pushes, as a push takes
+    // one; its comment's line and the banner say so plainly, the agent not
+    // started yet.
+    let run = listing_run(&mut app, &db);
+    let at = listing_in(&mut app, &run);
+    assert_eq!(at, src.canonicalize().unwrap().join(".stacked/s/try"));
+    to_comment(&mut app, &id);
+    let screen = draw(&mut app);
+    assert!(screen.contains("⋯ stacked lists the tasks mach can push from"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("· with the agent (try push, at high) · stacked lists the tasks mach can push"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(claude_args(&db).is_empty(), "the agent waits for the list");
+    // mach run as the push's check runs it, every task selected, the preset
+    // of the lowest priority given, in the worktree made ready as a push
+    // makes it: the comment's patch alone on its base.
+    let calls = until(&mut app, |_| Some(mach_lists(&db)).filter(|c| c.contains(r#""priority": "lowest""#)), |_| format!("mach never listed: {}", mach_lists(&db)));
+    assert_eq!(
+        calls.lines().filter_map(|l| l.strip_prefix("args: ")).collect::<Vec<_>>(),
+        ["try fuzzy --no-push --show-chunk-numbers --all-tasks --preset stacked-lowest -q !stacked-no-label"]
+    );
+    for said in ["stdin: closed".to_string(), "unbuffered: 1".into(), "commits: 1".into(), format!("at: {}", at.display())] {
+        assert!(calls.lines().any(|l| l == said), "{said:?} in {calls}");
+    }
+    let scratch = db.canonicalize().unwrap().with_file_name("stacked-try");
+    let presets: Vec<&str> = calls.lines().filter_map(|l| l.strip_prefix("presets: ")).collect();
+    assert!(presets.len() == 1 && presets[0].starts_with(&*scratch.to_string_lossy()), "{calls}");
+    assert!(calls.contains(r#""stacked-lowest": {"#), "{calls}");
+    assert!(mach_calls(&db).is_empty(), "nothing pushed, nor checked");
+    // Listed: each once, sorted, a label a line, in the ask's folder of its
+    // own; the worktree given back, the presets file gone.
+    std::fs::remove_file(&list_hold).unwrap();
+    let dir = tries_going(&mut app, &db, 1).remove(0).1;
+    let list = dir.join("mach-tasks.txt");
+    assert_eq!(
+        std::fs::read_to_string(&list).unwrap(),
+        "build-linux64/debug\nsource-test-mozlint-eslint\ntest-linux2404-64/debug-xpcshell-1\ntest-linux2404-64/debug-xpcshell-2\ntest-linux2404-64/debug-xpcshell-3\ntest-linux2404-64/debug-xpcshell-4\n"
+    );
+    let d = Db::load(&db).unwrap();
+    let i = stacked::ask::info(d.run(&run).unwrap()).unwrap();
+    assert_eq!(i.listing, None);
+    assert!(!scratch.exists(), "{}", scratch.display());
+    // Its stream: what stacked did, in plain words, as it did it.
+    let said: Vec<String> = d.events(&run).iter().filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("listing")).filter_map(|e| e.get("text")?.as_str().map(String::from)).collect();
+    assert_eq!(
+        said,
+        [
+            stacked::try_push::LISTING_SAID.to_string(),
+            format!(
+                "stacked listed the 6 tasks mach can push from the stack in {}, a label a line, as `./mach try fuzzy --no-push --show-chunk-numbers --all-tasks --preset stacked-lowest -q '!stacked-no-label'` printed them in {}",
+                list.display(),
+                at.display()
+            ),
+        ]
+    );
+    // Its prompt, as the agent was given it: the list is where every label
+    // is, to select from and to check each against; CI's lists, hints.
+    for said in [
+        format!("Every task mach can push from this stack is in `{}`, one label per line", list.display()),
+        "Select labels only from that file.".to_string(),
+        format!("`grep -Fx LABEL {}` prints LABEL only if the file has it", list.display()),
+        "If a task the comments ask for has no label there, say so in your answer rather than guess one.".to_string(),
+        "CI's lists are hints of what normally runs, no more".to_string(),
+    ] {
+        assert!(i.prompt.contains(&said), "{said:?} in {}", i.prompt);
+    }
+    assert!(claude_args(&db).iter().any(|a| a.contains(&i.prompt)), "the prompt the agent was given");
+    drop(d);
+    // Its labels, from the list: they pass the push's check, mach selecting
+    // each of them, and are pushed from the worktree they were listed in.
+    let labels: Vec<String> = std::fs::read_to_string(&list).unwrap().lines().filter(|l| l.contains("debug-xpcshell")).map(String::from).collect();
+    let tasks: Vec<(&str, &str)> = labels.iter().map(|l| (l.as_str(), "It runs the xpcshell tests.")).collect();
+    tasks_answer(&db, &tasks, "The four chunks of xpcshell.");
+    std::fs::remove_file(&hold).unwrap();
+    landed(&mut app, &db, 1);
+    assert!(!dir.exists(), "the folder gone, the list with it: {}", dir.display());
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    let r = wait_push(&mut app, &db, |r| r.state != stacked::db::RunState::Started || r.push.as_ref().is_some_and(|p| p.link.is_some()) && r.pid.is_none());
+    assert!(r.push.as_ref().is_some_and(|p| p.link.is_some()), "{r:?}\n{}", mach_calls(&db));
+    assert!(last_turn(&db).starts_with("stacked pushed the 4 tasks you accepted to try, with patch 1 alone."), "{}", last_turn(&db));
+    let calls = mach_calls(&db);
+    assert_eq!(calls.lines().filter(|l| *l == format!("at: {}", at.display())).count(), 2, "{calls}");
+}
+
+#[test]
+fn a_try_push_ask_whose_list_could_not_be_made_goes_on_with_ci_s_task_graph_its_prompt_saying_why() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db);
+    // mach cannot make its task graph.
+    std::fs::write(db.with_file_name("mach-mode"), "broken").unwrap();
+    tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");
+    let hold = db.with_file_name("hold");
+    std::fs::write(&hold, "").unwrap();
+    ask_try(&mut app, "Which tasks?");
+    let (run, dir) = tries_going(&mut app, &db, 1).remove(0);
+    // The ask goes on, with no list: its prompt says why, in a line, and the
+    // labels are checked against CI's task graph, as before there was a
+    // list. The worktree is given back.
+    assert!(!dir.join("mach-tasks.txt").exists());
+    let d = Db::load(&db).unwrap();
+    let i = stacked::ask::info(d.run(&run).unwrap()).unwrap();
+    let why = "stacked could not list the tasks mach can push from this stack: `./mach try fuzzy --no-push` failed, exiting with 1.";
+    let graph = format!("`jq '[\"LABEL\", …] - keys' {}`", dir.join("full-task-graph.json").display());
+    for said in [why, "check each label you select against it before you answer", graph.as_str()] {
+        assert!(i.prompt.contains(said), "{said:?} in {}", i.prompt);
+    }
+    for not in ["Every task mach can push", "Select labels only from that file", "CI's lists are hints"] {
+        assert!(!i.prompt.contains(not), "{not:?} in {}", i.prompt);
+    }
+    assert!(claude_args(&db).iter().any(|a| a.contains(why)), "the prompt the agent was given");
+    assert_eq!(i.listing, None);
+    // Its stream: mach's last lines, then why, in plain words.
+    let stream: Vec<String> = d.events(&run).iter().filter_map(|e| e.get("text")?.as_str().map(String::from)).collect();
+    let at = stream.iter().position(|l| l == stacked::try_push::LISTING_SAID).unwrap_or_else(|| panic!("{stream:?}"));
+    assert_eq!(
+        stream[at + 1..at + 5],
+        [
+            " 0:01.20 Generating full task set",
+            "Error running mach:",
+            "taskgraph.util.verify.VerificationError: the task graph could not be made",
+            "stacked could not list the tasks mach can push from the stack: `./mach try fuzzy --no-push` failed, exiting with 1. The agent selects the tasks without that list.",
+        ]
+    );
+    drop(d);
+    std::fs::remove_file(&hold).unwrap();
+    landed(&mut app, &db, 1);
+    let labels: Vec<String> = stacked::held::queue(&Db::load(&db).unwrap(), "s")[0].held.as_ref().unwrap().tasks.iter().map(|t| t.label.clone()).collect();
+    assert_eq!(labels, ["build-linux64/debug"], "its work, for your review");
+    // A worktree that cannot be made ready as a push's, the stack's base on
+    // no remote of Firefox's: no list either, mach never run, and why said.
+    std::fs::remove_file(db.with_file_name("mach-mode")).unwrap();
+    git(&src, &["update-ref", "-d", "refs/remotes/origin/main"]);
+    ask_try_on_stack(&mut app, "Which tasks of the stack?");
+    landed(&mut app, &db, 2);
+    let base = git_out(&src, &["rev-parse", "HEAD~2"]);
+    let why = format!("stacked could not list the tasks mach can push from this stack: the stack's base, commit {}, is not on origin, the remote mach takes as Firefox's", &base[..12]);
+    assert!(last_prompt(&db).contains(&why), "{why:?} in {}", last_prompt(&db));
+    assert_eq!(mach_lists(&db).lines().filter(|l| l.starts_with("args: ")).count(), 1, "{}", mach_lists(&db));
+}
+
+#[test]
+fn a_try_push_ask_lists_in_a_worktree_for_pushes_no_push_is_made_from_and_no_push_takes_it_meanwhile() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db);
+    let wt = |name: &str| src.canonicalize().unwrap().join(".stacked/s").join(name);
+    // Work that selected a task, its list made in `try`.
+    tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");
+    ask_try(&mut app, "Build it.");
+    landed(&mut app, &db, 1);
+    let work = stacked::held::queue(&Db::load(&db).unwrap(), "s")[0].id.clone();
+    // Its push, waiting for mach's login, holds `try`.
+    std::fs::write(db.with_file_name("mach-hold"), "").unwrap();
+    let push = |app: &mut App| -> (String, PathBuf) {
+        let accepted = [stacked::try_push::Task { label: "build-linux64/debug".into(), ..Default::default() }];
+        let id = Db::edit(&db, |d| stacked::try_push::begin(d, &work, &accepted, None)).unwrap();
+        stacked::try_push::launch(&db, &id).unwrap();
+        until(
+            app,
+            |app| app.db.run(&id)?.push.as_ref().filter(|p| p.login.is_some())?.worktree.as_ref().map(|w| (id.clone(), PathBuf::from(w))),
+            |app| format!("push {id} never waited for mach's login: {:?}\n{}", app.db.run(&id), mach_calls(&db)),
+        )
+    };
+    let (first, at) = push(&mut app);
+    assert_eq!(at, wt("try"));
+    // An ask listing meanwhile, held as mach lists: not in the push's
+    // worktree, but in the next, which it holds.
+    std::fs::write(db.with_file_name("mach-list-hold"), "").unwrap();
+    std::fs::write(db.with_file_name("hold"), "").unwrap();
+    ask_try_on_stack(&mut app, "Which tasks of the stack?");
+    let run = listing_run(&mut app, &db);
+    assert_eq!(listing_in(&mut app, &run), wt("try-2"));
+    let listed_at = format!("at: {}", wt("try-2").display());
+    until(&mut app, |_| mach_lists(&db).lines().any(|l| l == listed_at).then_some(()), |_| mach_lists(&db));
+    // A push begun as it lists: neither the other push's worktree nor the
+    // list's.
+    let (second, at) = push(&mut app);
+    assert_eq!(at, wt("try-3"));
+    // Listed, the worktree given back; the pushes go on, then push, each
+    // from its own.
+    std::fs::remove_file(db.with_file_name("mach-list-hold")).unwrap();
+    tries_going(&mut app, &db, 1);
+    assert_eq!(stacked::ask::info(Db::load(&db).unwrap().run(&run).unwrap()).unwrap().listing, None);
+    std::fs::remove_file(db.with_file_name("hold")).unwrap();
+    std::fs::remove_file(db.with_file_name("mach-hold")).unwrap();
+    for id in [&first, &second] {
+        until(
+            &mut app,
+            |app| app.db.run(id).filter(|r| r.push.as_ref().is_some_and(|p| p.link.is_some()) && r.pid.is_none()).map(|_| ()),
+            |app| format!("push {id} never pushed: {:?}\n{}", app.db.run(id), mach_calls(&db)),
+        );
+    }
+    until(&mut app, |app| app.db.run(&run).filter(|r| r.state != stacked::db::RunState::Started).map(|_| ()), |app| format!("the ask never landed: {:?}", app.db.run(&run)));
+    let calls = mach_calls(&db);
+    let at: Vec<&str> = calls.lines().filter_map(|l| l.strip_prefix("at: ")).collect();
+    let (try1, try3) = (wt("try").display().to_string(), wt("try-3").display().to_string());
+    assert_eq!(at.iter().filter(|a| **a == try1).count(), 2, "{calls}");
+    assert_eq!(at.iter().filter(|a| **a == try3).count(), 2, "{calls}");
+    assert_eq!(at.len(), 4, "{calls}");
 }
 
 /// Comment `id` of patch 1 put on the queue as a try push, as an older
@@ -1761,7 +2045,7 @@ fn a_try_push_the_editor_batched_goes_with_the_batch_the_command_line_sends() {
     let mut app = open(&db);
     batch_try(&mut app, "Which tasks?");
     tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");
-    let out = stacked_with(&src, &db, &["send", "s", "--batch", "--wait"], &[("STACKED_CLAUDE", &fake_claude())]);
+    let out = stacked_with(&src, &db, &["send", "s", "--batch", "--wait"], &[("STACKED_CLAUDE", &fake_claude()), ("STACKED_MACH", &fake_mach())]);
     assert!(out.contains("\tsent (try push)"), "{out}");
     let d = Db::load(&db).unwrap();
     assert!(d.stack_notes("s").iter().all(|n| n.queued.is_none()), "the batch is empty");

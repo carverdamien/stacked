@@ -3955,9 +3955,10 @@ impl App {
                         if lines.is_empty() { vec!["the try push is starting…".into()] } else { lines }
                     }
                     // Starting, one line says what it runs: the command
-                    // first, cut where the line ends.
+                    // first, cut where the line ends; or what stacked does
+                    // first, said as it says it.
                     _ => match ask::starting(&self.db, run) {
-                        Some(doing) => vec![format!("starting: {doing}")],
+                        Some(doing) => vec![doing],
                         None => {
                             let lines = ask::tail(&self.db, run, self.cfg.view.stream_lines);
                             if lines.is_empty() { vec!["the agent is starting…".into()] } else { lines }

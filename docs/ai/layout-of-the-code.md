@@ -81,6 +81,8 @@
 - `try_push.rs`: the try push, built with the `try-push` feature (on by
   default): what an ask of a try push is told and answers with, its tasks
   read from its answer, and what a round asked again is told of them; the
+  list of the tasks mach can push, made before the ask's agent starts
+  (`list`), in a worktree for pushes held as a push holds one; the
   push of the tasks a review accepts (its run's `push`), made by `stacked
   try-push` in the stack's worktree for it, its base checked against the
   remotes mach takes as Firefox's, `./mach try fuzzy --no-push` compared

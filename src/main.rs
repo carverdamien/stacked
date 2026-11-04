@@ -537,7 +537,8 @@ enum Cmd {
         #[command(subcommand)]
         what: SetupWhat,
     },
-    /// An ask's prompt (for the ask's wrapper).
+    /// An ask's prompt; a try push's selection's once stacked has listed
+    /// the tasks mach can push (for the ask's wrapper).
     #[command(hide = true)]
     Prompt { id: String },
     /// Append stdin to a run's events (for the ask's wrapper).
@@ -2042,14 +2043,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Prompt { id } => {
-            let db = Db::load(path)?;
-            let info = db
-                .run(&id)
-                .and_then(ask::info)
-                .ok_or_else(|| Error(format!("no ask {id}")))?;
-            print!("{}", info.prompt);
-        }
+        Cmd::Prompt { id } => print!("{}", ask::prompt_for(path, &id)?),
         Cmd::Record { id } => ask::record(path, &id, std::io::stdin().lock())?,
         Cmd::Land { id } => print_run(&ask::land(path, &id, None)?),
         Cmd::Fits { id } => println!("{}", ask::fits(path, &id)?),

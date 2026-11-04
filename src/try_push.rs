@@ -8,6 +8,16 @@
 //! agent for another round. Closing the review with tasks accepted pushes
 //! them to try.
 //!
+//! Before the agent starts, stacked lists the tasks mach can push from the
+//! stack (`list`), as the push would push it: its worktree made ready as a
+//! push's is, then the push's own `./mach try fuzzy --no-push`, the preset
+//! of the lowest priority given, with a query every label matches; the
+//! labels of what it would push, sorted, a line each, in a file of the
+//! ask's own folder, which its prompt names as where every label it may
+//! select is. CI's own lists are hints beside it. A list that could not be
+//! made stops nothing: the prompt says why, in a line, and the labels are
+//! checked against CI's task graph alone, as before there was a list.
+//!
 //! The push (`begin`, then `push` in a process of its own) is made from a
 //! worktree of the stack's own, `.stacked/NAME/try`: the stack's patches
 //! as commits on its base, up to the comment's patch, or all of them for a
@@ -111,12 +121,9 @@ pub fn tasks_of(answer: Option<&Map<String, Value>>) -> (Vec<Task>, Option<u32>)
 /// stack, or a patch with those below it), `here` where it works and how
 /// it reads the stack, `web` what it may read of the web: the tasks the
 /// comments ask for, as few or as many as they say, exact labels, why each;
-/// and nothing pushed, nothing changed. When it may run curl, `graph` being
-/// the file of its own it downloads the task graph into, it is told where
-/// the labels are, and to check each it selects against the task graph
-/// (`labels`).
-pub fn prompt(what: &str, here: &str, web: &str, graph: Option<&Path>) -> String {
-    let labels = graph.map(labels).unwrap_or_default();
+/// and nothing pushed, nothing changed. Then `labels`, what it is told of
+/// where the labels are (`labels`).
+pub fn prompt(what: &str, here: &str, web: &str, labels: &str) -> String {
     format!(
         "You are selecting the CI tasks of a try push of {what}, as the comments below ask for \
          them: as few or as many as they say, and for what they say. Each task is one of \
@@ -145,13 +152,81 @@ gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public";
 /// rebase plans' and removes once the ask lands.
 pub const GRAPH: &str = "full-task-graph.json";
 
+/// The file stacked lists the tasks mach can push from the stack into, for
+/// a try push ask, before its agent starts (`list`): in the same folder of
+/// the ask's own as `GRAPH`, a label a line.
+pub const TASKS: &str = "mach-tasks.txt";
+
+/// What a try push ask is told of where to find the labels: every task
+/// mach can push from the stack, listed in `tasks` (`list`), the one place
+/// it selects them from, CI's lists hints beside it; or, when that list
+/// could not be made, why, in a line, and CI's task graph to check each
+/// label against, as before there was a list. CI's lists are told only to
+/// an ask that may read the web with curl, `graph` being the file of its
+/// own it downloads the task graph into.
+pub fn labels(tasks: std::result::Result<&Path, &str>, graph: Option<&Path>) -> String {
+    match tasks {
+        Ok(file) => format!("{}{}", listed(file), graph.map(ci_hints).unwrap_or_default()),
+        Err(why) => format!(
+            " stacked could not list the tasks mach can push from this stack: {}.{}",
+            why.trim().trim_end_matches('.'),
+            graph.map(ci_checked).unwrap_or_default()
+        ),
+    }
+}
+
+/// What a try push ask is told of the tasks mach can push from the stack,
+/// listed in `tasks`: every one of them, as mach names them, the labels it
+/// selects only from there, each checked against that file with what it
+/// may run already (grep, jq), a task asked for that has no label there
+/// said in its answer rather than guessed.
+fn listed(tasks: &Path) -> String {
+    let file = tasks.display();
+    let word = quoted(&file.to_string());
+    format!(
+        " Every task mach can push from this stack is in `{file}`, one label per line, as `./mach \
+         try fuzzy --show-chunk-numbers` lists them: stacked listed them before you started, with \
+         `./mach try fuzzy --no-push` in a worktree of this stack, as the push runs it. Select \
+         labels only from that file. It is long: search it rather than read it whole (`grep -F \
+         linux2404-64/debug-xpcshell {word}` lists those tasks), and check each label you select \
+         against it before you answer: `grep -Fx LABEL {word}` prints LABEL only if the file has \
+         it, and `jq -Rn '[\"LABEL\", …] - [inputs]' {word}` prints the labels you list that it \
+         does not have. If a task the comments ask for has no label there, say so in your answer \
+         rather than guess one."
+    )
+}
+
+/// What a try push ask that may read the web with curl is told of CI's
+/// lists beside mach's: hints of what normally runs, no more, the labels
+/// of the tasks of mozilla-central's latest push and autoland's, and that
+/// push's full task graph, its tests chunked as CI chunks them, which can
+/// differ from mach's list; the graph downloaded once into `graph`, its
+/// scratch file, if it needs it, and read there, and a download that fails
+/// said in its answer.
+fn ci_hints(graph: &Path) -> String {
+    let file = graph.display();
+    let word = quoted(&file.to_string());
+    format!(
+        " CI's lists are hints of what normally runs, no more: the labels of the tasks of \
+         mozilla-central's latest push are a JSON list at {DECISION}/target-tasks.json, and \
+         autoland's with `autoland` in place of `mozilla-central`; and the full task graph of \
+         mozilla-central's latest push is the JSON object at {DECISION}/full-task-graph.json, \
+         whose keys are the tasks' labels as CI makes them, its tests chunked as CI chunks them, \
+         which can differ from mach's list. It is large: if you need it, download it once into \
+         `{file}`, a scratch file in a folder of your own, the one place you may write (`curl -sL \
+         --compressed -o {word}` with its address), and read that copy with jq. If a download \
+         fails, say so in your answer, and answer without it."
+    )
+}
+
 /// What a try push ask is told of where to find the labels, when it may
-/// read the web with curl: those of the tasks of mozilla-central's latest
-/// push, and autoland's; and that push's full task graph, every task it
-/// may select, to check each label it selects against before it answers,
-/// downloaded once into `graph`, its scratch file, and read there, and a
-/// download that fails said in its answer.
-fn labels(graph: &Path) -> String {
+/// read the web with curl and stacked could not list the tasks mach can
+/// push: those of the tasks of mozilla-central's latest push, and
+/// autoland's; and that push's full task graph, every task it may select,
+/// to check each label it selects against before it answers, downloaded
+/// once into `graph`, its scratch file, and read there, and a download
+/// that fails said in its answer.
+fn ci_checked(graph: &Path) -> String {
     let file = graph.display();
     let word = quoted(&file.to_string());
     format!(
@@ -543,6 +618,14 @@ pub fn stand_in(program: &Path) {
     *MACH.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(program.to_path_buf());
 }
 
+/// The tests' stand-in for mach, if they set one (`stand_in`): what a
+/// process this one starts is told to run in mach's place (`$STACKED_MACH`),
+/// a push's, and the wrapper of a try push ask, which lists the tasks mach
+/// can push before its agent starts.
+pub(crate) fn mach_stand_in() -> Option<PathBuf> {
+    MACH.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
 /// Starts try push `id` away from here: `stacked try-push ID`, a process of
 /// its own, in a session of its own, so that neither mach nor what it runs
 /// (ssh, git) has a terminal to ask anything on, and its process group is
@@ -559,7 +642,7 @@ pub fn launch(db_path: &Path, id: &str) -> Result<()> {
     c.current_dir(db_abs.parent().unwrap_or(Path::new("/")));
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     crate::home::get().pass_on(&mut c);
-    if let Some(mach) = MACH.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+    if let Some(mach) = mach_stand_in() {
         c.env("STACKED_MACH", mach);
     }
     // Between fork and exec, the child alone calls setsid, which is safe
@@ -651,60 +734,22 @@ fn pushing(db_path: &Path, r: &Run, scratch: &Scratch) -> std::result::Result<()
     let p = r.push.clone().ok_or_else(|| Failure::before("the run is not a try push"))?;
     let db = Db::load(db_path)?;
     let s = db.node(p.rev)?.clone();
-    let (repo, base) = crate::ops::base_of(&s)?;
-    let patches: Vec<&crate::db::Patch> = s.patches.iter().take(p.patches).map(|id| db.patch(id)).collect();
-    let mbox = crate::mbox::format_mbox(&patches);
-    let (cfg, _) = crate::config::of(&repo);
     let step = |text: String| record(db_path, id, STEP, &text);
-    // Its worktree: the stack's patches as commits on its base, as far as
-    // the comment's. Taken and made ready under the launch lock, as an
-    // ask's is; not while mach runs.
-    let at = {
-        let _launching = crate::ask::launch_lock(db_path)?;
-        let dir = crate::ask::agents_dir(&repo, &s.name, cfg.agent.worktrees.as_deref())?;
-        let at = take_worktree(db_path, id, &dir)?;
-        if at.join(".git").exists() {
-            let _ = crate::git::scrub(&at);
-        }
-        crate::git::ready(&repo, &at, &base, &mbox, p.patches, &step)?;
-        at
-    };
-    // The commits mach would push: the stack's patches, and nothing else.
-    let remotes = official_remotes(&at)?;
-    step(format!("git rev-list --count HEAD --not {}", remote_args(&remotes).join(" ")));
-    if let Some(why) = commits_problem(&at, &base, p.patches, &remotes) {
-        return Err(Failure::before(why));
-    }
+    let at = prepared(db_path, id, &db, &s, p.patches, &step)?;
     let n = p.patches;
     say(db_path, id, &format!("mach would push the stack's {} alone, on its base", if n == 1 { "patch".to_string() } else { format!("{n} patches") }));
     let program = program(&at).map_err(Failure::before)?;
     // Past the threshold, the preset of the lowest priority.
     let presets = match p.lowest {
-        true => Some(scratch.presets().map_err(|e| Failure::before(format!("the presets file for mach could not be written: {e}")))?),
+        true => Some(scratch.presets()?),
         false => None,
     };
     // What it would push, checked first.
     update(db_path, id, |p| p.step = Step::Checking)?;
     let args = mach_args(&p, true);
     step(command_said(&args));
-    let ran = run_mach(db_path, id, &program, &at, &args, presets.as_deref(), &mut |_| {}).map_err(Failure::before)?;
-    if let Some(q) = asked(&ran.lines) {
-        return Err(asked_failure(&q));
-    }
-    if ran.code != Some(0) {
-        let why = format!("`./mach try fuzzy --no-push` failed, {}", exit_said(ran.code));
-        return Err(Failure {
-            said: with_lines(&format!("The try push was not made: {why}."), &ran.lines, "Nothing was pushed."),
-            why,
-        });
-    }
-    let Some(config) = calculated(&ran.lines) else {
-        let why = "`./mach try fuzzy --no-push` did not say what it would push (its try_task_config.json)".to_string();
-        return Err(Failure {
-            said: with_lines(&format!("The try push was not made: {why}."), &ran.lines, "Nothing was pushed."),
-            why,
-        });
-    };
+    let ran = run_mach(&program, &at, &args, presets.as_deref(), &mut |line| record(db_path, id, "text", line)).map_err(Failure::before)?;
+    let config = checked(&ran)?;
     let differs = differences(&config, &p);
     if !differs.is_empty() {
         return Err(Failure {
@@ -723,7 +768,8 @@ fn pushing(db_path: &Path, r: &Run, scratch: &Scratch) -> std::result::Result<()
     step(command_said(&args));
     let mut page: Option<String> = None;
     let mut linked = false;
-    let ran = run_mach(db_path, id, &program, &at, &args, presets.as_deref(), &mut |line| {
+    let ran = run_mach(&program, &at, &args, presets.as_deref(), &mut |line| {
+        record(db_path, id, "text", line);
         if let Some(url) = login_page(line) {
             page = Some(url);
         }
@@ -763,6 +809,62 @@ fn pushing(db_path: &Path, r: &Run, scratch: &Scratch) -> std::result::Result<()
     Err(Failure {
         why: format!("`./mach try fuzzy` {how}"),
         said: with_lines(&format!("The try push failed: `./mach try fuzzy` {how}."), &ran.lines, ending),
+    })
+}
+
+/// A push's first step, `Step::Preparing`, which the list of the tasks
+/// mach can push takes too (`list`), for run `id`: the first free worktree
+/// for pushes of stack `s` taken (`take_worktree`) and made ready, under
+/// the launch lock, as an ask's is, never while mach runs: what it held
+/// thrown away, then the stack's first `n` patches as commits on its base
+/// (as far as the comment's), `step` told each git command; then the
+/// commits mach would push from it checked to be those patches alone. Where
+/// it is.
+fn prepared(db_path: &Path, id: &str, db: &Db, s: &crate::db::Stack, n: usize, step: &dyn Fn(String)) -> std::result::Result<PathBuf, Failure> {
+    let (repo, base) = crate::ops::base_of(s)?;
+    let patches: Vec<&crate::db::Patch> = s.patches.iter().take(n).map(|id| db.patch(id)).collect();
+    let mbox = crate::mbox::format_mbox(&patches);
+    let (cfg, _) = crate::config::of(&repo);
+    let at = {
+        let _launching = crate::ask::launch_lock(db_path)?;
+        let dir = crate::ask::agents_dir(&repo, &s.name, cfg.agent.worktrees.as_deref())?;
+        let at = take_worktree(db_path, id, &dir)?;
+        if at.join(".git").exists() {
+            let _ = crate::git::scrub(&at);
+        }
+        crate::git::ready(&repo, &at, &base, &mbox, n, step)?;
+        at
+    };
+    // The commits mach would push: the stack's patches, and nothing else.
+    let remotes = official_remotes(&at)?;
+    step(format!("git rev-list --count HEAD --not {}", remote_args(&remotes).join(" ")));
+    if let Some(why) = commits_problem(&at, &base, n, &remotes) {
+        return Err(Failure::before(why));
+    }
+    Ok(at)
+}
+
+/// What `./mach try fuzzy --no-push` would push, as `ran`, its run, says
+/// it: the try_task_config.json it printed; else why the push is not made,
+/// a question mach stopped on, its failure or nothing printed, with its
+/// last lines.
+fn checked(ran: &Ran) -> std::result::Result<Value, Failure> {
+    if let Some(q) = asked(&ran.lines) {
+        return Err(asked_failure(&q));
+    }
+    if ran.code != Some(0) {
+        let why = format!("`./mach try fuzzy --no-push` failed, {}", exit_said(ran.code));
+        return Err(Failure {
+            said: with_lines(&format!("The try push was not made: {why}."), &ran.lines, "Nothing was pushed."),
+            why,
+        });
+    }
+    calculated(&ran.lines).ok_or_else(|| {
+        let why = "`./mach try fuzzy --no-push` did not say what it would push (its try_task_config.json)".to_string();
+        Failure {
+            said: with_lines(&format!("The try push was not made: {why}."), &ran.lines, "Nothing was pushed."),
+            why,
+        }
     })
 }
 
@@ -863,6 +965,98 @@ pub fn orphans(db_path: &Path, db: &Db) -> usize {
     gone.iter()
         .filter(|id| end(db_path, id, RunState::Failed, "the process pushing it is gone", &|_| said.to_string()).is_ok())
         .count()
+}
+
+// -- the tasks mach can push --------------------------------------------------- //
+
+/// What the stream of a try push ask says while stacked lists the tasks
+/// mach can push from the stack, before its agent starts (`list`): what its
+/// comment and the banner show meanwhile, as the ask waits for the list.
+pub const LISTING_SAID: &str = "stacked lists the tasks mach can push from the stack, for the agent to select from: \
+this may take a minute or more, as mach makes its task graph";
+
+/// Lists the tasks mach can push into `into`, for try push ask `id`, before
+/// its agent starts: from stack `s`, its first `n` patches, as `db` has
+/// them, as a push of them would push them, in the ask's own process,
+/// which stopping the ask stops, mach with it. A worktree for pushes taken
+/// and made ready as a push's is (`prepared`), held in the ask's run while
+/// mach runs there (`take_worktree`), so that no push is made from it
+/// meanwhile, and given back once mach is done, whatever came of it; then
+/// the push's own `./mach try fuzzy --no-push`, the preset of the lowest
+/// priority given in a presets file of its own (`Scratch`), with the query
+/// every label matches (`listing_args`), none of its lines in the ask's
+/// stream; the labels of what it would push, read as the push's check
+/// reads them (`calculated`), written sorted, a line each. What the ask's
+/// stream says of the list made; else why it could not be, mach's last
+/// lines put in the stream first.
+pub fn list(db_path: &Path, id: &str, db: &Db, s: &crate::db::Stack, n: usize, into: &Path) -> std::result::Result<String, String> {
+    let scratch = Scratch::new(db_path, id);
+    let listed = listing(db_path, id, db, s, n, &scratch, into);
+    drop(scratch);
+    let _ = let_go(db_path, id);
+    listed.map_err(|f| f.why)
+}
+
+/// The work of `list`, up to the labels written: what the ask's stream says
+/// of them, else why they could not be listed.
+fn listing(db_path: &Path, id: &str, db: &Db, s: &crate::db::Stack, n: usize, scratch: &Scratch, into: &Path) -> std::result::Result<String, Failure> {
+    let at = prepared(db_path, id, db, s, n, &|_| {})?;
+    let program = program(&at).map_err(Failure::before)?;
+    let presets = scratch.presets()?;
+    let args = listing_args();
+    let ran = run_mach(&program, &at, &args, Some(&presets), &mut |_| {}).map_err(Failure::before)?;
+    let config = checked(&ran).inspect_err(|_| {
+        for line in last_lines(&ran.lines) {
+            record(db_path, id, "text", line);
+        }
+    })?;
+    let labels = listed_labels(&config);
+    if labels.is_empty() {
+        return Err(Failure::before("`./mach try fuzzy --no-push` listed no task"));
+    }
+    std::fs::write(into, format!("{}\n", labels.join("\n"))).map_err(|e| Failure::before(format!("{}: {e}", into.display())))?;
+    let tasks = match labels.len() {
+        1 => "the task".to_string(),
+        k => format!("the {} tasks", thousands(k)),
+    };
+    Ok(format!(
+        "stacked listed {tasks} mach can push from the stack in {}, a label a line, as `{}` printed them in {}",
+        into.display(),
+        command_said(&args),
+        at.display()
+    ))
+}
+
+/// The labels a list of the tasks mach can push holds, of `config`, the
+/// try_task_config.json that mach printed: each that can be a label
+/// (`label_of`), once, sorted.
+fn listed_labels(config: &Value) -> Vec<String> {
+    let mut labels: Vec<String> = tasks_in(config).into_iter().filter_map(|l| label_of(&l)).collect();
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+/// The worktree for pushes that try push ask `id` held while stacked listed
+/// the tasks mach can push there (`list`), given back.
+fn let_go(db_path: &Path, id: &str) -> Result<()> {
+    Db::edit(db_path, |db| {
+        let Some(r) = db.run(id).cloned() else { return Ok(()) };
+        let Some(mut i) = crate::ask::info(&r).filter(|i| i.listing.is_some()) else { return Ok(()) };
+        i.listing = None;
+        let ask = serde_json::to_value(&i).map_err(|e| Error(e.to_string()))?;
+        db.add_run(Run { ask: Some(ask), ..r })?;
+        Ok(())
+    })
+}
+
+/// What the stream of a try push ask says when stacked could not list the
+/// tasks mach can push, `why`: the agent selects them without that list.
+pub fn unlisted_said(why: &str) -> String {
+    format!(
+        "stacked could not list the tasks mach can push from the stack: {}. The agent selects the tasks without that list.",
+        why.trim().trim_end_matches('.')
+    )
 }
 
 // -- following the push ------------------------------------------------------- //
@@ -1379,8 +1573,10 @@ fn say(db_path: &Path, id: &str, text: &str) {
 }
 
 /// The first free worktree of `dir` for pushes (`try`, `try-2`…), taken
-/// for try push `id`: none other being pushed from it. Written as its
-/// worktree, so that no other push takes it.
+/// for run `id`, a try push, or a try push ask whose list of the tasks mach
+/// can push is made there (`list`): none other being pushed from it, nor
+/// another list made in it (`holds`). Written in its run (`held`), so that
+/// no other push nor list takes it meanwhile.
 fn take_worktree(db_path: &Path, id: &str, dir: &Path) -> Result<PathBuf> {
     let mut k = 1;
     loop {
@@ -1388,24 +1584,46 @@ fn take_worktree(db_path: &Path, id: &str, dir: &Path) -> Result<PathBuf> {
         k += 1;
         let path = at.to_string_lossy().into_owned();
         let taken = Db::edit(db_path, |db| {
-            let busy = db.live_runs().iter().any(|r| {
-                r.id != id
-                    && r.state == RunState::Started
-                    && r.push.as_ref().is_some_and(|p| p.step != Step::Pushed && p.worktree.as_deref() == Some(path.as_str()))
-            });
+            let busy = db.live_runs().iter().any(|r| r.id != id && holds(r).as_deref() == Some(path.as_str()));
             if busy {
                 return Ok(false);
             }
             let r = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
-            let Some(mut p) = r.push.clone() else { return err(format!("run {id} is not a try push")) };
-            p.worktree = Some(path.clone());
-            db.add_run(Run { push: Some(p), ..r })?;
+            db.add_run(held(r, &path)?)?;
             Ok(true)
         })?;
         if taken {
             return Ok(at);
         }
     }
+}
+
+/// The worktree for pushes that run `r` holds, if it holds one: a try
+/// push's own, from when it is taken until mach says it pushed; a try push
+/// ask's, while stacked lists the tasks mach can push there, before its
+/// agent starts (`ask::Info::listing`). Neither, once the run is over.
+fn holds(r: &Run) -> Option<String> {
+    if r.state != RunState::Started {
+        return None;
+    }
+    match &r.push {
+        Some(p) => p.worktree.clone().filter(|_| p.step != Step::Pushed),
+        None => crate::ask::listing(r),
+    }
+}
+
+/// Run `r` holding worktree `path` for pushes: a try push's as its
+/// worktree; a try push ask's as the one it lists the tasks mach can push
+/// in.
+fn held(r: Run, path: &str) -> Result<Run> {
+    if let Some(mut p) = r.push.clone() {
+        p.worktree = Some(path.to_string());
+        return Ok(Run { push: Some(p), ..r });
+    }
+    let Some(mut i) = crate::ask::info(&r) else { return err(format!("run {} is neither a try push nor an ask", r.id)) };
+    i.listing = Some(path.to_string());
+    let ask = serde_json::to_value(&i).map_err(|e| Error(e.to_string()))?;
+    Ok(Run { ask: Some(ask), ..r })
 }
 
 /// The program a push runs as mach in worktree `at`: the one
@@ -1539,19 +1757,40 @@ fn commits_problem(dir: &Path, base: &str, n: usize, names: &[String]) -> Option
 /// has (`--all-tasks`); how many times each runs; past the threshold, the
 /// preset of the lowest priority; `--no-push` to see what it would push.
 pub fn mach_args(p: &Push, check: bool) -> Vec<String> {
+    let terms: Vec<String> = p.labels.iter().map(|l| format!("^{l}$")).collect();
+    fuzzy_args(check, p.rebuild, p.lowest, &terms.join(" | "))
+}
+
+/// The query every label matches, as fzf reads it: `!WORD` matches each
+/// label that does not hold WORD, and none holds this one. An empty query
+/// would have mach open fzf, to ask.
+pub const EVERY_LABEL: &str = "!stacked-no-label";
+
+/// What mach is run with to list every task it can push (`list`): as the
+/// push's check runs it, `--no-push`, the labels with their chunk numbers,
+/// from every task of the graph; the preset of the lowest priority, as
+/// every task is many more than the threshold; and the query every label
+/// matches.
+pub fn listing_args() -> Vec<String> {
+    fuzzy_args(true, None, true, EVERY_LABEL)
+}
+
+/// `try fuzzy`, `--no-push` when it only checks, with `--show-chunk-numbers
+/// --all-tasks`, `--rebuild N` for `rebuild`, the preset of the lowest
+/// priority when `lowest`, and `query`.
+fn fuzzy_args(check: bool, rebuild: Option<u32>, lowest: bool, query: &str) -> Vec<String> {
     let mut out: Vec<String> = vec!["try".into(), "fuzzy".into()];
     if check {
         out.push("--no-push".into());
     }
     out.extend(["--show-chunk-numbers".to_string(), "--all-tasks".to_string()]);
-    if let Some(n) = p.rebuild {
+    if let Some(n) = rebuild {
         out.extend(["--rebuild".to_string(), n.to_string()]);
     }
-    if p.lowest {
+    if lowest {
         out.extend(["--preset".to_string(), LOWEST.to_string()]);
     }
-    let terms: Vec<String> = p.labels.iter().map(|l| format!("^{l}$")).collect();
-    out.extend(["-q".to_string(), terms.join(" | ")]);
+    out.extend(["-q".to_string(), query.to_string()]);
     out
 }
 
@@ -1585,10 +1824,11 @@ struct Ran {
 
 /// Runs `program` as mach in worktree `at` with `args`: its stdin closed,
 /// so that it reads nothing; its output not held back (Python's, by
-/// `PYTHONUNBUFFERED`); `presets` the presets file it reads, if any. Each
-/// line it writes, out or error, is in run `id`'s stream as it comes, and
-/// `seen` is told it.
-fn run_mach(db_path: &Path, id: &str, program: &Path, at: &Path, args: &[String], presets: Option<&Path>, seen: &mut dyn FnMut(&str)) -> std::result::Result<Ran, String> {
+/// `PYTHONUNBUFFERED`); `presets` the presets file it reads, if any. `seen`
+/// is told each line it writes, out or error, as it comes: a push puts each
+/// in its run's stream; a list of the tasks mach can push, none of the
+/// thousands of lines of what mach would push.
+fn run_mach(program: &Path, at: &Path, args: &[String], presets: Option<&Path>, seen: &mut dyn FnMut(&str)) -> std::result::Result<Ran, String> {
     let mut c = Command::new(program);
     c.args(args).current_dir(at).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     c.env("PYTHONUNBUFFERED", "1");
@@ -1623,7 +1863,6 @@ fn run_mach(db_path: &Path, id: &str, program: &Path, at: &Path, args: &[String]
         if line.trim().is_empty() {
             continue;
         }
-        record(db_path, id, "text", &line);
         seen(&line);
         lines.push(line);
     }
@@ -1660,13 +1899,21 @@ fn exit_said(code: Option<i32>) -> String {
 }
 
 /// A reply of `head`, then the last lines mach wrote, `lines`, up to three
-/// in a block of their own, then `tail`.
+/// in a block of their own (`last_lines`), then `tail`.
 fn with_lines(head: &str, lines: &[String], tail: &str) -> String {
-    let last: Vec<&str> = lines.iter().map(String::as_str).filter(|l| !l.trim().is_empty()).rev().take(3).collect();
+    let last = last_lines(lines);
     match last.is_empty() {
         true => format!("{head} {tail}"),
-        false => format!("{head} Its last lines:\n\n```text\n{}\n```\n\n{tail}", last.into_iter().rev().collect::<Vec<_>>().join("\n")),
+        false => format!("{head} Its last lines:\n\n```text\n{}\n```\n\n{tail}", last.join("\n")),
     }
+}
+
+/// The last lines mach wrote of `lines`, up to three, in their order: what
+/// is said of a run of it that failed.
+fn last_lines(lines: &[String]) -> Vec<&str> {
+    let mut last: Vec<&str> = lines.iter().map(String::as_str).filter(|l| !l.trim().is_empty()).rev().take(3).collect();
+    last.reverse();
+    last
 }
 
 /// The try_task_config.json that `./mach try fuzzy --no-push` says it
@@ -1677,17 +1924,23 @@ pub fn calculated(lines: &[String]) -> Option<Value> {
     serde_json::Deserializer::from_str(&rest).into_iter::<Value>().next()?.ok()
 }
 
+/// The labels of the tasks that `config`, a try_task_config.json, pushes,
+/// as it lists them.
+fn tasks_in(config: &Value) -> Vec<String> {
+    config
+        .pointer("/parameters/try_task_config/tasks")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
 /// How what mach would push, `config` (its try_task_config.json), differs
 /// from what try push `p` pushes: a sentence for each difference, of the
 /// tasks, how many times each runs, and the priority; none when they are
 /// the same.
 pub fn differences(config: &Value, p: &Push) -> Vec<String> {
     let ttc = config.pointer("/parameters/try_task_config");
-    let tasks: Vec<String> = ttc
-        .and_then(|t| t.get("tasks"))
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+    let tasks = tasks_in(config);
     let listed = |these: &[&String]| these.iter().map(|l| format!("`{l}`")).collect::<Vec<_>>().join(", ");
     let mut out = Vec::new();
     let missing: Vec<&String> = p.labels.iter().filter(|l| !tasks.contains(l)).collect();
@@ -1799,9 +2052,9 @@ impl Scratch {
 
     /// The presets file mach reads in place of yours and Firefox's, which
     /// `MACH_TRY_PRESET_PATHS` names: the preset of the lowest priority
-    /// alone, as JSON, which reads as YAML.
-    fn presets(&self) -> std::io::Result<PathBuf> {
-        std::fs::create_dir_all(&self.0)?;
+    /// alone, as JSON, which reads as YAML. Else why it could not be
+    /// written.
+    fn presets(&self) -> std::result::Result<PathBuf, Failure> {
         let file = self.0.join("try_presets.yml");
         let preset = serde_json::json!({
             LOWEST: {
@@ -1810,7 +2063,9 @@ impl Scratch {
                 "try_config_params": {"try_task_config": {"priority": "lowest"}}
             }
         });
-        std::fs::write(&file, format!("{}\n", serde_json::to_string_pretty(&preset).unwrap_or_default()))?;
+        std::fs::create_dir_all(&self.0)
+            .and_then(|_| std::fs::write(&file, format!("{}\n", serde_json::to_string_pretty(&preset).unwrap_or_default())))
+            .map_err(|e| Failure::before(format!("the presets file for mach could not be written: {e}")))?;
         Ok(file)
     }
 }
@@ -1873,7 +2128,8 @@ mod tests {
 
     #[test]
     fn the_prompt_asks_for_what_the_comment_asks_exact_labels_and_why_pushing_nothing() {
-        let p = prompt("the stack's patches", "Read the stack.", "You may read the web.", Some(Path::new("/tmp/0123456789ab/full-task-graph.json")));
+        let (tasks, graph) = (Path::new("/tmp/0123456789ab/mach-tasks.txt"), Path::new("/tmp/0123456789ab/full-task-graph.json"));
+        let p = prompt("the stack's patches", "Read the stack.", "You may read the web.", &labels(Ok(tasks), Some(graph)));
         for said in [
             "as few or as many as they say",
             "exact label",
@@ -1887,15 +2143,62 @@ mod tests {
             assert!(p.contains(said), "{said:?} in {p}");
         }
         assert!(!p.contains("minimal"), "{p}");
-        assert!(!prompt("x", "", "", None).contains("target-tasks.json"), "without curl, no address to read");
+        assert!(!prompt("x", "", "", &labels(Ok(tasks), None)).contains("target-tasks.json"), "without curl, no address to read");
         let end = answer_said("End your reply with a JSON object");
         assert!(end.contains("\"tasks\"") && end.contains("\"rebuild\"") && end.contains("\"replies\""), "{end}");
     }
 
     #[test]
-    fn with_curl_each_label_is_checked_against_the_task_graph_downloaded_once() {
+    fn every_label_is_selected_from_the_tasks_mach_can_push_ci_s_lists_hints_beside_them() {
+        let tasks = Path::new("/tmp/stacked-todo/0123456789ab/mach-tasks.txt");
         let graph = Path::new("/tmp/stacked-todo/0123456789ab/full-task-graph.json");
-        let p = prompt("the stack's patches", "Read the stack.", "You may read the web.", Some(graph));
+        let p = prompt("the stack's patches", "Read the stack.", "You may read the web.", &labels(Ok(tasks), Some(graph)));
+        let file = tasks.display();
+        // The list: every task mach can push, the only place labels come
+        // from, each checked against it with grep or jq, a task with no
+        // label there said rather than guessed.
+        for said in [
+            format!("Every task mach can push from this stack is in `{file}`, one label per line, as `./mach try fuzzy --show-chunk-numbers` lists them"),
+            "stacked listed them before you started, with `./mach try fuzzy --no-push` in a worktree of this stack, as the push runs it".to_string(),
+            "Select labels only from that file.".to_string(),
+            format!("search it rather than read it whole (`grep -F linux2404-64/debug-xpcshell {file}` lists those tasks)"),
+            format!("check each label you select against it before you answer: `grep -Fx LABEL {file}` prints LABEL only if the file has it"),
+            format!("`jq -Rn '[\"LABEL\", …] - [inputs]' {file}` prints the labels you list that it does not have"),
+            "If a task the comments ask for has no label there, say so in your answer rather than guess one.".to_string(),
+        ] {
+            assert!(p.contains(&said), "{said:?} in {p}");
+        }
+        // CI's lists, hints of what normally runs: no check against them.
+        let index = "https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public";
+        for said in [
+            format!("CI's lists are hints of what normally runs, no more: the labels of the tasks of mozilla-central's latest push are a JSON list at {index}/target-tasks.json, and autoland's"),
+            format!("the full task graph of mozilla-central's latest push is the JSON object at {index}/full-task-graph.json"),
+            "its tests chunked as CI chunks them, which can differ from mach's list".to_string(),
+            format!("if you need it, download it once into `{}`, a scratch file in a folder of your own, the one place you may write", graph.display()),
+            format!("`curl -sL --compressed -o {}` with its address", graph.display()),
+        ] {
+            assert!(p.contains(&said), "{said:?} in {p}");
+        }
+        assert!(p.find("mach-tasks.txt") < p.find("target-tasks.json"), "the list first: {p}");
+        for not in ["check each label you select against it before you answer: `jq", "- keys'", "could not list"] {
+            assert!(!p.contains(not), "{not:?} in {p}");
+        }
+        // A path sh would split, quoted in the commands.
+        let p = labels(Ok(Path::new("/tmp/my plans/0123456789ab/mach-tasks.txt")), None);
+        assert!(p.contains("`grep -Fx LABEL '/tmp/my plans/0123456789ab/mach-tasks.txt'`"), "{p}");
+        // Without curl, the list alone.
+        assert!(!p.contains("CI's lists") && !p.contains("download"), "{p}");
+    }
+
+    #[test]
+    fn without_mach_s_list_each_label_is_checked_against_ci_s_task_graph_downloaded_once() {
+        let graph = Path::new("/tmp/stacked-todo/0123456789ab/full-task-graph.json");
+        let why = "`./mach try fuzzy --no-push` failed, exiting with 1.";
+        let p = prompt("the stack's patches", "Read the stack.", "You may read the web.", &labels(Err(why), Some(graph)));
+        // Why there is no list, in a line, before the rest.
+        let line = " stacked could not list the tasks mach can push from this stack: `./mach try fuzzy --no-push` failed, exiting with 1. The labels";
+        assert!(p.contains(line), "{line:?} in {p}");
+        assert!(!p.contains("mach-tasks.txt") && !p.contains("Select labels only from that file"), "{p}");
         // Beside target-tasks.json's address, the same decision task's full
         // task graph, and what it holds.
         let index = "https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public";
@@ -1916,11 +2219,12 @@ mod tests {
         }
         assert!(p.find("target-tasks.json") < p.find("full-task-graph.json"), "{p}");
         // A path sh would split, quoted in the commands.
-        let p = prompt("x", "", "", Some(Path::new("/tmp/my plans/0123456789ab/full-task-graph.json")));
+        let p = prompt("x", "", "", &labels(Err(why), Some(Path::new("/tmp/my plans/0123456789ab/full-task-graph.json"))));
         assert!(p.contains("`curl -sL --compressed -o '/tmp/my plans/0123456789ab/full-task-graph.json'` with its address"), "{p}");
         assert!(p.contains("`jq '[\"LABEL\", …] - keys' '/tmp/my plans/0123456789ab/full-task-graph.json'`"), "{p}");
-        // Without curl, nothing of it.
-        let p = prompt("the stack's patches", "Read the stack.", "", None);
+        // Without curl, why alone, nothing of the graph.
+        let p = prompt("the stack's patches", "Read the stack.", "", &labels(Err(why), None));
+        assert!(p.ends_with(" stacked could not list the tasks mach can push from this stack: `./mach try fuzzy --no-push` failed, exiting with 1."), "{p}");
         for not in ["full-task-graph.json", "check each label", "download", "place you may write"] {
             assert!(!p.contains(not), "{not:?} in {p}");
         }
@@ -1966,6 +2270,49 @@ mod tests {
         );
         let many = push(&["a", "b", "c", "d"], None, false);
         assert_eq!(command_said(&mach_args(&many, false)), "./mach try fuzzy --show-chunk-numbers --all-tasks -q '^a$ | ^b$ | …' (one query, a term for each of the 4 tasks)");
+    }
+
+    #[test]
+    fn mach_lists_every_task_it_can_push_as_the_check_runs_it_at_the_lowest_priority() {
+        let args = listing_args();
+        assert_eq!(args.join(" "), "try fuzzy --no-push --show-chunk-numbers --all-tasks --preset stacked-lowest -q !stacked-no-label");
+        assert_eq!(&args[args.len() - 2..], ["-q", "!stacked-no-label"], "one argument, which every label matches");
+        // The check's own flags, with the preset of a push past the
+        // threshold, as every task is.
+        let check = mach_args(&push(&["a"], None, true), true);
+        assert_eq!(args[..args.len() - 1], check[..check.len() - 1]);
+        assert_eq!(command_said(&args), "./mach try fuzzy --no-push --show-chunk-numbers --all-tasks --preset stacked-lowest -q '!stacked-no-label'");
+        // The labels of what it would push, each once, sorted; what cannot
+        // be a label left out.
+        let config = serde_json::json!({"parameters": {"try_task_config": {"tasks": [
+            "test-linux2404-64/debug-xpcshell-2", "build-linux64/debug", "test-linux2404-64/debug-xpcshell-1", "build-linux64/debug", "two words", ""
+        ]}}, "version": 2});
+        assert_eq!(listed_labels(&config), ["build-linux64/debug", "test-linux2404-64/debug-xpcshell-1", "test-linux2404-64/debug-xpcshell-2"]);
+        assert!(listed_labels(&serde_json::json!({"version": 2})).is_empty());
+        assert_eq!(
+            unlisted_said("`./mach try fuzzy --no-push` failed, exiting with 1."),
+            "stacked could not list the tasks mach can push from the stack: `./mach try fuzzy --no-push` failed, exiting with 1. The agent selects the tasks without that list."
+        );
+    }
+
+    #[test]
+    fn a_worktree_for_pushes_is_held_by_a_push_until_it_pushed_and_by_an_ask_while_it_lists() {
+        let run = |push: Option<Push>, ask: Option<Value>, state: RunState| Run { id: "r".into(), state, push: push.map(Box::new), ask, ..Default::default() };
+        let asked = |listing: Option<&str>| Some(serde_json::json!({"way": "try", "scope": "stack", "from": 0, "notes": [], "listing": listing}));
+        let mut p = push(&["a"], None, false);
+        p.worktree = Some("/repo/.stacked/s/try".into());
+        assert_eq!(holds(&run(Some(p.clone()), None, RunState::Started)).as_deref(), Some("/repo/.stacked/s/try"));
+        p.step = Step::Pushed;
+        assert_eq!(holds(&run(Some(p), None, RunState::Started)), None, "pushed and followed, it holds none");
+        assert_eq!(holds(&run(None, asked(Some("/repo/.stacked/s/try-2")), RunState::Started)).as_deref(), Some("/repo/.stacked/s/try-2"));
+        assert_eq!(holds(&run(None, asked(None), RunState::Started)), None, "listed");
+        assert_eq!(holds(&run(None, asked(Some("/repo/.stacked/s/try-2")), RunState::Failed)), None, "over, as a stopped ask is");
+        // Each holds it where it keeps it.
+        let r = held(run(None, asked(None), RunState::Started), "/w/try-3").unwrap();
+        assert_eq!(crate::ask::info(&r).unwrap().listing.as_deref(), Some("/w/try-3"));
+        let r = held(run(Some(push(&["a"], None, false)), None, RunState::Started), "/w/try").unwrap();
+        assert_eq!(r.push.unwrap().worktree.as_deref(), Some("/w/try"));
+        assert!(held(run(None, None, RunState::Started), "/w/try").is_err());
     }
 
     #[test]

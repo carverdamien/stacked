@@ -24,24 +24,74 @@ patches change and to what the comment asks; and, when the comment asks
 for repeated runs (an intermittent failure), how many times each runs,
 from 2 to 20, as mach's `--rebuild` takes it. It reads as an answer does,
 where an answer works, with the tools of its own list (`agent.try_tools`,
-Settings, below), and pushes nothing, nor runs `./mach`. When it may run
-curl, it is told where the labels of the tasks of mozilla-central's latest
-push are listed (its `target-tasks.json`), and autoland's; and where that
-push's full task graph is (its `full-task-graph.json`), whose keys are the
-labels of every task `./mach try fuzzy --all-tasks` can select, to check
-each label it selects against it before it answers. The graph is large:
-the agent downloads it once, into a folder of the ask's own that its
-prompt names, the one place it may write, and reads that copy with jq, all
-its labels in one go. The folder is beside the rebase plans' folders
+Settings, below), and pushes nothing, nor runs `./mach`.
+
+Before the agent starts, stacked lists every task mach can push from the
+stack, as the push would push it, the patches up to the comment's, or all
+of them: in a worktree for pushes (`.stacked/NAME/try`, below), made ready
+as a push makes it ready, the commits mach would push checked too, it runs
+the push's own `./mach try fuzzy --no-push --show-chunk-numbers
+--all-tasks`, mach's stdin closed and its output not held back, with the
+preset of the lowest priority (`--preset stacked-lowest`, below), as every
+task is far more than mach pushes without asking, and a query that every
+label matches, `-q '!stacked-no-label'` (fzf's `!WORD` matches each label
+that does not hold WORD; an empty query would have mach open fzf, to
+ask). The labels of what it would push, read from the try_task_config.json
+it prints as the push's check reads them, are written sorted, a label a
+line, in `mach-tasks.txt` in a folder of the ask's own (below); none of
+mach's lines is in the stream, its thousands of labels with them. The ask
+waits for the list, as long as mach takes, a minute or more when it makes
+its task graph: its comment's line and the banner say `stacked lists the
+tasks mach can push from the stack, for the agent to select from: this
+may take a minute or more, as mach makes its task graph`, and its stream
+then `stacked listed the 31,412 tasks mach can push from the stack in
+…/mach-tasks.txt, a label a line, as `./mach try fuzzy --no-push
+--show-chunk-numbers --all-tasks --preset stacked-lowest -q
+'!stacked-no-label'` printed them in …/.stacked/NAME/try`. The list is
+made by the ask's wrapper, before claude, away from the launch lock:
+stopping the ask stops mach with it. Its prompt says that every task mach
+can push from this stack is in that file, one label per line, as `./mach
+try fuzzy --show-chunk-numbers` lists them; to select labels only from
+it, searching it rather than reading it whole, and to check each label
+against it before it answers (`grep -Fx LABEL FILE`, or `jq -Rn
+'["LABEL", …] - [inputs]' FILE` for those it lists that the file does not
+have); and to say so in its answer, rather than guess a label, of a task
+the comments ask for that has none there. A list that cannot be made stops
+nothing: mach failing, saying no try_task_config.json or asking a
+question, or a worktree that cannot be made ready (a stack that does not
+apply, a base on none of the remotes mach takes as Firefox's). The stream
+says why, after mach's last lines when it ran (`stacked could not list the
+tasks mach can push from the stack: `./mach try fuzzy --no-push` failed,
+exiting with 1. The agent selects the tasks without that list.`), and the
+prompt says why in a line, in place of what it says of the list (`stacked
+could not list the tasks mach can push from this stack: …`); the agent
+then checks its labels against CI's task graph alone, as below. The
+database keeps nothing of the list itself: only the worktree the ask holds
+while mach lists (below), the lines of its stream, and its prompt, as the
+agent is given it.
+
+When it may run curl, it is told where the labels of the tasks of
+mozilla-central's latest push are listed (its `target-tasks.json`), and
+autoland's; and where that push's full task graph is (its
+`full-task-graph.json`), whose keys are the labels of every task CI can
+run there. With mach's list, these are hints of what normally runs, no
+more: CI chunks its tests as it does, which can differ from mach's
+(`test-linux2404-64/debug-xpcshell` in CI's graph, `-1` to `-4` in
+mach's). Without the list, the agent checks each label it selects against
+the full task graph before it answers. The graph is large: the agent
+downloads it once, into the ask's folder of its own, which its prompt
+names, the one place it may write, and reads that copy with jq, all its
+labels in one go. The folder is beside the rebase plans' folders
 (`$TMPDIR/stacked-todo/…`, Asking the agent, above), outside your checkout
 and any worktree, so that neither shows anything new; stacked lets claude
-write there (`--add-dir`), and removes it once the ask lands, however it
-ends: done, failed, stopped, or found with its agent gone. Two asks at
-once each have their own. If the download fails, the agent says so in its
-answer, and answers without it. It gives the tasks with its replies, as
-structured output, else in the JSON it ends with, whatever prose is around
-it; a label given twice is taken once, and one with white space in it,
-which could not select its task alone, is left out.
+read and write there (`--add-dir`), and removes it once the ask lands,
+however it ends: done, failed, stopped, or found with its agent gone. Two
+asks at once each have their own, and their own list. If the download
+fails, the agent says so in its answer, and answers without it. It gives
+the tasks with its replies, as structured output, else in the JSON it ends
+with, whatever prose is around it; a label given twice is taken once, and
+one with white space in it, which could not select its task alone, is left
+out.
 
 What it selects lands for your review, as any of its work does: the banner
 says so (`the next: 6 tasks to push to try, 1 reply`), in its section of
@@ -90,11 +140,17 @@ remote (`git fetch`), or put the stack on a commit that it has.`
 
 The push is made away from the screen, by a stacked of its own (`stacked
 try-push RUN`, which the editor starts), from a worktree of the stack's
-own, `.stacked/NAME/try` (`try-2`… while another push is made from it; under
+own, `.stacked/NAME/try` (`try-2`… while another push is made from it, or
+an ask's list of the tasks mach can push is made in it; under
 `agent.worktrees` when that is set): the stack's patches as commits on its
-base, up to the comment's. The commits mach would push are checked there
-to be those patches alone. Then `./mach try fuzzy --no-push` runs, the
-tasks in one query, each its own exact term, fzf's OR between them (`-q
+base, up to the comment's. Each takes the first that none holds, under
+the launch lock, and holds it in its run: a push from then until mach
+says it pushed, an ask while mach lists there (the ask's `listing`); so
+that neither is made ready, its files changed, while the other's mach
+reads them, and neither waits for the other. The commits mach would push
+are checked there to be those patches alone. Then `./mach try fuzzy
+--no-push` runs, the tasks in one query, each its own exact term, fzf's OR
+between them (`-q
 '^a$ | ^b$'`, which fzf is given whole, so that it runs once), the labels
 with their chunk numbers (`--show-chunk-numbers`), from every task of the graph
 (`--all-tasks`), with `--rebuild N` when each runs more than once; what it
@@ -107,8 +163,10 @@ same way. Past the threshold, mach is given the lowest priority
 beforehand, as it sets it itself once told yes: a preset of stacked's
 (`--preset stacked-lowest`), in a presets file of its own that
 `MACH_TRY_PRESET_PATHS` names, in `stacked-try/RUN` beside the database,
-which is gone once the push is done with it. Your own presets are not
-read then, and nothing is written in ~/.mozbuild by stacked.
+which is gone once the push is done with it. A list of the tasks mach can
+push, made for an ask, is given the same preset, in a presets file of the
+same kind, gone once mach has listed them. Your own presets are not read
+then, and nothing is written in ~/.mozbuild by stacked.
 
 mach reads nothing: its stdin is closed, and the push runs in a session of
 its own, with no terminal, so that nothing mach runs (ssh, git) asks

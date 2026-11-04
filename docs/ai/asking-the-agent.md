@@ -543,9 +543,10 @@ running writes its plan there. Each time an ask that may change the whole
 stack starts, stacked also removes every folder whose git directory is
 gone, unless an ask that is running writes its plan there. A folder that
 names no git directory, as an older stacked made them, is removed once
-nothing in it has changed for a day; so is the folder a try push's
-selection downloads the task graph into (Try push, below), should its ask
-never have landed. `$STACKED_TODO` names another folder to keep the plans
+nothing in it has changed for a day; so is a try push's selection's
+folder, where stacked lists the tasks mach can push and the agent
+downloads the task graph (Try push, below), should its ask never have
+landed. `$STACKED_TODO` names another folder to keep the plans
 in, in place of `$TMPDIR/stacked-todo`.
 
 What a change may run reaches no network, unless what its list
@@ -654,7 +655,10 @@ repository) or `starting: git switch --detach BASE, in WORKTREE` (taken
 again), then `starting: git am --keep-non-patch, 3 patches` (the stack, up
 to what it is asked about); then `starting: claude -p … --permission-mode
 … --effort LEVEL, in WORKTREE`, the ask's own worktree, whatever its kind:
-never your checkout. They stay
+never your checkout. A try push's selection's wrapper then lists the tasks
+mach can push before claude starts, its line saying so in stacked's own
+words, no `starting:` before them (`stacked lists the tasks mach can push
+from the stack, …`, Try push, below). They stay
 at the top of its stream, as `$ git worktree add …`, in the stream, in
 `Runs…` and in `stacked transcript RUN`. Enter on a comment the agent is
 working on opens its stream in place; esc folds it, and so does the agent
