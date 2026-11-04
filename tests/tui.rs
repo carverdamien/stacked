@@ -21784,9 +21784,11 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     // then this, the reviewers the title names written as moz-phab writes
     // them; the parent, before then after; the status; then the code: a.txt
     // changed, c.txt that only Phabricator's version adds, gone back to what
-    // the patches below leave, none; as an interdiff, as the view of what
-    // differs from Phabricator draws a revision's files, the diff of them
-    // as it is. Of reviewers, nothing else is said.
+    // the patches below leave, none; compared as two diffs, as the view of
+    // what differs from Phabricator draws that revision's code: the
+    // interdiff of its latest diff and the diff sent, a.txt's line 20 as each
+    // says it, c.txt only Phabricator's adds. Of reviewers, nothing else is
+    // said.
     let order = [
         "what is sent",
         "   D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and stays Changes Planned.",
@@ -21800,14 +21802,15 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
         "-parent: none",
         "+parent: D12, the revision of patch 2",
         " status: stays Changes Planned",
-        "the code: Phabricator's, then what is sent",
-        "   Each file as the latest diff of D13 leaves it, then as patch 3 leaves it, both on the patches below patch 3.",
-        "diff --git a/a.txt b/a.txt",
-        "-LINE 20",
-        "+Line twenty",
-        "diff --git a/c.txt b/c.txt",
-        "deleted file mode 100644",
-        "-sea",
+        "the code: the two diffs, Phabricator's then what is sent",
+        "   The code is shown as an interdiff of the latest diff of D13 and this version's diff.",
+        "--- D13 on Phabricator",
+        "+++ what is sent",
+        "-+LINE 20",
+        "++Line twenty",
+        "-diff --git a/c.txt b/c.txt",
+        "-new file mode 100644",
+        "-+sea",
     ];
     let places: Vec<usize> = order.iter().map(|t| at(t)).collect();
     assert!(places.windows(2).all(|w| w[0] < w[1]), "{rows:#?}");
@@ -21822,7 +21825,7 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     let screen = draw(&mut app);
     assert!(screen.lines().any(|l| l.contains("-Old why.") && l.contains("│+New why.")), "{screen}");
     keys(&mut app, &[KeyCode::PageDown, KeyCode::PageDown]);
-    assert!(draw(&mut app).contains("-sea"));
+    assert!(draw(&mut app).contains("+sea"));
     keys(&mut app, &[KeyCode::Home]);
     inter_view(&mut app, InterLayout::Interdiff);
     // Cancel: send nothing, in the menu Esc opens: nothing is sent.
@@ -21892,7 +21895,7 @@ fn esc_on_what_a_submit_sends_opens_its_menu_a_right_click_too_and_enter_and_spa
     pick_item(&mut app, "The view of the code…");
     assert_eq!(
         app.help()[0],
-        "Press Enter to pick how the code of what is sent is drawn, in the dialog of the views of the interdiffs: as a diff of the files, or each file side by side, as two diffs are compared; or as the middle draws a patch, unified, side by side, or side by side and compact."
+        "Press Enter to pick how the code of what is sent is drawn, in the dialog of the views of the interdiffs: compared as two diffs, Phabricator's and the one sent, as an interdiff, in a column per version or side by side; or as the code, each file as both leave it, unified, side by side, or side by side and compact."
     );
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!((app.screen, app.mode.clone()), (Screen::Submit, Mode::Normal));
@@ -21904,7 +21907,7 @@ fn esc_on_what_a_submit_sends_opens_its_menu_a_right_click_too_and_enter_and_spa
         help[1..],
         [
             "Press Esc for the menu, or click with the right button: Send it to Phabricator sends it, D13 read again first, and if it changed on Phabricator since this was read, nothing is sent; Cancel: send nothing sends nothing.",
-            "Press ↑↓ (pgup pgdn home end) to scroll, and 1 to pick how the code is drawn: as a diff of the files, or each file side by side, as two diffs are compared; or as the middle draws a patch, unified, side by side, or side by side and compact. Side by side, the title and summary, and what else changes, are side by side too.",
+            "Press ↑↓ (pgup pgdn home end) to scroll, and 1 to pick how the code is drawn: compared as two diffs, Phabricator's and the one sent, as an interdiff, in a column per version or side by side, as what differs from Phabricator draws them; or as the code, each file as both leave it, unified, side by side, or side by side and compact. Side by side, the title and summary, and what else changes, are side by side too.",
         ],
         "{help:#?}"
     );
@@ -21926,16 +21929,16 @@ fn esc_on_what_a_submit_sends_opens_its_menu_a_right_click_too_and_enter_and_spa
 #[test]
 fn one_on_what_a_submit_sends_opens_the_dialog_of_the_views_and_its_code_follows_each_view_its_place_kept() {
     let (_tmp, _db, phab, _one, mut app) = reviewing_a_submit();
-    // As an interdiff, as the view of what differs from Phabricator draws a
-    // revision's files: the diff of them, as it is. The cursor on the line
-    // a.txt has sent.
+    // As an interdiff, as the view of what differs from Phabricator draws
+    // that revision's code: Phabricator's latest diff and the diff sent,
+    // compared. The cursor on the line a.txt has sent.
     let rows = submitted(&mut app);
-    let at = rows.iter().position(|r| r == "+Line twenty").unwrap_or_else(|| panic!("{rows:#?}"));
-    assert!(rows.contains(&"the code: Phabricator's, then what is sent".to_string()) && rows.contains(&"diff --git a/a.txt b/a.txt".to_string()), "{rows:#?}");
+    let at = rows.iter().position(|r| r == "++Line twenty").unwrap_or_else(|| panic!("{rows:#?}"));
+    assert!(rows.contains(&"the code: the two diffs, Phabricator's then what is sent".to_string()) && rows.contains(&"--- D13 on Phabricator".to_string()), "{rows:#?}");
     for _ in 0..at {
         key(&mut app, KeyCode::Down);
     }
-    assert_eq!(submit_row(&mut app), "+Line twenty");
+    assert_eq!(submit_row(&mut app), "++Line twenty");
     // 1 opens the dialog of the views of the interdiffs, on the view as it
     // is; so does the menu's item.
     keys(&mut app, &[KeyCode::Char('1')]);
@@ -21944,22 +21947,23 @@ fn one_on_what_a_submit_sends_opens_the_dialog_of_the_views_and_its_code_follows
     choose(&mut app, "The view of the code…");
     assert!(matches!(app.mode, Mode::Views(_)), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Esc]);
-    // In a column per version: the files as they are too, the top bar
-    // saying the view; the cursor on its line.
+    // In a column per version: what each one's patch does with each line,
+    // the top bar saying the view; the cursor on its line.
     inter_view(&mut app, InterLayout::Columns);
-    assert_eq!(submit_row(&mut app), "+Line twenty");
+    assert_eq!(submit_row(&mut app), "·+Line twenty");
     assert!(draw(&mut app).lines().next().unwrap().contains(" · interdiffs in columns"));
-    // Side by side: each file's two versions beside each other, the line
-    // of both; the title and summary side by side too, under their
-    // heading.
+    // Side by side: the old version's diff on the left, the new one's on
+    // the right, the line of both; the title and summary side by side too,
+    // under their heading.
     inter_view(&mut app, InterLayout::Sides);
     let row = submit_row(&mut app);
-    assert!(row.starts_with("-LINE 20") && row.ends_with("│+Line twenty"), "{row}");
+    assert!(row.starts_with("+LINE 20") && row.ends_with("│+Line twenty"), "{row}");
     let rows = submitted(&mut app);
     assert!(rows.iter().any(|l| l.starts_with("-Old why.") && l.trim_end().ends_with("│+New why.")), "{rows:#?}");
-    assert!(rows.contains(&"the code: Phabricator's on the left, what is sent on the right".to_string()), "{rows:#?}");
+    assert!(rows.contains(&"the code: the two diffs, Phabricator's on the left, what is sent on the right".to_string()), "{rows:#?}");
     // The code, unified, as the middle draws a patch: each file's name, its
-    // hunks, a file deleted; the cursor on its line.
+    // hunks, a file deleted; the cursor on the line of it that the line of
+    // the interdiff it was on is.
     inter_view(&mut app, InterLayout::ChangeUnified);
     assert_eq!(submit_row(&mut app), "+Line twenty");
     let rows = submitted(&mut app);
@@ -21979,13 +21983,144 @@ fn one_on_what_a_submit_sends_opens_the_dialog_of_the_views_and_its_code_follows
     // Back as an interdiff: on the line it was on, the title and summary
     // one under the other again.
     inter_view(&mut app, InterLayout::Interdiff);
-    assert_eq!(submit_row(&mut app), "+Line twenty");
+    assert_eq!(submit_row(&mut app), "++Line twenty");
     assert!(submitted(&mut app).contains(&"-Old why.".to_string()));
-    // Only what the patches changed: on one base, nothing of the code left
-    // out.
+    // Only what the patches changed: the lines both diffs have alike left
+    // out, a line saying how many in their place; the cursor on its line.
     inter_lines(&mut app, InterLines::Changed);
+    assert_eq!(submit_row(&mut app), "++Line twenty");
+    let rows = submitted(&mut app);
+    assert!(rows.contains(&"⋯ 4 lines are left out here.".to_string()) && !rows.contains(&"  line 18".to_string()), "{rows:#?}");
+    // The code unified then, every line of it, the cursor on its line.
+    inter_view(&mut app, InterLayout::ChangeUnified);
     assert_eq!(submit_row(&mut app), "+Line twenty");
+    assert!(submitted(&mut app).contains(&" line 18".to_string()));
     assert!(phab.lock().unwrap().writes().is_empty(), "nothing sent");
+    stacked::submit::stand_in(None);
+}
+
+/// The lines of the review of what a submit sends said under the heading
+/// of its code, `heading`, joined.
+#[cfg(feature = "moz-phab")]
+fn code_said(rows: &[String], heading: &str) -> String {
+    let at = rows.iter().position(|r| r == heading).unwrap_or_else(|| panic!("no {heading:?} in {rows:#?}"));
+    rows[at + 1..].iter().take_while(|r| r.starts_with("   ")).map(|r| r.trim()).collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_two_diffs_of_a_submit_on_another_base_are_each_file_as_each_leaves_it_as_what_differs_from_phabricator_shows_them() {
+    let (_tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\n{LINK}13")]);
+    let mine = patch_of(&db, 2).diff;
+    // D13 made on a base with two lines fewer over line 20, which it says
+    // otherwise: applied on the patches below patch 3, it finds its lines
+    // two further down. The stack had it, as a version of patch 3 before the
+    // one it holds.
+    let at = mine.find("@@ -17,7 +17,7 @@").unwrap_or_else(|| panic!("{mine}"));
+    let raw = format!("{}@@ -15,7 +15,7 @@{}", &mine[..at], &mine[at + "@@ -17,7 +17,7 @@".len()..]).replace("+LINE 20", "+Line 20");
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}13"), &raw);
+    next_version(&db, 2, &format!("Bug 3 - three\n\nNow.\n\n{LINK}13"), &mine);
+    let p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &raw);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    phab_choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!(app.screen, Screen::Submit);
+    // Compared as two diffs, as what differs from Phabricator shows it:
+    // the two on other bases, each file as each leaves it, on the patches
+    // below, the diff of them as it is, said as it says it.
+    let rows = submitted(&mut app);
+    let heading = "the code: Phabricator's, then what is sent";
+    assert_eq!(
+        code_said(&rows, heading),
+        "The latest diff of D13 is on another base than this version, so the code shown is each file as that diff leaves it, then as this version leaves it, both on the patches below patch 3."
+    );
+    for line in ["diff --git a/a.txt b/a.txt", "-Line 20", "+LINE 20"] {
+        assert!(rows.contains(&line.to_string()), "{line:?} in {rows:#?}");
+    }
+    assert!(!rows.iter().any(|r| r.starts_with("--- D13")), "no interdiff: {rows:#?}");
+    // In a column per version, the same; side by side, each file beside
+    // itself.
+    inter_view(&mut app, InterLayout::Columns);
+    assert!(submitted(&mut app).contains(&"+LINE 20".to_string()));
+    inter_view(&mut app, InterLayout::Sides);
+    let rows = submitted(&mut app);
+    assert!(rows.contains(&"the code: Phabricator's on the left, what is sent on the right".to_string()), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.starts_with("-Line 20") && r.trim_end().ends_with("│+LINE 20")), "{rows:#?}");
+    // The code, as the middle draws a patch, as ever.
+    inter_view(&mut app, InterLayout::ChangeUnified);
+    let rows = submitted(&mut app);
+    assert_eq!(code_said(&rows, heading), "Each file as the latest diff of D13 leaves it, then as patch 3 leaves it, both on the patches below patch 3.");
+    for line in ["a.txt", "-Line 20", "+LINE 20"] {
+        assert!(rows.contains(&line.to_string()), "{line:?} in {rows:#?}");
+    }
+    submit_menu(&mut app, "Cancel: send nothing");
+    assert!(phab.lock().unwrap().writes().is_empty());
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn with_only_what_changed_the_two_diffs_of_a_submit_leave_out_what_the_move_of_their_base_made() {
+    let (tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\n{LINK}13")]);
+    let src = tmp.path().join("src");
+    // D13 has patch 3 as it was. Upstream changes a.txt's line 17, among
+    // the lines around patch 3's, and the stack is rebased onto it: D13's
+    // diff no longer applies on the patches below patch 3. Patch 3 says its
+    // line 20 otherwise then.
+    let earlier = patch_of(&db, 2).diff;
+    git(&src, &["checkout", "-q", "-b", "upstream", "HEAD~3"]);
+    let lines: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(src.join("a.txt"), lines.replace("line 17\n", "line seventeen\n")).unwrap();
+    git(&src, &["commit", "-qam", "upstream"]);
+    git(&src, &["checkout", "-q", "main"]);
+    git(&src, &["rebase", "-q", "upstream"]);
+    stacked(&src, &db, &["import", "s", "upstream", "--replace"]);
+    let rebased = patch_of(&db, 2);
+    next_version(&db, 2, &rebased.message, &rebased.diff.replace("+LINE 20", "+Line twenty"));
+    let p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &earlier);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    phab_choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!(app.screen, Screen::Submit);
+    // The two on other bases, their files not read so: the two diffs as an
+    // interdiff all the same, said as what differs from Phabricator says it;
+    // the line around patch 3's that each base has, and the line each says
+    // its own.
+    let rows = submitted(&mut app);
+    assert_eq!(
+        code_said(&rows, "the code: the two diffs, Phabricator's then what is sent"),
+        "The latest diff of D13 is on another base than this version, and the files could not be read as the patches below this one leave them, so the code is shown as an interdiff of the two diffs all the same."
+    );
+    for line in ["- line 17", "+ line seventeen", "-+LINE 20", "++Line twenty"] {
+        assert!(rows.contains(&line.to_string()), "{line:?} in {rows:#?}");
+    }
+    // With only what the patches changed, what the move of the base made is
+    // left out, each place saying how many; the line each says its own kept.
+    inter_lines(&mut app, InterLines::Changed);
+    let rows = submitted(&mut app);
+    assert!(!rows.iter().any(|r| r.contains("line 17") || r.contains("line seventeen")), "{rows:#?}");
+    assert!(rows.contains(&"-+LINE 20".to_string()) && rows.contains(&"++Line twenty".to_string()), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.starts_with("⋯ ") && r.ends_with(" left out here.")), "{rows:#?}");
+    // In a column per version and side by side, the same.
+    inter_view(&mut app, InterLayout::Columns);
+    let rows = submitted(&mut app);
+    assert!(rows.contains(&"+·LINE 20".to_string()) && rows.contains(&"·+Line twenty".to_string()), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("line 17") || r.contains("line seventeen")), "{rows:#?}");
+    inter_view(&mut app, InterLayout::Sides);
+    let rows = submitted(&mut app);
+    assert!(rows.iter().any(|r| r.starts_with("+LINE 20") && r.trim_end().ends_with("│+Line twenty")), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("line 17") || r.contains("line seventeen")), "{rows:#?}");
+    // Every line again: the lines around patch 3's back.
+    inter_lines(&mut app, InterLines::Every);
+    assert!(submitted(&mut app).iter().any(|r| r.contains("line seventeen")));
+    submit_menu(&mut app, "Cancel: send nothing");
+    assert!(phab.lock().unwrap().writes().is_empty());
     stacked::submit::stand_in(None);
 }
 

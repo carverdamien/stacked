@@ -668,9 +668,14 @@ pub struct Prepared {
     pub parents_now: Vec<String>,
     /// The code from the revision's latest diff to the one sent, each file
     /// as both leave it on what is below the patch, as a diff; none when it
-    /// is the same. And what that diff is, when it is not that.
+    /// is the same. And what that diff is, when it is not that; and whether
+    /// it is the files so, rather than the two diffs diffed as text.
     pub code: Option<String>,
     pub code_said: Option<String>,
+    pub code_files: bool,
+    /// The diff the new diff is made of, when one is (`send`): the patch's
+    /// own, as the stack has it.
+    pub diff: String,
 }
 
 impl Prepared {
@@ -1038,25 +1043,25 @@ pub(crate) fn diffs_diffed(at: usize, theirs: &str, mine: &str) -> String {
 /// known as `k`, to the patch at `at` of stack `s`, `mine`: from the
 /// database's version it is, else from `raw`, each file as it leaves it;
 /// else, when neither applies on what is below the patch, the two diffs
-/// diffed, as text. And what that is, said, when it is not the files. Known
-/// by its changes alone, `raw` applies there no more: the code is from the
-/// version whose changes it makes, said so.
-fn code_change(db: &Db, s: &Stack, at: usize, k: &Known, raw: &str, mine: &str) -> (Option<String>, Option<String>) {
+/// diffed, as text. And what that is, said, when it is not the files; and
+/// whether it is the files. Known by its changes alone, `raw` applies there
+/// no more: the code is from the version whose changes it makes, said so.
+fn code_change(db: &Db, s: &Stack, at: usize, k: &Known, raw: &str, mine: &str) -> (Option<String>, Option<String>, bool) {
     if k.by_changes {
         if let Some(code) = code_diff(db, s, at, &k.diff, mine) {
             let n = at + 1;
             let said = code.as_ref().map(|_| format!("Each file as version {} of patch {n} leaves it, then as patch {n} leaves it, both on the patches below patch {n}.", k.version));
-            return (code, said);
+            return (code, said, true);
         }
     } else {
         for theirs in [k.diff.as_str(), raw] {
             if let Some(code) = code_diff(db, s, at, theirs, mine) {
-                return (code, None);
+                return (code, None, true);
             }
         }
     }
     let said = "The files could not be read as what is below the patch leaves them, so this is Phabricator's latest diff against the diff that is sent, as text.";
-    (Some(diffs_diffed(at, raw, mine)), Some(said.into()))
+    (Some(diffs_diffed(at, raw, mine)), Some(said.into()), false)
 }
 
 /// Why the patch at `at` (from 0) is not to be submitted while HEAD is
@@ -1152,9 +1157,9 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
     };
     let parent = parent(db, s, at, call, revision.as_ref());
     let parents_now = revision.as_ref().map_or_else(Vec::new, |r| revision_names(call, &r.parents));
-    let (code, code_said) = match (&revision, &known) {
+    let (code, code_said, code_files) = match (&revision, &known) {
         (Some(r), Some(k)) if new_diff => code_change(db, s, at, k, &r.raw, &p.diff),
-        _ => (None, None),
+        _ => (None, None, false),
     };
     Ok(Prepared {
         stack: s.name.clone(),
@@ -1174,6 +1179,8 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
         parents_now,
         code,
         code_said,
+        code_files,
+        diff: p.diff.clone(),
     })
 }
 
@@ -2184,6 +2191,14 @@ mod tests {
         );
         assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
         assert_eq!(fake.revisions[&13].status, "changes-planned");
+        // The diff the review compares with Phabricator's as the one sent,
+        // the patch's, is the one sent: the new diff of D13 does what it does.
+        // The code it shows is each file as both leave it, not the two diffs
+        // diffed as text.
+        assert_eq!(p.diff, mine);
+        assert!(p.code_files);
+        let made = *fake.revisions[&13].diffs.last().unwrap();
+        assert!(made != 1000 && crate::ops::same_effect(&fake.diffs[&made], &p.diff), "{}", fake.diffs[&made]);
         // Sent again: nothing changed, nothing is sent.
         fake.calls.clear();
         let (ready, _) = {

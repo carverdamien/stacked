@@ -1952,7 +1952,7 @@ fn about(action: &Action) -> String {
         Action::CancelSubmit => "send nothing to Phabricator".into(),
         #[cfg(feature = "moz-phab")]
         Action::SubmitViews => {
-            "pick how the code of what is sent is drawn, in the dialog of the views of the interdiffs: as a diff of the files, or each file side by side, as two diffs are compared; or as the middle draws a patch, unified, side by side, or side by side and compact".into()
+            "pick how the code of what is sent is drawn, in the dialog of the views of the interdiffs: compared as two diffs, Phabricator's and the one sent, as an interdiff, in a column per version or side by side; or as the code, each file as both leave it, unified, side by side, or side by side and compact".into()
         }
         Action::Runs => "see the agent's asks and the pulls, and what came of them".into(),
         Action::Search => "search the comments, the patches and the files they touch, and the history: what is found is listed as it is found, and enter goes to it".into(),

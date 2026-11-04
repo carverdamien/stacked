@@ -299,7 +299,7 @@ fn files_side_by_side(change: &str, code: &str, w: usize) -> Vec<(Parts, Vec<usi
 /// a hunk's second `@@`. As the view of what differs compares a revision's
 /// latest diff with the patch's, so that only what the two do, and where,
 /// is told apart.
-fn bare(d: &str) -> String {
+pub(super) fn bare(d: &str) -> String {
     let mut in_hunk = false;
     let mut out = String::new();
     for l in d.split_inclusive('\n') {
@@ -327,9 +327,10 @@ fn bare(d: &str) -> String {
 }
 
 /// What the view of what differs from Phabricator shows of the code: of a
-/// revision's latest diff and a version of its patch (`App::shown_code`).
+/// revision's latest diff and a version of its patch (`shown_of`), as the
+/// review of a submit shows its code compared as two diffs too.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Shown<'a> {
+pub(super) enum Shown<'a> {
     /// Nothing: the latest diff does what the version does.
     Same,
     /// The two diffs, as an interdiff, each without what git derives in it
@@ -340,6 +341,87 @@ enum Shown<'a> {
     /// both on the patches below, as the Phabricator line compared them:
     /// the latest diff is on another base (`other_bases`).
     Files(&'a str),
+}
+
+/// What the views show of the code of `raw`, a revision's latest diff, or
+/// the version of its patch it is known as, against `mine`, a version of
+/// the patch (`Shown`): nothing where no code differs (`code` none); else
+/// the two diffs as an interdiff, but where they are on other bases
+/// (`other_bases`) and the files were read as the patches below leave them
+/// (`code`, those files, and whether they were read so, rather than the two
+/// diffs diffed as text), those files.
+pub(super) fn shown_of<'a>(raw: &str, mine: &str, code: Option<(&'a str, bool)>) -> Shown<'a> {
+    match code {
+        None => Shown::Same,
+        Some((files, true)) if other_bases(raw, mine) => Shown::Files(files),
+        Some((_, read)) => Shown::Interdiff(!read && other_bases(raw, mine)),
+    }
+}
+
+/// What the view of what differs from Phabricator says of the code it
+/// shows, `shown`, of `old`, the diff Phabricator's version is (`the latest
+/// diff of D12`), against this version, patch `n`.
+pub(super) fn shown_said(shown: &Shown, old: &str, n: usize) -> String {
+    let mut first = old.chars();
+    let cap: String = first.next().map(|c| c.to_uppercase().chain(first).collect()).unwrap_or_default();
+    match shown {
+        Shown::Same => format!("{cap} does what this version does."),
+        Shown::Interdiff(false) => format!("The code is shown as an interdiff of {old} and this version's diff."),
+        Shown::Interdiff(true) => format!(
+            "{cap} is on another base than this version, and the files could not be read as the patches below this one leave them, so the code is shown as an interdiff of the two diffs all the same."
+        ),
+        Shown::Files(_) => format!("{cap} is on another base than this version, so the code shown is each file as that diff leaves it, then as this version leaves it, {}.", below(n)),
+    }
+}
+
+/// The interdiff of `was` and `is`, two versions of a patch, as the view of
+/// what differs from Phabricator compares them (`ops::letter_interdiff_lines`,
+/// their titles and summaries to the letter), its two first lines naming
+/// them `names`.
+pub(super) fn named_interdiff(was: &Patch, is: &Patch, (old, new): (&str, &str)) -> Vec<ops::InterLine> {
+    let mut inter = ops::letter_interdiff_lines(was, is);
+    if let [a, b, ..] = inter.as_mut_slice()
+        && a.text.starts_with("--- ")
+        && b.text.starts_with("+++ ")
+    {
+        a.text = format!("--- {old}");
+        b.text = format!("+++ {new}");
+    }
+    inter
+}
+
+/// Interdiff `inter`, of versions `two`, drawn `w` wide in view `v` as the
+/// view of what differs from Phabricator draws it (`interdiffs::view_stops`):
+/// what says how to read it first, as an interdiff or in a column per
+/// version, folded to the width under the first sign; side by side, a
+/// heading, its halves folded already; in a view of the change, `change`, a
+/// line of it fitting. Each file of the change whole with `whole`, only
+/// what the patches changed with `only`. Each line drawn with what it
+/// shows: its lines of `inter`, by their places there from `id` on, and of
+/// the change, its lines (`Seen::rows`). As the review of a submit draws its
+/// code compared as two diffs too.
+pub(super) fn interdiff_drawn(
+    inter: &[ops::InterLine],
+    v: InterLayout,
+    two: &interdiffs::Two,
+    change: Option<&(super::change::Changed, super::change::Near)>,
+    (whole, only): (bool, bool),
+    w: usize,
+    id: usize,
+) -> Vec<(Parts, interdiffs::Seen)> {
+    let refs: Vec<&ops::InterLine> = inter.iter().collect();
+    let mut out = Vec::new();
+    for stop in interdiffs::view_stops(&refs, v, two, change, (whole, only), w, 0) {
+        let seen = interdiffs::Seen { shows: stop.shows.iter().map(|j| id + j).collect(), rows: stop.rows.clone() };
+        for parts in stop.lines {
+            // Side by side, its halves folded already; a line of the change
+            // fits.
+            for piece in if v == InterLayout::Sides { vec![parts] } else { fold_parts(&parts, w, 1) } {
+                out.push((piece, seen.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// How many comments are not pulled yet, new and edited, and how many
@@ -685,11 +767,7 @@ impl App {
     /// them, those files, as the line compared them.
     fn shown_code<'a>(&'a self, p: &Patch, link: &str, x: &Differs<'a>) -> Shown<'a> {
         let raw = self.raw(link).unwrap_or_default();
-        match x.code {
-            None => Shown::Same,
-            Some((files, None)) if other_bases(raw, &p.diff) => Shown::Files(files),
-            Some((_, unread)) => Shown::Interdiff(unread.is_some() && other_bases(raw, &p.diff)),
-        }
+        shown_of(raw, &p.diff, x.code.map(|(files, unread)| (files.as_str(), unread.is_none())))
     }
 
     /// The view of what differs, `x`, between patch `p`, the one picked,
@@ -752,15 +830,8 @@ impl App {
             };
             let (before, after) = x.message.clone().unwrap_or_else(|| (p.message.clone(), p.message.clone()));
             let (was, is) = (Patch { message: before, diff: theirs, ..p.clone() }, Patch { message: after, diff: mine, ..p.clone() });
-            inter = ops::letter_interdiff_lines(&was, &is);
             // Its two first lines name the two versions.
-            if let [a, b, ..] = inter.as_mut_slice()
-                && a.text.starts_with("--- ")
-                && b.text.starts_with("+++ ")
-            {
-                a.text = format!("--- {theirs_said}");
-                b.text = format!("+++ {mine_said}");
-            }
+            inter = named_interdiff(&was, &is, (&theirs_said, &mine_said));
             if v.change() && shown != Shown::Same {
                 let refs: Vec<&ops::InterLine> = inter.iter().collect();
                 match self.phab_change(p, link, &refs, (&was, &is), [&theirs_said, &mine_said]) {
@@ -771,19 +842,10 @@ impl App {
                     read => change = Some(read),
                 }
             }
-            said.push(match shown {
-                Shown::Same => format!("The latest diff of {d} does what this version does."),
-                // In a view of the change, what it says over its code.
-                _ if change.is_some() => String::new(),
-                Shown::Interdiff(false) => format!("The code is shown as an interdiff of the latest diff of {d} and this version's diff."),
-                Shown::Interdiff(true) => format!(
-                    "The latest diff of {d} is on another base than this version, and the files could not be read as the patches below this one leave them, so the code is shown as an interdiff of the two diffs all the same."
-                ),
-                Shown::Files(_) => format!(
-                    "The latest diff of {d} is on another base than this version, so the code shown is each file as that diff leaves it, then as this version leaves it, {}.",
-                    below(n)
-                ),
-            });
+            // In a view of the change, what it says over its code.
+            if change.is_none() {
+                said.push(shown_said(&shown, &format!("the latest diff of {d}"), n));
+            }
             if let Shown::Files(code) = shown {
                 files = Some(code);
             }
@@ -808,17 +870,9 @@ impl App {
             // the latest diff, on the commit it is on, to this version, on
             // the patches below it.
             let two = interdiffs::Two { old: &theirs_said, new: &mine_said, one_base: !drifted };
-            let refs: Vec<&ops::InterLine> = inter.iter().collect();
-            for stop in interdiffs::view_stops(&refs, v, &two, change.as_ref(), (self.change_whole, self.only_changed()), w, 0) {
-                let seen = interdiffs::Seen { shows: stop.shows.iter().map(|j| id + j).collect(), rows: stop.rows.clone() };
-                for parts in stop.lines {
-                    // Side by side, its halves folded already; a line of the
-                    // change fits.
-                    for piece in if v == InterLayout::Sides { vec![parts] } else { fold_parts(&parts, w, 1) } {
-                        out.push(piece);
-                        at.push(seen.clone());
-                    }
-                }
+            for (parts, seen) in interdiff_drawn(&inter, v, &two, change.as_ref(), (self.change_whole, self.only_changed()), w, id) {
+                out.push(parts);
+                at.push(seen);
             }
             id += inter.len();
         }

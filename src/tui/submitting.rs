@@ -6,13 +6,15 @@
 //! sent and where, said, and, to a revision not in work, that the code is
 //! not sent when it differs; the title and summary, Phabricator's then
 //! what is sent; what else changes (the parent, the bug, the status); and
-//! the code, when a new diff is sent, each file as Phabricator's latest
-//! diff leaves it, then as the patch does, both on the patches below it,
-//! drawn in the view of the interdiffs that 1 sets (`views_dialog`), as the
-//! view of what differs from Phabricator draws a revision's files: as it
-//! is, or each file side by side, the two diffs compared; in the views of
-//! the change, as the middle draws a patch (`change::change_stops`). Side
-//! by side, what is said over the code is side by side too. Esc opens the
+//! the code, when a new diff is sent, in the view of the interdiffs that 1
+//! sets (`views_dialog`): compared as two diffs, as the view of what
+//! differs from Phabricator draws its code for the revision and the patch
+//! (`Compared`), Phabricator's diff and the one sent as an interdiff, or,
+//! the two on other bases, each file as each leaves it; compared as the
+//! code, each file as Phabricator's latest diff leaves it, then as the patch
+//! does, both on the patches below it, as the middle draws a patch
+//! (`change::change_stops`). Side by side, what is said over the code is
+//! side by side too. Esc opens the
 //! screen's menu, which sends it, once the revision is read again and seen
 //! to be as it was, or sends nothing; a right click opens it too. While
 //! HEAD is on the stack, a patch whose commit in the workspace names a
@@ -21,14 +23,17 @@
 
 use super::change::{Near, change_stops, code_view};
 use super::compared::{diff_rows, message_rows, row, said_rows};
-use super::interdiffs::{At, Seen, half_of, paired};
-use super::revisions::{files_drawn, files_heading};
+use super::interdiffs::{At, Seen, Two, half_of, paired};
+use super::revisions::{Shown as CodeShown, bare, files_drawn, files_heading, interdiff_drawn, named_interdiff, shown_of, shown_said};
 use super::*;
 use crate::ops::CodePlace;
 use crate::submit::{Prepared, and};
 
 /// What the bar says while a submit is read, or sent.
 pub(super) const SUBMITTING: &str = "submitting";
+
+/// How the review names the diff a submit sends, against Phabricator's.
+const SENT: &str = "what is sent";
 
 /// The item of the review's menu that opens the dialog of the views of the
 /// interdiffs, for its code.
@@ -89,9 +94,8 @@ impl Submitting {
 /// version of the patch; then only what changes: the title and summary,
 /// Phabricator's then what is sent; the parent and the bug, before then
 /// after, and the status; when a new diff is sent, the heading of the
-/// code, side by side (`sides`) saying whose is on which side, and what
-/// the code is.
-fn review_rows(p: &Prepared, w: usize, sides: bool) -> Vec<Row> {
+/// code and what the code is, `code` (`Compared::said`).
+fn review_rows(p: &Prepared, w: usize, code: Option<(&str, &str)>) -> Vec<Row> {
     let mut rows = vec![row(Kind::File, "what is sent")];
     let n = p.number();
     let id = p.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
@@ -136,15 +140,116 @@ fn review_rows(p: &Prepared, w: usize, sides: bool) -> Vec<Row> {
         }
         _ => diff_rows(&mut rows, &format!(" status: {}", p.status_change()), &[], w),
     }
-    // The code's heading, and what it is: each file as both leave it.
-    if p.code.is_some() {
+    // The code's heading, and what it is.
+    if let Some((heading, said)) = code {
         rows.push(row(Kind::Blank, ""));
-        rows.push(row(Kind::File, files_heading(sides, "what is sent")));
-        let said = format!("Each file as the latest diff of {id} leaves it, then as patch {n} leaves it, both on the patches below patch {n}.");
-        said_rows(&mut rows, Kind::Meta, p.code_said.as_deref().unwrap_or(&said), w);
+        rows.push(row(Kind::File, heading));
+        said_rows(&mut rows, Kind::Meta, said, w);
         rows.push(row(Kind::Blank, ""));
     }
     rows
+}
+
+/// The code of the review of a submit, `code`, each file as Phabricator's
+/// latest diff leaves it, then as the patch does, both on the patches below
+/// it (`Prepared::code`); and the two diffs it compares, as the view of what
+/// differs from Phabricator compares them for the revision and the patch:
+/// Phabricator's side, its latest diff, or, known by its changes alone, the
+/// version of the patch whose changes it makes, as the review says at its
+/// top (`submit::Known::by_changes`); the other, the diff the submit sends
+/// (`Prepared::diff`). How the first is named in the views (`D13 on
+/// Phabricator`, `version 1 of patch 3`), and in what is said
+/// (`the latest diff of D13`); what the views show of them as two diffs
+/// (`revisions::shown_of`); and, where that is an interdiff, the two
+/// versions it compares and their interdiff (`revisions::named_interdiff`),
+/// each diff without what git derives in it (`revisions::bare`), none
+/// where it is each file.
+struct Compared<'a> {
+    code: &'a str,
+    old: String,
+    said: String,
+    shown: CodeShown<'a>,
+    two_of: Option<(Patch, Patch, Vec<ops::InterLine>)>,
+}
+
+impl<'a> Compared<'a> {
+    fn of(p: &'a Prepared, code: &'a str) -> Compared<'a> {
+        let n = p.number();
+        let id = p.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
+        let raw = p.revision.as_ref().map_or("", |r| r.raw.as_str());
+        let (theirs, old, said) = match &p.known {
+            Some(k) if k.by_changes => (k.diff.as_str(), format!("version {} of patch {n}", k.version), format!("version {} of patch {n}", k.version)),
+            _ => (raw, format!("{id} on Phabricator"), format!("the latest diff of {id}")),
+        };
+        let shown = shown_of(theirs, &p.diff, Some((code, p.code_files)));
+        let two_of = matches!(shown, CodeShown::Interdiff(_)).then(|| {
+            let (was, is) = (Patch::new(p.change.clone(), None, None, String::new(), bare(theirs)), Patch::new(p.change.clone(), None, None, String::new(), bare(&p.diff)));
+            let inter = named_interdiff(&was, &is, (&old, SENT));
+            (was, is, inter)
+        });
+        Compared { code, old, said, shown, two_of }
+    }
+
+    /// The heading of the code, in view `v`, saying which comparison it is,
+    /// side by side whose is on which side; and what the review says of
+    /// it: compared as two diffs, as the view of what differs from
+    /// Phabricator says it (`revisions::shown_said`); as the code, what the
+    /// code of `p` is.
+    fn heading(&self, p: &Prepared, v: InterLayout) -> (String, String) {
+        let (sides, n) = (v.sides(), p.number());
+        match (v.change(), self.shown) {
+            (true, _) => {
+                let id = p.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
+                let said = format!("Each file as the latest diff of {id} leaves it, then as patch {n} leaves it, both on the patches below patch {n}.");
+                (files_heading(sides, SENT), p.code_said.clone().unwrap_or(said))
+            }
+            (false, CodeShown::Interdiff(_)) if sides => (format!("the code: the two diffs, Phabricator's on the left, {SENT} on the right"), shown_said(&self.shown, &self.said, n)),
+            (false, CodeShown::Interdiff(_)) => (format!("the code: the two diffs, Phabricator's then {SENT}"), shown_said(&self.shown, &self.said, n)),
+            (false, _) => (files_heading(sides, SENT), shown_said(&self.shown, &self.said, n)),
+        }
+    }
+
+    /// The code drawn `w` wide in view `v` of the interdiffs, with only what
+    /// the patches changed if `only`. Compared as two diffs, as the view of
+    /// what differs from Phabricator draws it: their interdiff, as an
+    /// interdiff, in a column per version or side by side
+    /// (`revisions::interdiff_drawn`), the two on one base unless the
+    /// review says they are not; or each file as each leaves them, as it is,
+    /// or side by side (`revisions::files_drawn`). Compared as the code, as
+    /// the middle draws a patch, unified, side by side or compact
+    /// (`change::change_stops`), on one base nothing left out. Each line with
+    /// what it shows, from `first` on: the lines of the interdiff, or of
+    /// the code where there is none, by their places there; and, of a file,
+    /// its lines of the code (`Seen::rows`). A line of the code shows the
+    /// line of the interdiff nearest it (`ops::code_places`), as on the view
+    /// of what differs, so that each view finds the cursor's place again.
+    fn lines(&self, change: &str, v: InterLayout, only: bool, w: usize, first: usize) -> Vec<(Parts, Seen)> {
+        if v.change() {
+            let near = match &self.two_of {
+                Some((was, is, inter)) => Near::new(&ops::code_places(&inter.iter().collect::<Vec<_>>(), was, is), first, first),
+                None => code_near(self.code, first),
+            };
+            let c = crate::change::Change { diff: self.code.to_string(), dim: Default::default(), rebased: false, files: Default::default() };
+            return change_stops(&c, code_view(v), (false, only), w, 0, 0, &near)
+                .into_iter()
+                .flat_map(|s| {
+                    let seen = Seen::from(&s);
+                    s.lines.into_iter().map(move |l| (l, seen.clone()))
+                })
+                .collect();
+        }
+        if let (CodeShown::Interdiff(drifted), Some((_, _, inter))) = (self.shown, &self.two_of) {
+            let two = Two { old: &self.old, new: SENT, one_base: !drifted };
+            return interdiff_drawn(inter, v, &two, None, (false, only), w, first);
+        }
+        files_drawn(change, self.code, v == InterLayout::Sides, w)
+            .into_iter()
+            .map(|(parts, shows)| {
+                let seen = Seen { shows: shows.iter().map(|j| first + j).collect(), rows: shows.iter().map(|&j| (0, j)).collect() };
+                (parts, seen)
+            })
+            .collect()
+    }
 }
 
 /// Each line of `code`, a diff of files, by its file and its line in each
@@ -180,43 +285,13 @@ fn code_near(code: &str, first: usize) -> Near {
     Near::new(&places, first, first)
 }
 
-/// Code `code`, each file of change `change` as the latest diff leaves it,
-/// then as the patch does, drawn `w` wide in view `v` of the interdiffs, as
-/// the view of what differs from Phabricator draws a revision's files: as
-/// it is, as an interdiff and in a column per version; side by side, each
-/// file's two versions beside each other (`revisions::files_drawn`); and
-/// in a view of the change, as the middle draws a patch, unified, side by
-/// side or compact (`change::change_stops`), with only what the patches
-/// changed if `only`, on one base nothing left out. Each line with what it
-/// shows: its lines of the code, by their places there from `first` on,
-/// and, of a file, those lines (`Seen::rows`), so that another view finds
-/// the cursor's line again.
-fn code_lines(change: &str, code: &str, v: InterLayout, only: bool, w: usize, first: usize) -> Vec<(Parts, Seen)> {
-    if v.change() {
-        let c = crate::change::Change { diff: code.to_string(), dim: Default::default(), rebased: false, files: Default::default() };
-        return change_stops(&c, code_view(v), (false, only), w, 0, 0, &code_near(code, first))
-            .into_iter()
-            .flat_map(|s| {
-                let seen = Seen::from(&s);
-                s.lines.into_iter().map(move |l| (l, seen.clone()))
-            })
-            .collect();
-    }
-    files_drawn(change, code, v == InterLayout::Sides, w)
-        .into_iter()
-        .map(|(parts, shows)| {
-            let seen = Seen { shows: shows.iter().map(|j| first + j).collect(), rows: shows.iter().map(|&j| (0, j)).collect() };
-            (parts, seen)
-        })
-        .collect()
-}
-
 /// The review of `p` drawn `w` wide, its code in view `v` of the
 /// interdiffs, with only what the patches changed if `only`: what it says
 /// over the code (`review_rows`), a row each, or, side by side where the
 /// view is side by side, as the code view pairs a diff's rows
 /// (`interdiffs::paired`), a line of the title and summary, or of what
-/// else changes, beside the one it replaces; then the code (`code_lines`).
+/// else changes, beside the one it replaces; then the code
+/// (`Compared::lines`).
 /// Its rows, the first row of each of their lines, and the lines drawn,
 /// each with what it shows: the lines its rows are, by their places among
 /// the review's, then the lines of the code.
@@ -225,7 +300,9 @@ type Drawn = (Vec<Row>, Vec<usize>, Vec<Parts>, Vec<Seen>);
 fn review_lines(p: &Prepared, v: InterLayout, only: bool, w: usize) -> Drawn {
     let sides = v.sides();
     let fold = if sides { half_of(w) } else { w };
-    let rows = review_rows(p, fold.saturating_sub(1), sides);
+    let compared = p.code.as_deref().map(|code| Compared::of(p, code));
+    let said = compared.as_ref().map(|c| c.heading(p, v));
+    let rows = review_rows(p, fold.saturating_sub(1), said.as_ref().map(|(h, s)| (h.as_str(), s.as_str())));
     // Each row's line, a row folded on with the line it goes on with.
     let mut starts = Vec::new();
     let mut place = Vec::with_capacity(rows.len());
@@ -253,8 +330,8 @@ fn review_lines(p: &Prepared, v: InterLayout, only: bool, w: usize) -> Drawn {
             }
         }
     }
-    if let Some(code) = &p.code {
-        for (parts, seen) in code_lines(&p.change, code, v, only, w, starts.len()) {
+    if let Some(c) = &compared {
+        for (parts, seen) in c.lines(&p.change, v, only, w, starts.len()) {
             lines.push(parts);
             at.push(seen);
         }
@@ -547,7 +624,7 @@ impl App {
             ),
         ];
         out.push(match self.submit_code() {
-            true => "Press ↑↓ (pgup pgdn home end) to scroll, and 1 to pick how the code is drawn: as a diff of the files, or each file side by side, as two diffs are compared; or as the middle draws a patch, unified, side by side, or side by side and compact. Side by side, the title and summary, and what else changes, are side by side too.".into(),
+            true => "Press ↑↓ (pgup pgdn home end) to scroll, and 1 to pick how the code is drawn: compared as two diffs, Phabricator's and the one sent, as an interdiff, in a column per version or side by side, as what differs from Phabricator draws them; or as the code, each file as both leave it, unified, side by side, or side by side and compact. Side by side, the title and summary, and what else changes, are side by side too.".into(),
             false => "Press ↑↓ (pgup pgdn home end) to scroll.".into(),
         });
         out

@@ -467,17 +467,40 @@ now, so a new diff of patch 3 is sent, made on them.`), and the code is
 then each file as that version leaves it, then as the patch does, both on
 the patches below it as they are now. ↑↓ (pgup pgdn home end) scroll. 1
 opens the dialog of the views of the interdiffs (The editor, above), as
-on every screen of them, and the code is drawn in the view it sets, as
-the screen of what differs from Phabricator draws a revision's files:
-compared as two diffs, the diff of the files as it is, as an interdiff
-and in a column per version, or side by side, each file as the latest
-diff leaves it beside the same file as the patch leaves it (`the code:
-Phabricator's on the left, what is sent on the right`); compared as the
-code, as the middle draws a patch, unified, side by side, or side by
-side and compact. Every line is drawn, whatever lines the dialog sets, as
-both are on the patches below: nothing a change of base made is left
-out. From one view to another, the screen keeps its place, the cursor on
-the line it was on, and back. Side by side, the lines of the title and
+on every screen of them, and the code is drawn in the view it sets.
+Compared as two diffs, it is drawn as the screen of what differs from
+Phabricator draws its code for that revision and that patch, by the same
+code: Phabricator's side is its latest diff, or, where that diff was
+known by its changes alone, the version of the patch whose changes it
+makes, as the screen says at its top; the other side is the diff the
+submit sends, the patch's as the stack has it. On one base, the two are
+an interdiff, what git derives in them left out of both (an `index`
+line, the heading after a hunk's `@@`), under `the code: the two diffs,
+Phabricator's then what is sent` (side by side, `the code: the two
+diffs, Phabricator's on the left, what is sent on the right`), said so
+(`The code is shown as an interdiff of the latest diff of D13 and this
+version's diff.`), and named `D13 on Phabricator` (or `version 2 of
+patch 3`) and `what is sent`: as an interdiff, in a column per version,
+or side by side, as there, with every line or only what the patches
+changed, which leaves out the lines both have alike, the context lines
+and the index lines, and so what the move of a base made in the lines
+around the patch's. On other bases, each file as that diff leaves it,
+then as the patch does, both on the patches below it, as it is, or each
+file side by side, under `the code: Phabricator's, then what is sent`
+(side by side, `the code: Phabricator's on the left, what is sent on the
+right`); where the files cannot be read so, the interdiff all the same;
+each said as there (`The latest diff of D13 is on another base than this
+version, so the code shown is each file as that diff leaves it, then as
+this version leaves it, both on the patches below patch 3.`). Compared as
+the code, it is each file as the latest diff leaves it, then as the
+patch does, both on the patches below it, as the middle draws a patch,
+unified, side by side, or side by side and compact, under `the code:
+Phabricator's, then what is sent`; every line of it is drawn, whatever
+lines the dialog sets, as both are on the patches below: nothing a change
+of base made is left out. From one view to another, the screen keeps its
+place, the cursor on the line it was on, a line of the code on the line
+of the interdiff nearest it, as on the screen of what differs, and back.
+Side by side, the lines of the title and
 summary that differ are side by side too, Phabricator's on the left,
 coloured the same way, and so are those of what else changes. The top
 bar says the view, as on the screens of interdiffs; `3` shows no file

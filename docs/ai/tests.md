@@ -583,14 +583,20 @@ painted as words as ever), the submit's review comparing the title and
 summary so, side by side too, and saying at its top why a new diff is
 sent when the latest diff makes the patch's changes on the patches below
 as they were before a rebase, no code under it, then sending one; its
-code drawn in the view the dialog of 1 sets there, as the view of what
-differs from Phabricator draws a revision's files: as it is, as an
-interdiff and in a column per version, each file side by side, then in
-the views of the change as the middle draws a patch, unified, side by
-side and compact, the cursor kept on its line from view to view and
-back, the title and summary side by side with the code, the top bar
-saying the view, every line still drawn with only what the patches
-changed; Esc opening its menu and Esc in it closing it, Enter and Space
+code drawn in the view the dialog of 1 sets there: compared as two diffs,
+as the view of what differs from Phabricator draws its code, the
+interdiff of the latest diff and the diff sent, named so, a sign before
+each version's own sign, the columns' marks, the two halves, only what
+the patches changed leaving out the lines both have alike; on another
+base, each file as each leaves it, said as that view says it, as it is
+and side by side, the code views as ever; the files not read so, the
+interdiff all the same, said so, only what the patches changed leaving
+out what the move of the base made, the line each version says its own
+kept, in each view; compared as the code, unified, side by side and
+compact as the middle draws a patch, every line drawn; the cursor kept
+on its line from view to view and back, from a line of the interdiff to
+the line of the code it is and back, the title and summary side by side
+with the code, the top bar saying the view; Esc opening its menu and Esc in it closing it, Enter and Space
 doing nothing, a right click opening the menu next to the cell clicked
 and a left click nothing; that menu `Send it to Phabricator`, `Cancel:
 send nothing` and `The view of the code…`, which opens the dialog, `?` on
