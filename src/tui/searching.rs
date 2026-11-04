@@ -265,6 +265,12 @@ impl App {
         let suggestion = self.suggestion();
         let list_w = if w < 60 { w } else { (w * 2 / 5).max(30) };
         let list = Rect::new(body.x, body.y, list_w as u16, body.height);
+        // What it found, under its header: scrolled by the wheel, moved by
+        // the lines it turned, as far as the last on the bottom line, and
+        // since, until a key, where the wheel left it, the match picked in
+        // sight or not.
+        self.scrolls_on(list, (0, 1, list_w, h - 2), Wheeled::Found);
+        let (turned, free) = (self.turned(Wheeled::Found), self.free(Wheeled::Found));
         let s = self.searching.as_mut()?;
         let button = format!(" ‹ {} › ", s.scope.name());
         let bx = button.chars().count().min(list_w);
@@ -278,10 +284,15 @@ impl App {
             put(buf, list, cx, 0, list_w.saturating_sub(cx), &rest, color::dim());
         }
         let rows = h - 2;
-        if s.sel < s.top {
-            s.top = s.sel;
-        } else if s.sel >= s.top + rows {
-            s.top = s.sel + 1 - rows;
+        if let Some(n) = turned {
+            s.top = moved(s.top, n, s.found.len().saturating_sub(rows));
+        }
+        if !free {
+            if s.sel < s.top {
+                s.top = s.sel;
+            } else if s.sel >= s.top + rows {
+                s.top = s.sel + 1 - rows;
+            }
         }
         for (y, (i, f)) in s.found.iter().enumerate().skip(s.top).take(rows).enumerate() {
             let st = if i == s.sel { on_cursor(Style::new()) } else { Style::new() };

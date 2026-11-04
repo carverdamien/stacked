@@ -11,11 +11,12 @@
 //!
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
 //! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
-//! `m X Y l|r`, a click on a cell, with the left or the right button; `v X
-//! Y`, the mouse over another cell while the page has the focus, or, when
-//! the page gets the focus back, over the cell where the mouse was last
-//! seen while the page did not have it; `o`, the mouse gone from the
-//! screen, or the page losing the focus.
+//! `m X Y l|r`, a click on a cell, with the left or the right button; `w X
+//! Y N`, the wheel turned N lines over a cell, down, or up below 0 (`w N`
+//! over none); `v X Y`, the mouse over another cell while the page has the
+//! focus, or, when the page gets the focus back, over the cell where the
+//! mouse was last seen while the page did not have it; `o`, the mouse gone
+//! from the screen, or the page losing the focus.
 
 /// Where the cursor is, in a run's modifiers: past ratatui's own.
 pub const CURSOR: u32 = 1 << 16;
@@ -244,16 +245,23 @@ pub fn focus(mouse: &mut Mouse) -> String {
     format!("v {} {}", at.0, at.1)
 }
 
-/// The wheel turned `dy` pixels, kept with what it turned before: a line up
-/// or down for each notch of it, as ↑↓.
-pub fn wheel(turned: &mut f64, dy: f64) -> String {
+/// The wheel turned `dy` pixels at `(x, y)` pixels of the screen, its cells
+/// `cw` by `ch`, kept with what it turned before: once it turned a notch or
+/// more, made a line for the server, the cell under the mouse and the lines
+/// turned, one for each notch, down (up, below 0). The editor scrolls what
+/// is under the mouse, or takes them for ↑↓.
+pub fn wheel(turned: &mut f64, x: f64, y: f64, cw: f64, ch: f64, dy: f64) -> String {
     *turned += dy;
-    let mut out = Vec::new();
+    let mut lines = 0i64;
     while turned.abs() >= NOTCH {
-        out.push(if *turned < 0.0 { "k Up -" } else { "k Down -" });
+        lines += turned.signum() as i64;
         *turned -= NOTCH * turned.signum();
     }
-    out.join("\n")
+    match (lines, cell(x, y, cw, ch)) {
+        (0, _) => String::new(),
+        (n, Some(at)) => format!("w {} {} {n}", at.0, at.1),
+        (n, None) => format!("w {n}"),
+    }
 }
 
 /// Text pasted, made the keys that type it.
@@ -344,9 +352,9 @@ mod wasm {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn wheel(dy: f64) -> usize {
+    pub extern "C" fn wheel(x: f64, y: f64, cw: f64, ch: f64, dy: f64) -> usize {
         let mut turned = TURNED.lock().unwrap();
-        give(super::wheel(&mut turned, dy))
+        give(super::wheel(&mut turned, x, y, cw, ch, dy))
     }
 
     #[unsafe(no_mangle)]
@@ -396,10 +404,15 @@ mod tests {
         // Gone from the screen: said; back over the same cell, said again.
         assert_eq!(left(&mut mouse), "o");
         assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, true), "v 3 2");
+        // The wheel: said with the cell under the pointer once it turned a
+        // notch (40 pixels), a line for each, with what it turned before;
+        // over no cell, the lines alone.
         let mut turned = 0.0;
-        assert_eq!(wheel(&mut turned, 30.0), "");
-        assert_eq!(wheel(&mut turned, 30.0), "k Down -", "a notch, with what it turned before");
-        assert_eq!(wheel(&mut turned, -100.0), "k Up -\nk Up -");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 30.0), "");
+        assert_eq!(wheel(&mut turned, 17.0, 41.0, 8.0, 20.0, 30.0), "w 2 2 1", "a notch, with what it turned before");
+        assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -100.0), "w 3 2 -2", "two notches up");
+        assert_eq!(wheel(&mut turned, 25.0, 45.0, 8.0, 20.0, -39.0), "", "short of a notch again");
+        assert_eq!(wheel(&mut turned, 5.0, 5.0, 0.0, 20.0, 119.0), "w 2", "over no cell");
         assert_eq!(paste("a\r\nb\t"), "k c 61 -\nk Enter -\nk c 62 -\nk c 20 -");
     }
 

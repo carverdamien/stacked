@@ -18,6 +18,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use stacked::app::windows::{Ask, File, Opened};
 use stacked::app::{Input, Output, Session};
+use stacked::tui::Turned;
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -1248,14 +1249,23 @@ fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_
     s.send(Input::Click { x, y, right: false });
     let buf = screen(&s, "what was closed there", first("you: why so loud?"));
     assert!(row(&buf, 15).contains("↑↓: read the last comment closed here"), "{}", text(&buf));
-    // ↓ scrolls it a line, and so do the wheel and the trackpad, which the
-    // window sends as ↓, a line for each notch; pgdn a box's worth.
-    for _ in 0..3 {
-        press(&s, KeyCode::Down);
+    // The mouse in use, the wheel and the trackpad over the box scroll it,
+    // by the lines they turned, which the window sends with the cell under
+    // the mouse: two, then one, three lines down. Over the top bar, which
+    // does not scroll, nothing.
+    let (left, top) = find(&buf, "┌─ a comment on").unwrap();
+    let over = Some((left + 3, top + 1));
+    let wheel = |at, n| Input::Wheel { at, turned: Turned::Lines(n) };
+    for input in [wheel(over, 2), wheel(Some((1, 0)), 4), wheel(over, 1)] {
+        s.send(input);
     }
     screen(&s, "three lines down", first("  reason 3"));
+    // pgdn a box's worth; after that key, the wheel is ↑↓, wherever the
+    // mouse is: a line down over the top bar.
     press(&s, KeyCode::PageDown);
     screen(&s, "a box's worth further", first("  reason 8"));
+    s.send(wheel(Some((1, 0)), 1));
+    screen(&s, "a line further", first("  reason 9"));
     // To its end and no further: its last line in sight, the box's bottom
     // edge above the bottom bar.
     for _ in 0..40 {
@@ -1264,7 +1274,9 @@ fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_
     let buf = screen(&s, "its end", first("  reason 26"));
     let (inside, bottom) = editor_box(&buf).unwrap();
     assert!(inside.last().is_some_and(|l| l == "  reason 30") && bottom < 15, "{}", text(&buf));
-    press(&s, KeyCode::Up);
+    // The mouse moved again: the wheel over the box scrolls it, a line up.
+    s.send(Input::Hover(left + 3, top + 1));
+    s.send(wheel(over, -1));
     screen(&s, "a line back up", first("  reason 25"));
 }
 
@@ -1279,9 +1291,10 @@ fn up_on_a_patch_listing_files_goes_to_the_last_file_of_the_one_above_with_the_w
         press(&s, k);
     }
     screen(&s, "patch 2's file", |b| row(b, 4).contains("b.txt"));
-    // The wheel turned a notch up, which the window sends as ↑: patch 1's
-    // file listed in place of patch 2's, the cursor on it.
-    press(&s, KeyCode::Up);
+    // The wheel turned a notch up, which the window sends with the cell
+    // under the mouse, over the middle: after those keys, ↑ where the cursor
+    // is, patch 1's file listed in place of patch 2's, the cursor on it.
+    s.send(Input::Wheel { at: Some((60, 10)), turned: Turned::Lines(-1) });
     screen(&s, "patch 1's last file", |b| row(b, 3).starts_with("      a.txt") && b[(6, 3)].modifier.contains(Modifier::REVERSED));
 }
 

@@ -2558,11 +2558,20 @@ impl App {
                 format!(" {whose}: {left}{asked}{edited}")
             });
             put(buf, list, 0, 0, list_w, &fit(&title, list_w), color::header());
+            // The line the cursor is on in sight; scrolled by the wheel,
+            // moved by the lines it turned, as far as the last line on the
+            // bottom one, and since, until a key, where the wheel left it.
+            self.scrolls_in(list, Wheeled::ReviewList);
             let mut top = rv.top;
-            if rv.sel < top {
-                top = rv.sel;
-            } else if rv.sel >= top + rows {
-                top = rv.sel + 1 - rows;
+            if let Some(n) = self.turned(Wheeled::ReviewList) {
+                top = moved(top, n, lines.len().saturating_sub(rows));
+            }
+            if !self.free(Wheeled::ReviewList) {
+                if rv.sel < top {
+                    top = rv.sel;
+                } else if rv.sel >= top + rows {
+                    top = rv.sel + 1 - rows;
+                }
             }
             for (y, (i, l)) in lines.iter().enumerate().skip(top).take(rows).enumerate() {
                 // The line the cursor is on: each of its parts in the cursor's
@@ -2593,6 +2602,13 @@ impl App {
         if rv.in_main {
             head = head.add_modifier(Modifier::UNDERLINED);
         }
+        // Scrolled by the wheel: by the lines it turned, as far as the arrows
+        // take it; and since, until a key, where the wheel left it, the
+        // cursor in sight or not, the part the list's cursor is on wherever
+        // it is.
+        self.scrolls_in(main, Wheeled::ReviewMain);
+        let turned = self.turned(Wheeled::ReviewMain);
+        let free = self.free(Wheeled::ReviewMain);
         // A patch of the stack the work makes, looked at closer: as the work
         // leaves it, a row at a time, the cursor on one, what is written on
         // it under it.
@@ -2607,13 +2623,17 @@ impl App {
             let room = rows.saturating_sub(edit_h).max(1);
             // Gone to from the stack diff: the cursor on the line Enter was on
             // there, a third of the way down.
-            let (cur, row_top) = match rv.goto {
+            let (cur, mut row_top) = match rv.goto {
                 Some(m) => {
                     let cur = row_of(&all, crate::ops::line_of_mail(&p, m));
                     (cur, cur.saturating_sub(room / 3))
                 }
                 None => (rv.row.min(all.len().saturating_sub(1)), rv.row_top),
             };
+            let last = all.len().saturating_sub(room);
+            if let Some(n) = turned {
+                row_top = moved(row_top, n, last);
+            }
             // Written on, the box goes under the line or the comment, as in
             // the main view, in sight.
             let under = editing.then(|| self.editor_anchor_in(&all).unwrap_or(cur));
@@ -2621,6 +2641,9 @@ impl App {
             let mut top = row_top.min(shown);
             if shown >= top + room {
                 top = shown + 1 - room;
+            }
+            if free && !editing {
+                top = row_top.min(last);
             }
             if let Some(r) = &mut self.reviewing {
                 (r.row, r.row_top, r.main_w, r.goto) = (cur, top, pw, None);
@@ -2642,11 +2665,11 @@ impl App {
         }
         let (said, view, at) = self.review_view(lines.get(rv.sel), main_w.saturating_sub(1));
         put(buf, main, 0, 0, main_w, &fit(&said, main_w), head);
-        // Where the part is, unless scrolled by hand. Your answer to its reply
-        // being written: the box under the thread, in sight, what follows the
-        // thread below it.
+        // Where the part is, unless scrolled by hand, or by the wheel. Your
+        // answer to its reply being written: the box under the thread, in
+        // sight, what follows the thread below it.
         let edit_h = self.editor_height(main, Focus::Diff);
-        let mut scroll = if rv.in_main { rv.scroll } else { at.start.saturating_sub(rows / 3) };
+        let mut scroll = if rv.in_main || free { rv.scroll } else { at.start.saturating_sub(rows / 3) };
         if edit_h > 0 {
             scroll = scroll.max((at.end + edit_h).saturating_sub(rows)).min(at.start);
         }
@@ -2655,7 +2678,11 @@ impl App {
             .then(|| self.review_diff(main_w.saturating_sub(1)))
             .flatten()
             .and_then(|v| v.spans.get(v.stop_of(rv.entry)).cloned());
-        if let Some(c) = &picked {
+        if let Some(n) = turned {
+            let last = if picked.is_some() { view.len().saturating_sub(rows) } else { view.len().saturating_sub(1) };
+            scroll = moved(scroll, n, last);
+        }
+        if let Some(c) = picked.as_ref().filter(|_| !free) {
             scroll = scroll.min(c.start).max(c.end.saturating_sub(rows));
         }
         let scroll = scroll.min(view.len().saturating_sub(1));

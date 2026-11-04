@@ -679,17 +679,28 @@ impl App {
     /// or once what is read of the checkout is in.
     pub(super) fn draw_head_why(&mut self, buf: &mut Buffer, body: Rect) {
         let (w, h) = (body.width as usize, body.height as usize);
+        // Scrolled by the wheel, each pane by the lines it turned, as far as
+        // the arrows take it; the list, since, until a key, where the wheel
+        // left it, the line the cursor is on in sight or not.
+        let (list_turned, main_turned) = (self.turned(Wheeled::WhyList), self.turned(Wheeled::WhyMain));
+        let free = self.free(Wheeled::WhyList);
         let Some(v) = self.head_why.as_mut() else { return };
         let list_w = if w < 60 { w } else { (w * 2 / 5).max(30) };
         let wide = v.in_main && (v.wide || w < 60);
         let room = h.saturating_sub(1);
         if !wide {
             let list = Rect::new(body.x, body.y, list_w as u16, body.height);
+            self.scrolls.borrow_mut().push((list, Wheeled::WhyList));
             put(buf, list, 0, 0, list_w, &fit(" why Move HEAD does not move HEAD", list_w), color::header());
-            if v.sel < v.top {
-                v.top = v.sel;
-            } else if v.sel >= v.top + room {
-                v.top = v.sel + 1 - room;
+            if let Some(n) = list_turned {
+                v.top = moved(v.top, n, v.lines.len().saturating_sub(room));
+            }
+            if !free {
+                if v.sel < v.top {
+                    v.top = v.sel;
+                } else if v.sel >= v.top + room {
+                    v.top = v.sel + 1 - room;
+                }
             }
             for (y, (i, l)) in v.lines.iter().enumerate().skip(v.top).take(room).enumerate() {
                 let mut st = l.style;
@@ -713,6 +724,7 @@ impl App {
         let (main_x, main_w) = if wide { (0, w) } else { (list_w + 1, w - list_w - 1) };
         let main = Rect::new(body.x + main_x as u16, body.y, main_w as u16, body.height);
         self.areas.borrow_mut().push(main);
+        self.scrolls.borrow_mut().push((main, Wheeled::WhyMain));
         let fold = main_w.saturating_sub(1);
         if v.built != Some((v.sel, fold)) {
             let (title, pieces) = v.said_here();
@@ -723,6 +735,9 @@ impl App {
             head = head.add_modifier(Modifier::UNDERLINED);
         }
         put(buf, main, 0, 0, main_w, &fit(&v.title, main_w), head);
+        if let Some(n) = main_turned {
+            v.scroll = moved(v.scroll, n, v.rows.len().saturating_sub(1));
+        }
         v.scroll = v.scroll.min(v.rows.len().saturating_sub(1));
         for (y, r) in v.rows.iter().skip(v.scroll).take(room).enumerate() {
             put_parts(buf, main, 0, y + 1, main_w, &row_parts(r, false));

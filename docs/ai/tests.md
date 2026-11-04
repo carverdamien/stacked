@@ -633,7 +633,30 @@ between a reply and its references, a click outside the box as Esc,
 picking nothing, the menu that click opens next to it, over the comment
 too, the one Esc opens beside the comment, a click outside either going
 back to the
-comment, and a click in the box putting the cursor there), the comments pane's previews,
+comment, and a click in the box putting the cursor there), the wheel
+(while the mouse is in use: over the patches pane, by whole patches, the
+cursor's pane not moved, the patch picked kept out of sight and the line
+under the mouse marked until a key brings the pick back into sight; over
+the comments pane, by whole comments, the same; over the middle, unified,
+side by side, compact and split in two, by the lines turned, the cursor on
+the row then under the mouse, in the half under it, the other half as it
+was; over the banner open, a menu longer than its box, History…'s list
+and stack diff, the tree and what the search found, the cursor under the
+mouse, a click on it picked going to the tree with the tree's own pick in
+sight; over the text of what an edit changed, a transcript, a reference's
+preview, what `?` says taller than its box, the review's pane on the right
+and the pane on the right of why Move HEAD does not move HEAD, each only
+scrolled, the cursor where it was; over the box of a comment written
+taller than the box, the cursor kept in it, typing there (and the
+editor's own test, `editor.rs`, of the box scrolled: nothing before it
+is drawn, the cursor on the nearest of its lines at its column, as far as
+its ends, what was closed here scrolled as ↑↓ scroll it); over the
+patches while a patch is moved, the patch going under the mouse; each as
+far as its ends and no further; by pages too, a page the middle's height
+less a line; nothing out of a box open, over the middle while a patch is
+moved, nor over the top bar or the bottom line; after a key, ↑↓ where
+the cursor is, wherever the mouse is, pgdn for a page, until the mouse
+moves again), the comments pane's previews,
 moving a patch, the long lines of messages wrapped (a patch's menu
 offering it only when its message has some at the settings' width, the
 note saying how many lines of which patches; the edit landing for review,
@@ -1080,8 +1103,9 @@ without it, as `/favicon.ico` is, the rows as they change, a key and a click,
 interdiffs under its heading, a click picking side by side, the version
 drawn so, and the change from a version to the next, picked so, drawn as
 a patch of its own once its files are read,
-the wheel's ↑ on a patch, listing files, going to the last file of the
-patch above, and the editor left, the page told, the worktree made ahead
+the wheel's ↑ after a key, sent with the cell under the mouse, on a patch,
+listing files, going to the last file of the patch above, whatever is
+under the mouse, and the editor left, the page told, the worktree made ahead
 removed (Quit in the page; `stacked web` itself sent SIGINT, SIGTERM or
 SIGHUP, the first while `$EDITOR` runs left to `$EDITOR`, the second
 waiting for it), and two
@@ -1120,8 +1144,10 @@ menu of a right click on it and with `o` (the status line saying it is
 opening it while the stand-in is held, then that it opened it), and one
 of a line of a comment from its menu, by a stand-in, and the comment
 closed last on a line, longer than its box in a small page, scrolled
-down to its last line with
-↓, the wheel's ↓ and pgdn, and, with
+down to its last line by the wheel over the box, sent with its cell, the
+mouse in use since the click that opened the box, nothing over the top
+bar, then by pgdn, by the wheel's ↓ after that key over the top bar, and
+by ↓, then up a line by the wheel over the box once the mouse moved, and, with
 moz-phab, the Phabricator line saying first that the revision is not
 fetched yet, nothing read as the page opens; then, fetched from the
 stack's menu, its item clicked, by a stand-in for its database, the status
@@ -1136,7 +1162,9 @@ held for review, the review then opened from the banner, its operation
 marked on its own; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
-test the mouse followed only while the page has the focus: the cell where
+test the wheel said once it turned a notch, with the cell under the mouse
+(none over no cell), what it turned short of a notch kept, and
+the mouse followed only while the page has the focus: the cell where
 the mouse was last seen while the page did not have the focus said at once
 when the page has it again (unless the mouse left the page), so that the
 click that gives the page the focus back acts on that cell, whether the
@@ -1147,8 +1175,9 @@ click, 1 on the versions of a patch opening the menu of the views of the
 interdiffs under its heading, a click picking side by side, the version
 drawn so, and the change from a version to the next, under its own
 heading, picked so, drawn as a patch of its own once its files are read,
-↑ on a patch, listing files, going to the last file of the patch
-above, as the wheel's ↑ does, the mouse over a patch then gone, a window
+the wheel's ↑ after a key, sent with the cell under the mouse, on a
+patch, listing files, going to the last file of the patch above, whatever
+is under the mouse, the mouse over a patch then gone, a window
 too small, the wait while `$EDITOR` runs (an editor that edits nothing,
 set in the test's settings), quit, the command there, a link of a line of
 a message opened from the
@@ -1156,8 +1185,11 @@ menu of a right click on it and with `o` (the status line saying it is
 opening it while the stand-in is held, then that it opened it), and one
 of a line of a comment from its menu, by a stand-in, the comment closed
 last on a line, longer
-than its box in a small window, scrolled down to its last line with ↓ and
-pgdn, as the wheel's ↓ do, and a database
+than its box in a small window, scrolled down to its last line by the
+wheel over the box, sent with its cell, the mouse in use since the click
+that opened the box, nothing over the top bar, then by pgdn, by the
+wheel's ↓ after that key over the top bar, and by ↓, then up a line by
+the wheel over the box once the mouse moved, and a database
 that cannot be read said before any window; two editors in one process,
 as two windows, each in its own
 folder (HEAD said in the checkout's, none elsewhere); a message's long
@@ -1210,7 +1242,10 @@ reads, this stacked in its Exec line and its icon at every size, made
 again, and something else of its name left alone.
 `app.rs` tests what the window paints of a screen (the colours, reversed
 and dim, the faces, wide characters, the lines of boxes and blocks), what
-it makes of keys, clicks, the wheel (while a comment is written too) and
+it makes of keys, clicks, the wheel (sent with the cell the mouse was last
+seen over, none off the grid or once the mouse is gone, in the background
+too; in lines, 40 points a line, or in pages, what turned short of one
+kept; while a comment is written too) and
 pastes, and the window itself, run
 by egui with no window: the grid's size sent, the screen painted, what is
 done sent, the wait for `$EDITOR`, and closing, and text dragged over lit

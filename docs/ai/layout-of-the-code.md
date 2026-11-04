@@ -185,6 +185,9 @@
   move HEAD, and what you can do in your checkout so that it can;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
+  `tui/wheel.rs`, the wheel of the browser and of StackED: whether the
+  mouse is in use, what the wheel scrolls under it then, and ↑↓ after a
+  key;
   `tui/finding.rs`, the search of the middle (`/`); `tui/ask_dialog.rs`,
   the dialog every `Ask agent…` item opens, its permission and effort set
   each time, then Ask Now, Ask Later or Cancel; and a review's `Send it

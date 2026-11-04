@@ -28,8 +28,37 @@ back to the comment, with what is written in it. Opened with Esc, the
 menu opens under the comment, or above it, so that the comment stays in
 sight. A click in the box puts the cursor where the
 click is. Writing a comment, or reading what `?` says, the mouse going by
-moves nothing. The wheel is ↑↓, and a paste types what is pasted, into a
-comment being written. The page follows the mouse only while it is the
+moves nothing. A paste types what is pasted, into a comment being written.
+
+The wheel scrolls what is under the mouse while the mouse is in use: from
+the mouse going over another cell, or a click, until the next key, a key
+typed into a comment too. The view of the pane or of the box under the
+mouse moves by the lines the wheel turned, a line for each notch, and
+stops at its first and its last lines, where the arrows stop it. Where the
+cursor follows the mouse (the middle, the half of the middle split in two
+under the mouse, the banner, a menu longer than its box, the lists of the
+screens of their own, History…'s stack diff, the review's list, what the
+search found, the list of the view of why Move HEAD does not move HEAD),
+the cursor goes on the line then under the mouse. A side pane, the patches
+or the comments, keeps what it picked, in sight or not, and the line then
+under the mouse is marked. So does a pane whose cursor the mouse does not
+move: the review's pane on the right, and what a submit sends. A text, a
+transcript, a reference's preview, and what `?` says when it is taller
+than its box, have no cursor: they only scroll. Each place stays where the
+wheel left it until the next key, which brings what it picked back into
+sight. The box of a comment being written scrolls when its text is taller
+than the box, its cursor kept in the box, on the nearest of its lines. Out
+of that box, as the mouse going by moves nothing there, the wheel does
+nothing; nor does it out of a menu, of what `?` says or of a reference's
+preview, nor while the ask dialog is open or a line is typed, nor over
+what does not scroll, such as the top bar or the bottom line. While a
+patch or HEAD is being moved, the wheel scrolls the patches alone, what is
+moved going under the mouse; while the agent's stream is read in place,
+the wheel over the middle scrolls the stream. After a key, until the mouse
+moves or clicks again, the wheel is ↑↓ where the cursor is, a line for
+each notch, as those keys are.
+
+The page follows the mouse only while it is the
 active one: while another window or another tab has the focus, the mouse
 going over the page marks and picks nothing, and the line it marked is
 underlined no longer. A click and the wheel act on the page all the same.
@@ -58,11 +87,15 @@ runs there goes to `$EDITOR` alone.
 
 The server runs the editor as the terminal does, drawn into a buffer of the
 page's size, and sends the page the rows that changed (server-sent events);
-the page sends its keys and clicks back. Keys that come together are drawn
+the page sends its keys, its clicks and its wheel back, the wheel with the
+cell under the mouse and the lines it turned. Keys that come together are drawn
 once, after the last, and each is done on the screen as the keys before it
 left it, as in a terminal, which draws the screen after each key: Home,
 then Space at once, opens the stack's menu with the stack's comments to
 ask about, as a right click on the stack's header does. What the page does
 is wasm
-(`web/client.rs`: the rows made HTML, the keys and clicks made lines for
-the server), carried by fifty lines of JS (`web/index.html`).
+(`web/client.rs`: the rows made HTML, the keys, the clicks and the wheel
+made lines for the server, the wheel's small turns kept until they make a
+notch, 40 pixels), carried by fifty lines of JS (`web/index.html`). The
+editor knows whether the mouse is in use, and what the wheel scrolls
+under it (`tui/wheel.rs`), as it does for StackED.

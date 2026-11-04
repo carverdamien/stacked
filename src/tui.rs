@@ -73,6 +73,9 @@ pub use searching::Searching;
 pub mod submitting;
 #[cfg(feature = "moz-phab")]
 pub use submitting::Submitting;
+mod wheel;
+pub use wheel::Turned;
+use wheel::{Wheeled, moved};
 
 fn by_style(by: Option<&By>) -> Style {
     match by {
@@ -637,6 +640,26 @@ fn list_scrolled(entries: &[ListEntry], on: usize, kept: usize, room: usize) -> 
     top.min(list_up_from(entries, entries.len().saturating_sub(1), room))
 }
 
+/// The first of the patches pane's `entries` shown once the wheel turned
+/// `n` lines down (up, below 0) from `top`: whole entries, as many as those
+/// lines take, one at least, and none past either end of the list.
+fn list_moved(entries: &[ListEntry], top: usize, n: isize) -> usize {
+    let mut top = top.min(entries.len().saturating_sub(1));
+    let mut left = n.unsigned_abs();
+    while left > 0 {
+        if n > 0 && top + 1 < entries.len() {
+            left = left.saturating_sub(entries[top].1.len().max(1));
+            top += 1;
+        } else if n < 0 && top > 0 {
+            top -= 1;
+            left = left.saturating_sub(entries[top].1.len().max(1));
+        } else {
+            break;
+        }
+    }
+    top
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     /// The patches, on the left.
@@ -1016,8 +1039,9 @@ pub enum Mode {
     /// leaves the mode.
     MovingHead { to: usize },
     /// What can be done where the cursor is, said. The next key goes back
-    /// to `back`, and does there what it does.
-    Help { lines: Vec<String>, back: Box<Mode> },
+    /// to `back`, and does there what it does. Taller than its box, it is
+    /// shown from line `top` of it, as the wheel scrolls it.
+    Help { lines: Vec<String>, back: Box<Mode>, top: usize },
     /// The stream of the comment claude is working on, opened in place;
     /// `up` lines up from its end.
     Stream { change: String, id: String, up: usize },
@@ -1161,6 +1185,9 @@ pub struct Menu {
     /// on an item selected anew.
     pub choice: usize,
     top: usize,
+    /// The wheel scrolled it since the last key: it stays where the wheel
+    /// left it, the item selected in sight or not.
+    wheeled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2058,6 +2085,7 @@ impl Menu {
             at: None,
             choice: 0,
             top: 0,
+            wheeled: false,
         }
     }
 
@@ -2477,6 +2505,21 @@ pub struct App {
     /// screen as it would be drawn now (`caught_up`).
     drawn: Option<Rect>,
     undrawn: bool,
+    /// The mouse is in use, in the browser and in StackED: it moved over
+    /// another cell, or clicked, and no key came since. The wheel scrolls
+    /// what is under it meanwhile, and is ↑↓ else (`wheel`).
+    mouse: bool,
+    /// Where each place the wheel scrolls was drawn, when the screen was
+    /// last drawn: drawn later, on top.
+    scrolls: std::cell::RefCell<Vec<(Rect, Wheeled)>>,
+    /// The lines the wheel turned over a place, for its view to move by as
+    /// it is drawn next (`turned`).
+    wheel_turn: std::cell::Cell<Option<(Wheeled, isize)>>,
+    /// The places the wheel scrolled since the last key, each with the
+    /// screen it was on, a menu aside (its own `wheeled`): each stays where
+    /// the wheel left it, what it picked in sight or not (`free`), as long
+    /// as that screen is drawn.
+    wheeled: Vec<(Screen, Wheeled)>,
 }
 
 /// The stack's history, as last made: of which stack, at how many records
@@ -2967,6 +3010,10 @@ impl App {
             areas: std::cell::RefCell::new(Vec::new()),
             drawn: None,
             undrawn: false,
+            mouse: false,
+            scrolls: std::cell::RefCell::new(Vec::new()),
+            wheel_turn: std::cell::Cell::new(None),
+            wheeled: Vec::new(),
             db,
             cfg,
         };
@@ -4303,6 +4350,8 @@ impl App {
     /// map: Enter is Enter. A menu the click opens is drawn next to the cell
     /// clicked; the menu open before stays where it is, built again or not.
     pub fn click(&mut self, x: u16, y: u16, right: bool) -> Effect {
+        // The mouse in use, until the next key (`wheel`).
+        self.mouse = true;
         // A click is on the screen as it was last drawn; what it does once
         // it picked what is there (Space for a right click, Enter for a
         // second) is done on the screen as it would be drawn then, as a key
@@ -4495,8 +4544,10 @@ impl App {
     /// not picked, the line picked staying so until a click. Elsewhere,
     /// what is there picked, as the arrows would, so that a click does on
     /// it what Enter does: in a menu, its item; a patch being moved goes
-    /// there. Not while a comment is written, nor over what `?` says.
+    /// there. Not while a comment is written, nor over what `?` says. The
+    /// mouse is in use from then on, until the next key (`wheel`).
     pub fn hover(&mut self, x: u16, y: u16) {
+        self.mouse = true;
         let spot = self.spot_at(x, y);
         let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::File(_) | Spot::HeadRow | Spot::NotesHead | Spot::Note(_));
         self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
@@ -4930,6 +4981,13 @@ impl App {
         if k.kind == KeyEventKind::Release {
             return Effect::None;
         }
+        // A key, typed into a comment too: the mouse is no longer in use,
+        // and what the wheel scrolled brings what it picked back into sight.
+        self.mouse = false;
+        self.wheeled.clear();
+        if let Mode::Menu(m) = &mut self.mode {
+            m.wheeled = false;
+        }
         // The keys as the settings map them, but in the comment editor,
         // which reads what is typed. A key that does nothing still closes
         // what `?` said.
@@ -5013,6 +5071,7 @@ impl App {
             self.mode = Mode::Help {
                 lines: self.help(),
                 back: Box::new(self.mode.clone()),
+                top: 0,
             };
             return Effect::None;
         }
@@ -10146,6 +10205,7 @@ impl App {
         let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
         window(buf, area, x, y, bw, bh, &p.title, color::meta());
         spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
+        self.scrolls_on(area, (x, y, bw, bh), Wheeled::Preview);
         for (k, parts) in lines.iter().skip(p.top).take(bh.saturating_sub(2)).enumerate() {
             put_parts(buf, area, x + 2, y + 1 + k, bw.saturating_sub(4), parts);
         }
@@ -10576,6 +10636,12 @@ impl App {
         self.edit_box.set(None);
         self.spots.borrow_mut().clear();
         self.areas.borrow_mut().clear();
+        self.scrolls.borrow_mut().clear();
+        // What the wheel scrolled on another screen stays where it left it
+        // no longer: a screen opened again, or another list screen, keeps
+        // its pick in sight.
+        let screen = self.screen;
+        self.wheeled.retain(|(on, _)| *on == screen);
         // Where the cursor is in a list of its own screen, kept as it goes.
         self.keep_list();
         self.keep_progress();
@@ -11140,6 +11206,7 @@ impl App {
     }
 
     fn draw_menu(&mut self, buf: &mut Buffer, body: Rect) {
+        let turned = self.turned(Wheeled::Menu);
         let Mode::Menu(m) = &mut self.mode else { return };
         // Opened by a click, it may be drawn anywhere between the top bar and
         // the status line, over the banner too, to be next to the click.
@@ -11171,10 +11238,18 @@ impl App {
         });
         let below = if note.is_empty() { 0 } else { note.len() + 1 };
         let rows = m.items.len().min(h.saturating_sub(2 + below).max(1));
-        if m.sel < m.top {
-            m.top = m.sel;
-        } else if m.sel >= m.top + rows {
-            m.top = m.sel + 1 - rows;
+        // Longer than its box: the item selected in sight; scrolled by the
+        // wheel, moved by the lines it turned, as far as the last item on
+        // the bottom line, and since, until a key, where the wheel left it.
+        if let Some(n) = turned {
+            m.top = moved(m.top, n, m.items.len().saturating_sub(rows));
+        }
+        if !m.wheeled {
+            if m.sel < m.top {
+                m.top = m.sel;
+            } else if m.sel >= m.top + rows {
+                m.top = m.sel + 1 - rows;
+            }
         }
         let bh = rows + 2 + below;
         let at = m.at;
@@ -11182,6 +11257,7 @@ impl App {
         let Mode::Menu(m) = &self.mode else { return };
         window(buf, area, x, y, bw, bh, &m.title, color::meta());
         spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
+        self.scrolls_on(area, (x, y, bw, bh), Wheeled::Menu);
         for (r, (i, item)) in m.items.iter().enumerate().skip(m.top).take(rows).enumerate() {
             if item.action == Action::Line {
                 put(buf, area, x + 1, y + 1 + r, bw - 2, &"─".repeat(bw - 2), color::meta());
@@ -11260,8 +11336,9 @@ impl App {
         (w.saturating_sub(bw) / 2, y)
     }
 
-    fn draw_help(&self, buf: &mut Buffer, area: Rect) {
-        let Mode::Help { lines, .. } = &self.mode else { return };
+    fn draw_help(&mut self, buf: &mut Buffer, area: Rect) {
+        let turned = self.turned(Wheeled::Help);
+        let Mode::Help { lines, top, .. } = &mut self.mode else { return };
         let (w, h) = (area.width as usize, area.height as usize);
         let bw = (w * 2 / 3).clamp(30.min(w), 72.min(w));
         let mut text: Vec<(String, Style)> = Vec::new();
@@ -11271,10 +11348,18 @@ impl App {
             text.extend(wrap(l, bw.saturating_sub(4)).into_iter().map(|l| (l, st)));
         }
         let bh = (text.len() + 2).min(h);
+        // Taller than its box: from the line the wheel scrolled it to, as
+        // far as its last line on the box's bottom one.
+        let room = bh.saturating_sub(2);
+        if let Some(n) = turned {
+            *top = moved(*top, n, text.len().saturating_sub(room));
+        }
+        let first = (*top).min(text.len().saturating_sub(room));
         let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
         window(buf, area, x, y, bw, bh, "what can I do here", color::meta());
         spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
-        for (k, (l, st)) in text.iter().take(bh.saturating_sub(2)).enumerate() {
+        self.scrolls_on(area, (x, y, bw, bh), Wheeled::Help);
+        for (k, (l, st)) in text.iter().skip(first).take(room).enumerate() {
             put(buf, area, x + 2, y + 1 + k, bw - 4, l, *st);
         }
     }
@@ -11338,6 +11423,7 @@ impl App {
             Target::ToolAnswer { .. } => "your answer to what the agent said of this tool".to_string(),
         };
         spot_in(&self.spots, area, (0, y, w, bh), Spot::Editor);
+        self.scrolls_on(area, (0, y, w, bh), Wheeled::Editor);
         self.edit_box.set(Some(Rect::new(area.x, area.y + y as u16, w as u16, bh as u16)));
         let cursor = e.ed.draw(buf, area, 0, y, w, bh, &title, self.esc_does(e));
         matches!(self.mode, Mode::Edit(_)).then_some(cursor)
@@ -11345,6 +11431,7 @@ impl App {
 
     fn draw_list(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
         let w = area.width as usize;
+        self.scrolls_in(area, Wheeled::Patches);
         // The header: the stack's own place.
         let header = self.list_header();
         let mut st = color::header();
@@ -11522,7 +11609,19 @@ impl App {
             }
             Listed::Head | Listed::Commit(_) => t.at,
         });
-        let mut top = list_scrolled(&entries, on_entry, kept, room);
+        // Scrolled by the wheel: as many entries further as the lines it
+        // turned take; and since, until a key, where the wheel left it, as
+        // far as the list's end, the pick in sight or not.
+        let kept = match self.turned(Wheeled::Patches) {
+            Some(n) => list_moved(&entries, kept, n),
+            None => kept,
+        };
+        let free = self.free(Wheeled::Patches);
+        let scrolled = |rows: usize| match free {
+            true => kept.min(list_up_from(&entries, entries.len().saturating_sub(1), rows)),
+            false => list_scrolled(&entries, on_entry, kept, rows),
+        };
+        let mut top = scrolled(room);
         // HEAD's line out of sight, the stack too long for the pane: a line
         // is taken from the patches for it. Next to those shown, it is in
         // its place; else it is on the pane's edge it is beyond, `↓` (`↑`)
@@ -11534,7 +11633,7 @@ impl App {
         let mut head_line = head_out(top, room);
         if head_line {
             rows = room.saturating_sub(1);
-            top = list_scrolled(&entries, on_entry, kept, rows);
+            top = scrolled(rows);
         }
         // The cursor on a file listed (from another pane, the file the
         // middle's cursor is in), the lines of its patch scrolled past: they
@@ -11543,13 +11642,14 @@ impl App {
         // once the cursor would leave the lines under them. In a pane too
         // small for all of them and a line for the file, the first of them,
         // as many as leave that line: none in a pane of a line. HEAD's line,
-        // out of sight, keeps the line it takes.
+        // out of sight, keeps the line it takes. Not while the pane stays
+        // where the wheel left it: the file may be out of sight too.
         let own_at = match entries.get(on_entry) {
             Some((Listed::File(_), _)) => entries.iter().position(|(e, _)| matches!(e, Listed::Patch(at, _) if *at == on)),
             _ => None,
         };
         let mut own_pinned = 0;
-        if let Some(p) = own_at.filter(|&p| p < top) {
+        if let Some(p) = own_at.filter(|&p| p < top && !free) {
             own_pinned = entries[p].1.len().min(rows.saturating_sub(1));
             top = list_scrolled(&entries, on_entry, kept, rows - own_pinned);
             // HEAD's line in sight until then, and no longer: a line taken
@@ -11756,6 +11856,7 @@ impl App {
     fn draw_middle(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
         self.middle_w = area.width as usize;
         if !self.halves_drawn() {
+            self.scrolls_in(area, Wheeled::Middle);
             return self.draw_patch(buf, area);
         }
         // The cursor in a side pane: the half beside that pane is the
@@ -11771,6 +11872,8 @@ impl App {
         // Each half a region of its own, for text selected in StackED.
         self.areas.borrow_mut().extend([left, right]);
         let (here, there) = if self.in_right() { (right, left) } else { (left, right) };
+        self.scrolls_in(here, Wheeled::Middle);
+        self.scrolls_in(there, Wheeled::Beside);
         let cursor = self.draw_patch(buf, here);
         self.draw_beside(buf, there);
         cursor
@@ -11845,6 +11948,13 @@ impl App {
         // A patch's title, its message's first line: on the first line of
         // the middle once it is scrolled past, the rows under it.
         let title = if self.on_stack { None } else { self.rows.iter().position(|r| r.msg_at == Some(0) && r.note.is_none()) };
+        // Scrolled by the wheel: its view moved by the lines it turned, as
+        // far as its last row on the bottom line, where the arrows stop it.
+        // Until the next key, the view then stays where the wheel left it:
+        // the cursor goes on the row under the mouse, and may be out of
+        // sight where the mouse is over no row of its own.
+        let turned = self.turned(if beside { Wheeled::Beside } else { Wheeled::Middle });
+        let free = self.free(Wheeled::Middle);
         // Each row drawn: the line of the pane it is on, and where it starts.
         let mut drawn: Vec<(usize, usize, usize)> = Vec::new();
         match layout {
@@ -11854,13 +11964,20 @@ impl App {
                 if let Some((j, y)) = keep {
                     self.top = top_for(j, y, pinned);
                 }
+                if let Some(n) = turned {
+                    let mut last = self.rows.len().saturating_sub(h);
+                    if pinned(last) {
+                        last = (self.rows.len() + 1).saturating_sub(h);
+                    }
+                    self.top = moved(self.top, n, last);
+                }
                 // The anchor, a third down, and the box under it, in sight.
                 if let Some(a) = anchor
                     && (a < self.top || a + 1 + gap > self.top + h)
                 {
                     self.top = a.saturating_sub(h / 3).max((a + 1 + gap).saturating_sub(h)).min(a);
                 }
-                if anchor.is_none() {
+                if anchor.is_none() && !free {
                     if self.cursor < self.top {
                         self.top = self.cursor;
                     } else if self.cursor >= self.top + h {
@@ -11872,7 +11989,7 @@ impl App {
                 if pinned(self.top) {
                     match anchor {
                         Some(a) if a + 1 + gap > self.top + h - 1 => self.top = (a + 2 + gap).saturating_sub(h).min(a),
-                        None if self.cursor + 1 >= self.top + h => self.top = self.cursor + 2 - h,
+                        None if !free && self.cursor + 1 >= self.top + h => self.top = self.cursor + 2 - h,
                         _ => {}
                     }
                 }
@@ -11907,13 +12024,22 @@ impl App {
                 {
                     top = top_for(k, y, pinned);
                 }
-                if cur < top {
-                    top = cur;
-                } else if cur + 1 + gap > top + h {
-                    top = (cur + 1 + gap).saturating_sub(h).min(cur);
+                if let Some(n) = turned {
+                    let mut last = lines.len().saturating_sub(h);
+                    if pinned(last) {
+                        last = (lines.len() + 1).saturating_sub(h);
+                    }
+                    top = moved(top, n, last);
                 }
-                if pinned(top) && cur + 2 + gap > top + h {
-                    top = (cur + 2 + gap).saturating_sub(h).min(cur);
+                if anchor.is_some() || !free {
+                    if cur < top {
+                        top = cur;
+                    } else if cur + 1 + gap > top + h {
+                        top = (cur + 1 + gap).saturating_sub(h).min(cur);
+                    }
+                    if pinned(top) && cur + 2 + gap > top + h {
+                        top = (cur + 2 + gap).saturating_sub(h).min(cur);
+                    }
                 }
                 self.top = lines.get(top).map_or(0, split_row);
                 let mut y = 0;
@@ -11966,6 +12092,12 @@ impl App {
                     if pinned(&self.compact) {
                         self.compact.keep(&p, j, y.saturating_sub(1), h - 1);
                     }
+                }
+                // Scrolled by the wheel: the panes the arrows scroll, as far
+                // as their ends, the cursor on its line of the screen.
+                if let Some(n) = turned {
+                    let panes_h = h - pinned(&self.compact) as usize;
+                    self.compact.scroll_by(&p, n, panes_h);
                 }
                 let pin = pinned(&self.compact);
                 let panes_h = h - pin as usize;
@@ -12208,6 +12340,7 @@ impl App {
     /// each, a mark for where it stands, who and where, then its last word.
     fn draw_notes(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
         let (w, h) = (area.width as usize, area.height as usize);
+        self.scrolls_in(area, Wheeled::Notes);
         let change = self.subject_change()?;
         let notes = self.notes();
         let busy = self.busy();
@@ -12270,11 +12403,20 @@ impl App {
         // The first shown: the one shown first when last drawn, of the same
         // change's comments, moved only to keep the one lit in sight, as the
         // patches pane's first is (`list_scrolled`); never past the end.
+        // Scrolled by the wheel: as many comments further as the lines it
+        // turned take, one at least; and since, until a key, where the
+        // wheel left it, the one lit in sight or not.
         let mut first = self.notes_top.as_ref().filter(|(c, _)| *c == change).map_or(0, |(_, k)| *k);
-        if on < first {
-            first = on;
-        } else if on >= first + fits {
-            first = on + 1 - fits;
+        if let Some(n) = self.turned(Wheeled::Notes) {
+            let comments = n.unsigned_abs().div_ceil(per) as isize;
+            first = moved(first, comments * n.signum(), all.len().saturating_sub(fits));
+        }
+        if !self.free(Wheeled::Notes) {
+            if on < first {
+                first = on;
+            } else if on >= first + fits {
+                first = on + 1 - fits;
+            }
         }
         let first = first.min(all.len().saturating_sub(fits));
         self.notes_top = Some((change, first));
@@ -12311,7 +12453,19 @@ impl App {
         cursor
     }
 
-    fn list_top(&mut self, h: usize) -> usize {
+    /// The first line a list screen's list of `n` shows at `area`, `h`
+    /// lines of it: the one it showed, moved only to keep the pick in
+    /// sight. Scrolled by the wheel, moved by the lines it turned, as far as
+    /// its last line on the bottom one; and since, until a key, where the
+    /// wheel left it, the pick in sight or not.
+    fn list_top(&mut self, area: Rect, h: usize, n: usize) -> usize {
+        self.scrolls_in(area, Wheeled::Picks);
+        if let Some(lines) = self.turned(Wheeled::Picks) {
+            self.pick_top = moved(self.pick_top, lines, n.saturating_sub(h));
+        }
+        if self.free(Wheeled::Picks) {
+            return self.pick_top;
+        }
         if self.pick < self.pick_top {
             self.pick_top = self.pick;
         } else if self.pick >= self.pick_top + h {
@@ -12323,7 +12477,7 @@ impl App {
     fn draw_tree(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
         let lines = tree::graph(&self.db, &self.stack);
-        let top = self.list_top(h);
+        let top = self.list_top(area, h, lines.len());
         for (y, (i, l)) in lines.iter().enumerate().skip(top).take(h).enumerate() {
             let s = self.db.node(l.rev).unwrap();
             let text = format!(" {}@{} {}", l.lanes, l.rev, s.op);
@@ -12335,8 +12489,8 @@ impl App {
 
     fn draw_stacks(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
-        let top = self.list_top(h);
         let stacks: Vec<(String, usize)> = self.db.stacks().iter().map(|s| (s.name.clone(), s.patches.len())).collect();
+        let top = self.list_top(area, h, stacks.len());
         for (y, (i, (name, n))) in stacks.iter().enumerate().skip(top).take(h).enumerate() {
             let text = format!(" {name} ({n} patches)");
             let st = if i == self.pick { on_cursor(Style::new()) } else { Style::new() };
@@ -12392,7 +12546,7 @@ impl App {
     fn draw_versions(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
         let list = self.versions_list();
-        let top = self.list_top(h);
+        let top = self.list_top(area, h, list.len());
         let current = self.current().map(|s| s.patches.clone()).unwrap_or_default();
         for (y, (i, (p, first))) in list.iter().enumerate().skip(top).take(h).enumerate() {
             // The one in the stack, marked; each with the edit that made it.
@@ -12478,14 +12632,23 @@ impl App {
         }
         let editing = self.writing().is_some_and(|e| matches!(e.target, Target::About(_)));
         let edit_h = if editing { self.editor_height(area, Focus::Diff) } else { 0 };
-        // The picked record in sight, with what is written under it.
+        // The picked record in sight, with what is written under it. Scrolled
+        // by the wheel, moved by the lines it turned, as far as the last line
+        // on the bottom one; and since, until a key, where the wheel left
+        // it, the record picked in sight or not.
+        self.scrolls_in(area, Wheeled::Picks);
         let h = h.saturating_sub(1);
         let at = lines.iter().position(|l| l.0 == Some(self.pick)).unwrap_or(0);
         let below = lines[at + 1..].iter().take_while(|l| l.0.is_none()).count();
-        if at < self.pick_top {
-            self.pick_top = at;
-        } else if at + below + edit_h + 1 > self.pick_top + h {
-            self.pick_top = (at + below + edit_h + 1).saturating_sub(h);
+        if let Some(n) = self.turned(Wheeled::Picks) {
+            self.pick_top = moved(self.pick_top, n, lines.len().saturating_sub(h));
+        }
+        if editing || !self.free(Wheeled::Picks) {
+            if at < self.pick_top {
+                self.pick_top = at;
+            } else if at + below + edit_h + 1 > self.pick_top + h {
+                self.pick_top = (at + below + edit_h + 1).saturating_sub(h);
+            }
         }
         let mut cursor = None;
         let mut y = 1;
@@ -12519,6 +12682,7 @@ impl App {
             put(buf, area, 1, 0, w, "nothing changed the stack yet", color::dim());
             return;
         };
+        self.scrolls_in(area, Wheeled::HistDiff);
         self.inter_w.set(w);
         let want = (e.from, e.to, w, self.inter_in(w), self.change_whole, self.changes.ended());
         if self.hist_built != Some(want) {
@@ -12567,11 +12731,19 @@ impl App {
         }
         put(buf, area, 0, 0, w, &fit(&format!(" {}", e.span()), w), head);
         put(buf, area, 0, 1, w, &fit(&format!(" {} · {}", e.op, local_time(e.time)), w), color::dim());
+        // The cursor in sight; scrolled by the wheel, moved by the lines it
+        // turned, as far as the last line on the bottom one, and since,
+        // until a key, where the wheel left it.
         let rows = h.saturating_sub(2);
-        if self.hist_cursor < self.hist_top {
-            self.hist_top = self.hist_cursor;
-        } else if self.hist_cursor >= self.hist_top + rows {
-            self.hist_top = self.hist_cursor + 1 - rows;
+        if let Some(n) = self.turned(Wheeled::HistDiff) {
+            self.hist_top = moved(self.hist_top, n, self.hist_rows.len().saturating_sub(rows));
+        }
+        if !self.free(Wheeled::HistDiff) {
+            if self.hist_cursor < self.hist_top {
+                self.hist_top = self.hist_cursor;
+            } else if self.hist_cursor >= self.hist_top + rows {
+                self.hist_top = self.hist_cursor + 1 - rows;
+            }
         }
         for y in 0..rows {
             let i = self.hist_top + y;
@@ -12593,6 +12765,13 @@ impl App {
             self.inter_w.set(w);
             self.text_again(w);
         }
+        // Scrolled by the wheel: by the lines it turned, as far as the
+        // arrows go, until its last line is the first shown.
+        self.scrolls_in(area, Wheeled::Text);
+        let turned = self.turned(Wheeled::Text);
+        if let (Some(n), Some(t)) = (turned, &mut self.text) {
+            t.scroll = moved(t.scroll, n, t.lines.len().saturating_sub(1));
+        }
         let Some(t) = &self.text else { return };
         put(buf, area, 0, 0, w, &fit(&format!(" {}", t.title), w), color::file());
         for (y, parts) in t.lines.iter().skip(t.scroll).take(h.saturating_sub(1)).enumerate() {
@@ -12602,7 +12781,6 @@ impl App {
 
     fn draw_runs(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
-        let top = self.list_top(h);
         let lines: Vec<(String, Style)> = self
             .runs_newest()
             .iter()
@@ -12634,6 +12812,7 @@ impl App {
         if lines.is_empty() {
             put(buf, area, 1, 0, w, "no runs yet", color::dim());
         }
+        let top = self.list_top(area, h, lines.len());
         for (y, (i, (text, st))) in lines.iter().enumerate().skip(top).take(h).enumerate() {
             let st = if i == self.pick { on_cursor(*st) } else { *st };
             put(buf, area, 0, y, w, &fit(text, w), st);
@@ -12654,6 +12833,13 @@ impl App {
                 lines.push(String::new());
                 lines.push(format!("→ {}", r.summary));
             }
+        }
+        // Scrolled by the wheel: how far up from its end, by the lines it
+        // turned, as far as its first line on the top one, as the arrows go.
+        self.scrolls_in(area, Wheeled::Transcript);
+        if let Some(n) = self.turned(Wheeled::Transcript) {
+            self.scroll = moved(self.scroll, -n, lines.len().saturating_sub(h));
+            self.keep_transcript();
         }
         self.scroll = self.scroll.min(lines.len().saturating_sub(h));
         let end = lines.len() - self.scroll;

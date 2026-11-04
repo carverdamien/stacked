@@ -1258,18 +1258,31 @@ fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_
         shown(&mut rows.borrow_mut(), l);
         first("you: why so loud?") && rows.borrow().get(15).is_some_and(|r| r.contains("↑↓: read the last comment closed here"))
     });
-    // ↓ scrolls it a line, and so does the wheel, which the page sends as ↓
-    // for each notch it turns (two here); pgdn a box's worth.
-    ask(port, &host, &input, "k Down -\n");
-    ask(port, &host, &input, "k Down -\nk Down -\n");
+    // The mouse in use, the wheel over the box scrolls it, by the lines it
+    // turned, which the page sends with the cell under the mouse: two, then
+    // one, three lines down. Over the top bar, which does not scroll,
+    // nothing.
+    let (bx, by) = {
+        let rows = rows.borrow();
+        let top = rows.iter().position(|r| r.contains("┌─ a comment on")).unwrap();
+        (rows[top].chars().position(|c| c == '┌').unwrap() + 3, top + 1)
+    };
+    ask(port, &host, &input, &format!("w {bx} {by} 2\nw 1 0 4\nw {bx} {by} 1\n"));
     until(&mut events, "three lines down", |l| {
         shown(&mut rows.borrow_mut(), l);
         first("  reason 3")
     });
+    // pgdn a box's worth; after that key, the wheel is ↑↓, wherever the
+    // mouse is: a line down over the top bar.
     ask(port, &host, &input, "k PageDown -\n");
     until(&mut events, "a box's worth further", |l| {
         shown(&mut rows.borrow_mut(), l);
         first("  reason 8")
+    });
+    ask(port, &host, &input, "w 1 0 1\n");
+    until(&mut events, "a line further", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        first("  reason 9")
     });
     // To its end and no further: its last line in sight, the box's bottom
     // edge above the bottom bar.
@@ -1279,6 +1292,12 @@ fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_
         editor_box(&rows.borrow()).is_some_and(|(inside, edge, bottom)| {
             inside.first().is_some_and(|l| l == "  reason 26") && inside.last().is_some_and(|l| l == "  reason 30") && !edge.contains('▼') && bottom < 15
         })
+    });
+    // The mouse moved again: the wheel over the box scrolls it, a line up.
+    ask(port, &host, &input, &format!("v {bx} {by}\nw {bx} {by} -1\n"));
+    until(&mut events, "a line up", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        first("  reason 25")
     });
 }
 
@@ -1293,9 +1312,10 @@ fn up_on_a_patch_listing_files_goes_to_the_last_file_of_the_one_above_with_the_w
     // Listing files, down to patch 2's line, its file under it.
     ask(port, &host, &input, "k Left -\nk Down -\nk Down -\n");
     until(&mut events, "patch 2's file", |l| l.starts_with("data: r 4 ") && text(l).contains("b.txt"));
-    // The wheel turned a notch up, which the page sends as ↑: patch 1's
-    // file listed in place of patch 2's, the cursor on it.
-    ask(port, &host, &input, "k Up -\n");
+    // The wheel turned a notch up, which the page sends with the cell under
+    // the mouse, over the middle: after those keys, ↑ where the cursor is,
+    // patch 1's file listed in place of patch 2's, the cursor on it.
+    ask(port, &host, &input, "w 60 10 -1\n");
     until(&mut events, "patch 1's last file", |l| l.starts_with("data: r 3 ") && l.contains(",,64\u{1f}      a.txt"));
 }
 

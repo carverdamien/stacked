@@ -37,7 +37,7 @@ use unicode_width::UnicodeWidthStr;
 
 use self::menu::{Bar, Menu};
 use crate::db::{Error, Result};
-use crate::tui::{App, Effect};
+use crate::tui::{App, Effect, Turned};
 
 /// The size of the grid's font, in points.
 const FONT_SIZE: f32 = 14.0;
@@ -98,6 +98,8 @@ pub enum Input {
     Key(KeyEvent),
     /// A click on a cell, with the right button if `right`.
     Click { x: u16, y: u16, right: bool },
+    /// The wheel turned over a cell, if the mouse is over one.
+    Wheel { at: Option<(u16, u16)>, turned: Turned },
     /// The mouse over another cell.
     Hover(u16, u16),
     /// The mouse gone from the grid.
@@ -322,6 +324,7 @@ fn work(mut app: App, inputs: &Receiver<Input>, outputs: &Sender<Output>, wake: 
             let effect = match input {
                 Input::Key(k) => app.key(k),
                 Input::Click { x, y, right } => app.click(x, y, right),
+                Input::Wheel { at, turned } => app.wheel(at, turned),
                 Input::Hover(x, y) => {
                     app.hover(x, y);
                     Effect::None
@@ -1082,6 +1085,9 @@ struct Pointer {
     /// the mouse was last seen over the window meanwhile, unless it left.
     away: bool,
     seen: Option<Pos2>,
+    /// Where the mouse was last seen over the window, whatever it was
+    /// doing, followed or not, unless it left: what the wheel turns over.
+    at: Option<Pos2>,
     turned: f32,
     /// The left button held down, since it was pressed on that cell, with
     /// alt or not.
@@ -1166,22 +1172,26 @@ impl Pointer {
         Some(Input::Hover(at.0, at.1))
     }
 
-    /// The wheel turned `dy` of `unit` (more than 0 brings what is above):
-    /// ↑ or ↓ for each line of it, PageUp or PageDown for each page, with
-    /// what it turned before.
-    fn wheel(&mut self, unit: egui::MouseWheelUnit, dy: f32) -> Vec<KeyEvent> {
-        let (lines, up, down) = match unit {
-            egui::MouseWheelUnit::Point => (dy / NOTCH, KeyCode::Up, KeyCode::Down),
-            egui::MouseWheelUnit::Line => (dy, KeyCode::Up, KeyCode::Down),
-            egui::MouseWheelUnit::Page => (dy, KeyCode::PageUp, KeyCode::PageDown),
+    /// The wheel turned `dy` of `unit` (more than 0 brings what is above),
+    /// with what it turned before: the lines it turned, or the pages, down
+    /// (up, below 0), once it turned one or more; a line for 40 points.
+    fn wheel(&mut self, unit: egui::MouseWheelUnit, dy: f32) -> Option<Turned> {
+        let (lines, pages) = match unit {
+            egui::MouseWheelUnit::Point => (dy / NOTCH, false),
+            egui::MouseWheelUnit::Line => (dy, false),
+            egui::MouseWheelUnit::Page => (dy, true),
         };
         self.turned += lines;
-        let mut out = Vec::new();
+        let mut down = 0;
         while self.turned.abs() >= 1.0 {
-            out.push(KeyEvent::new(if self.turned > 0.0 { up } else { down }, KeyModifiers::NONE));
+            down -= self.turned.signum() as i32;
             self.turned -= self.turned.signum();
         }
-        out
+        match (down, pages) {
+            (0, _) => None,
+            (n, true) => Some(Turned::Pages(n)),
+            (n, false) => Some(Turned::Lines(n)),
+        }
     }
 }
 
@@ -1190,16 +1200,24 @@ impl Pointer {
 /// cell once the button is let go where it was pressed, ctrl-click the
 /// right button's on macOS, which clicks on its press; the mouse over
 /// another cell, or gone from the grid, while the window is the active one
-/// (`focused`, as `Pointer::focus` takes it); the wheel as ↑↓; a paste
-/// typed, while text is written (`writing`), and nothing elsewhere. A drag
-/// with the left button selects the text it goes over, in `pointer`, the
-/// mouse over nothing meanwhile; ⌘C (ctrl-c elsewhere) copies it.
+/// (`focused`, as `Pointer::focus` takes it); the wheel turned over the
+/// cell the mouse was last seen over, whether the window is the active one
+/// or not, with the lines or the pages it turned; a paste typed, while
+/// text is written (`writing`), and nothing elsewhere. A drag with the left
+/// button selects the text it goes over, in `pointer`, the mouse over
+/// nothing meanwhile; ⌘C (ctrl-c elsewhere) copies it.
 fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, focused: bool, writing: bool, mac: bool) -> Vec<Input> {
     let mut out = Vec::new();
     out.extend(pointer.focus(focused, grid));
     // The last key pressed: whether what alt typed with it is its own.
     let mut last = None;
     for e in events {
+        // Where the mouse is, for the wheel, whatever else it does.
+        match e {
+            egui::Event::PointerMoved(pos) => pointer.at = Some(*pos),
+            egui::Event::PointerGone => pointer.at = None,
+            _ => {}
+        }
         match e {
             egui::Event::Key {
                 key,
@@ -1295,7 +1313,9 @@ fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, focused: b
                 }
             }
             egui::Event::MouseWheel { unit, delta, .. } => {
-                out.extend(pointer.wheel(*unit, delta.y).into_iter().map(Input::Key));
+                if let Some(turned) = pointer.wheel(*unit, delta.y) {
+                    out.push(Input::Wheel { at: pointer.at.and_then(|p| grid.cell_at(p)), turned });
+                }
             }
             _ => {}
         }
@@ -1696,23 +1716,28 @@ mod tests {
             run(vec![click(egui::PointerButton::Primary, false, ctrl)], false, false),
             [Input::Click { x: 1, y: 1, right: false }]
         );
-        // The wheel: a line for 40 points, with what it turned before; more
-        // than 0 brings what is above, ↑.
-        assert_eq!(run(vec![wheel(egui::MouseWheelUnit::Point, -30.0)], false, true), []);
-        assert_eq!(run(vec![wheel(egui::MouseWheelUnit::Point, -30.0)], false, true), [plain(KeyCode::Down)]);
-        assert_eq!(
-            run(vec![wheel(egui::MouseWheelUnit::Point, 100.0)], false, true),
-            [plain(KeyCode::Up), plain(KeyCode::Up)]
-        );
+        // The wheel, over the cell the mouse was last seen over: a line for
+        // 40 points, with what it turned before, down; more than 0 brings
+        // what is above, a line up. Pages as pages.
+        let wheeled = |at, turned| Input::Wheel { at, turned };
+        assert_eq!(run(vec![moved(16.0, 26.0), wheel(egui::MouseWheelUnit::Point, -30.0)], false, true), [Input::Hover(1, 1)]);
+        assert_eq!(run(vec![wheel(egui::MouseWheelUnit::Point, -30.0)], false, true), [wheeled(Some((1, 1)), Turned::Lines(1))]);
+        assert_eq!(run(vec![wheel(egui::MouseWheelUnit::Point, 100.0)], false, true), [wheeled(Some((1, 1)), Turned::Lines(-2))]);
         assert_eq!(
             run(vec![wheel(egui::MouseWheelUnit::Line, -1.0), wheel(egui::MouseWheelUnit::Page, 1.0)], false, true),
-            [plain(KeyCode::Down), plain(KeyCode::PageUp)]
+            [wheeled(Some((1, 1)), Turned::Lines(1)), wheeled(Some((1, 1)), Turned::Pages(-1))]
         );
-        // While a comment is written as well: the last one closed where it
-        // goes, shown in its box, scrolls with them as with ↑↓.
+        // While a comment is written as well: the editor scrolls its box with
+        // them, or takes them for ↑↓.
+        assert_eq!(run(vec![wheel(egui::MouseWheelUnit::Line, -2.0)], true, true), [wheeled(Some((1, 1)), Turned::Lines(2))]);
+        // Off the grid, or gone from the window: over no cell.
         assert_eq!(
-            run(vec![wheel(egui::MouseWheelUnit::Line, -2.0)], true, true),
-            [plain(KeyCode::Down), plain(KeyCode::Down)]
+            run(vec![moved(200.0, 200.0), wheel(egui::MouseWheelUnit::Line, -1.0)], false, true),
+            [Input::Unhover, wheeled(None, Turned::Lines(1))]
+        );
+        assert_eq!(
+            run(vec![moved(26.0, 6.0), egui::Event::PointerGone, wheel(egui::MouseWheelUnit::Line, 1.0)], false, true),
+            [Input::Hover(2, 0), Input::Unhover, wheeled(None, Turned::Lines(-1))]
         );
         // A key and the text it types: the text; ctrl, the key.
         let press = |key, modifiers| egui::Event::Key {
@@ -1815,7 +1840,8 @@ mod tests {
         // followed.
         assert_eq!(run(&mut pointer, vec![], false), [Input::Unhover]);
         assert_eq!(run(&mut pointer, vec![moved(2, 1), moved(3, 2)], false), []);
-        // A click and the wheel act there all the same.
+        // A click and the wheel act there all the same, the wheel over the
+        // cell where the mouse was seen.
         let wheel = egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Line,
             delta: vec2(0.0, -1.0),
@@ -1823,7 +1849,7 @@ mod tests {
         };
         assert_eq!(
             run(&mut pointer, vec![button(on(3, 2), true), button(on(3, 2), false), wheel], false),
-            [Input::Click { x: 3, y: 2, right: false }, plain(KeyCode::Down)]
+            [Input::Click { x: 3, y: 2, right: false }, Input::Wheel { at: Some((3, 2)), turned: Turned::Lines(1) }]
         );
         // The active window again: the mouse said over the cell where it was
         // last seen, at once, then followed.

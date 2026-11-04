@@ -26,7 +26,12 @@ ctrl-click on macOS. A menu opened with a click opens next to the click,
 as in the browser, and stays whole in the window; a menu opened with a key
 opens in the middle. Writing a comment, a click outside its box is Esc,
 and a click in the box puts the cursor where the click is. The wheel and
-the trackpad are ↑↓. Each window
+the trackpad do what the browser's wheel does: while the mouse is in use,
+they scroll what is under the mouse, and after a key they are ↑↓ where
+the cursor is. They turn over the cell the mouse was last seen over, a
+line for each 40 points a trackpad turns; a wheel that turns in pages
+scrolls by pages, a page being the height of what it scrolls less a line,
+and is pgup and pgdn after a key. Each window
 follows the mouse only while it is the active one, as the page does: over
 a window in the background, the mouse marks and picks nothing, but a
 click and the wheel act there all the same. A paste (⌘V on
@@ -170,7 +175,7 @@ asks for, and so is the launcher's icon, at every size of the icon theme's.
 The editor runs on a thread of its own, drawn into a buffer of the window's
 size, as `stacked web` runs it for a page; the window (eframe: egui, on
 OpenGL) paints what the buffer holds, under its menu bar, and sends the
-editor its keys, clicks and size (`app.rs`). Each window is a viewport of
+editor its keys, clicks, wheel and size (`app.rs`). Each window is a viewport of
 eframe's (`app/windows.rs`): the first is eframe's root viewport, which
 eframe cannot do without, and the others paint themselves. The first
 window closed while others are open takes over the latest of them, its

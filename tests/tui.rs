@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 
 use stacked::db::{Db, Note, stack_change};
 use stacked::thread::{Role, append_turn};
-use stacked::tui::{App, AskDialog, Button, Effect, Focus, InterLayout, Layout, Mode, Pane, PatchesPane, Screen, Show, Spot};
+use stacked::tui::{App, AskDialog, Button, Effect, Focus, InterLayout, Layout, Mode, Pane, PatchesPane, Screen, Show, Spot, Turned};
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -524,6 +524,658 @@ fn a_click_picks_and_a_second_does_as_enter() {
     assert_eq!(app.pick, 1);
     app.click(x, y, false);
     assert_eq!(app.screen, Screen::Tree);
+}
+
+/// The wheel turned `lines` over cell `at` of the screen as it was last
+/// drawn, down (up, below 0), as the browser and StackED send it.
+fn wheel(app: &mut App, at: (u16, u16), lines: i32) -> Effect {
+    app.wheel(Some(at), Turned::Lines(lines))
+}
+
+/// What line `y` of `screen` shows from column `x` on, `w` columns of it,
+/// without the blanks at its end.
+fn line_at(screen: &str, x: usize, w: usize, y: usize) -> String {
+    screen.lines().nth(y).map_or(String::new(), |l| l.chars().skip(x).take(w).collect::<String>().trim_end().to_string())
+}
+
+#[test]
+fn the_wheel_scrolls_the_side_pane_under_the_mouse_which_keeps_its_pick_until_a_key() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    // A screen of 12 lines: 9 under the patches pane's header, for 20
+    // patches. The cursor in the middle, patch 1 picked.
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    key(&mut app, KeyCode::Right);
+    let rows = shown(&mut app);
+    assert_eq!((app.focus, app.sel, row_of(&rows, 1)), (Focus::Diff, 0, Some(0)), "{rows:#?}");
+    let cursor = app.cursor;
+    // The mouse over patch 3's line: marked, and nothing picked.
+    let over = at(&draw_sized(&mut app, 120, 12), "Bug 3 - add 3");
+    app.hover(over.0, over.1);
+    assert_eq!((app.hovered, app.focus, app.sel), (Some(Spot::Patch(Some(2))), Focus::Diff, 0));
+    // The wheel turned four lines down over it: the pane from patch 5, the
+    // line now under the mouse marked, patch 7's; patch 1 picked still, in
+    // the middle, whose cursor is where it was.
+    assert_eq!(wheel(&mut app, over, 4), Effect::None);
+    let rows = shown(&mut app);
+    assert_eq!((row_of(&rows, 5), row_of(&rows, 1)), (Some(0), None), "{rows:#?}");
+    assert_eq!(app.hovered, Some(Spot::Patch(Some(6))));
+    assert_eq!((app.focus, app.sel, app.on_stack, app.cursor), (Focus::Diff, 0, false, cursor));
+    // No further than the list's end, patch 20 on the bottom line; nor up
+    // past its start.
+    wheel(&mut app, over, 30);
+    let rows = shown(&mut app);
+    assert_eq!((row_of(&rows, 12), row_of(&rows, 20)), (Some(0), Some(8)), "{rows:#?}");
+    wheel(&mut app, over, -40);
+    assert_eq!(row_of(&shown(&mut app), 1), Some(0));
+    // Scrolled past patch 1 again: the next key brings it back into sight,
+    // ← taking the cursor into the pane, on patch 1.
+    wheel(&mut app, over, 6);
+    assert_eq!(row_of(&shown(&mut app), 1), None);
+    key(&mut app, KeyCode::Left);
+    let rows = shown(&mut app);
+    assert_eq!((app.focus, app.sel, row_of(&rows, 1)), (Focus::List, 0, Some(0)), "{rows:#?}");
+    // After a key, the wheel is ↑↓ where the cursor is, wherever the mouse
+    // is: two lines down over the middle, two patches down.
+    wheel(&mut app, (60, 5), 2);
+    assert_eq!((app.focus, app.sel), (Focus::List, 2));
+    assert_eq!(row_of(&shown(&mut app), 1), Some(0));
+    // The mouse moved again: the wheel scrolls what is under it.
+    app.hover(over.0, over.1);
+    wheel(&mut app, over, 3);
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, row_of(&rows, 4)), (2, Some(0)), "{rows:#?}");
+}
+
+#[test]
+fn the_wheel_scrolls_the_comments_pane_which_keeps_the_comment_picked_until_a_key() {
+    let (_tmp, db, _src) = setup();
+    for k in 1..=12 {
+        stack_note(&db, &format!("n{k:02}"), &format!("comment number {k:02}"));
+    }
+    let mut app = open(&db).unwrap();
+    // The stack's twelve comments, two lines each: four of them under the
+    // pane's header on a screen of 12 lines, the cursor on the first.
+    let shown = |app: &mut App| notes_rows(app, 12);
+    for code in [KeyCode::Home, KeyCode::Right, KeyCode::Right] {
+        key(&mut app, code);
+        shown(&mut app);
+    }
+    assert_eq!((app.focus, app.notes_head, app.note_sel), (Focus::Notes, false, 0));
+    let said = |app: &App, k: usize| format!("comment number {}", &app.notes()[k].1[1..]);
+    // The mouse over the second: marked, the first picked still.
+    let over = at_from(&draw_sized(&mut app, 120, 12), &said(&app, 1), 90);
+    app.hover(over.0, over.1);
+    assert_eq!((app.hovered, app.note_sel), (Some(Spot::Note(1)), 0));
+    // Four lines down: two comments further, the pane from the third, the
+    // one now under the mouse marked, the fourth; the first picked still,
+    // out of sight.
+    wheel(&mut app, over, 4);
+    let rows = shown(&mut app);
+    assert_eq!((row_with(&rows, &said(&app, 2)), row_with(&rows, &said(&app, 0))), (Some(1), None), "{rows:#?}");
+    assert_eq!((app.hovered, app.note_sel, app.focus), (Some(Spot::Note(3)), 0, Focus::Notes));
+    // No further than the last on the bottom lines, nor up past the first.
+    wheel(&mut app, over, 40);
+    assert_eq!(row_with(&shown(&mut app), &said(&app, 11)), Some(7));
+    wheel(&mut app, over, -40);
+    assert_eq!(row_with(&shown(&mut app), &said(&app, 0)), Some(1));
+    // Scrolled past it again, the next key brings what is picked back into
+    // sight, as the pane keeps it in sight: ↓ picks the second, on the
+    // pane's top lines.
+    wheel(&mut app, over, 6);
+    assert_eq!(row_with(&shown(&mut app), &said(&app, 0)), None);
+    key(&mut app, KeyCode::Down);
+    let rows = shown(&mut app);
+    assert_eq!((app.note_sel, row_with(&rows, &said(&app, 1))), (1, Some(1)), "{rows:#?}");
+}
+
+#[test]
+fn the_wheel_scrolls_the_middle_under_the_mouse_its_cursor_on_the_line_then_under_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // On a screen of 12 lines, the middle shows 10 of patch 1's rows, from
+    // column 31. The mouse over its fifth line: the cursor there, in the
+    // middle, as the mouse puts it.
+    draw_sized(&mut app, 120, 12);
+    let over = (MIDDLE as u16 + 2, 5);
+    let under = |screen: &str| line_at(screen, MIDDLE, 89, 5);
+    app.hover(over.0, over.1);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!((app.focus, app.top, app.cursor), (Focus::Diff, 0, 4));
+    assert_eq!(under(&screen), app.rows[app.cursor].text.trim_end(), "{screen}");
+    // Three lines down: the middle three rows further, the cursor on the row
+    // now under the mouse; the patches pane as it was.
+    let patches = pane_rows(&mut app, 120, 12);
+    wheel(&mut app, over, 3);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!((app.focus, app.top), (Focus::Diff, 3));
+    assert!(app.cursor > 4, "{}", app.cursor);
+    assert_eq!(under(&screen), app.rows[app.cursor].text.trim_end(), "{screen}");
+    assert_eq!(pane_rows(&mut app, 120, 12), patches);
+    // No further than its last row on the bottom line, nor up past its
+    // first.
+    wheel(&mut app, over, 100);
+    let screen = draw_sized(&mut app, 120, 12);
+    let last = app.rows.len() - 1;
+    assert_eq!(line_at(&screen, MIDDLE, 89, 10), app.rows[last].text.trim_end(), "{screen}");
+    assert_eq!(under(&screen), app.rows[app.cursor].text.trim_end(), "{screen}");
+    let end = app.top;
+    wheel(&mut app, over, -100);
+    draw_sized(&mut app, 120, 12);
+    assert_eq!((app.top, app.cursor), (0, 4));
+    // A wheel that turns in pages, as StackED's may: the middle's height, a
+    // line less, for each.
+    app.wheel(Some(over), Turned::Pages(1));
+    draw_sized(&mut app, 120, 12);
+    assert_eq!(app.top, end.min(9));
+    app.wheel(Some(over), Turned::Pages(-1));
+    draw_sized(&mut app, 120, 12);
+    assert_eq!((app.top, app.cursor), (0, 4));
+    // Over what does not scroll, the top bar and the bottom line, nothing.
+    wheel(&mut app, (40, 0), 3);
+    wheel(&mut app, (40, 11), 3);
+    assert_eq!((app.top, app.cursor, app.sel), (0, 4, 0));
+    // After a key, the wheel is ↑↓ where the cursor is, wherever the mouse
+    // is: over the patches pane, two rows down the middle.
+    key(&mut app, KeyCode::Up);
+    draw_sized(&mut app, 120, 12);
+    wheel(&mut app, (5, 3), 2);
+    assert_eq!((app.focus, app.cursor, app.sel), (Focus::Diff, 5, 0));
+    // The mouse moved again: over the patches pane, which has nothing to
+    // scroll, the wheel does nothing.
+    app.hover(5, 3);
+    wheel(&mut app, (5, 3), 2);
+    assert_eq!((app.focus, app.cursor, app.sel, app.top), (Focus::Diff, 5, 0, 0));
+    // After a key, a wheel that turns in pages is pgdn where the cursor is.
+    key(&mut app, KeyCode::Up);
+    draw_sized(&mut app, 120, 12);
+    app.wheel(Some((5, 3)), Turned::Pages(1));
+    assert_eq!(app.cursor, (4 + 9).min(app.rows.len() - 1));
+}
+
+#[test]
+fn the_wheel_scrolls_the_half_under_the_mouse_of_the_middle_split_in_two_and_the_cursor_goes_there() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    pick_view(&mut app, "Unified, split in two");
+    // On a screen of 12 lines: the left half from column 31, the right one
+    // from 76, 44 columns each. The mouse over the left half's fifth line:
+    // the cursor there.
+    draw_sized(&mut app, 120, 12);
+    app.hover(40, 5);
+    assert_eq!((app.in_right_half(), app.top, app.cursor), (Some(false), 0, 4));
+    // The wheel four lines down over the right half: that half scrolled, the
+    // cursor into it, on the row then under the mouse; the left half as it
+    // was, its cursor there.
+    wheel(&mut app, (80, 5), 4);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!((app.in_right_half(), app.top), (Some(true), 4), "{screen}");
+    assert_eq!(line_at(&screen, 76, 44, 5), app.rows[app.cursor].text.trim_end(), "{screen}");
+    assert_eq!(app.other_half().map(|h| (h.top, h.cursor)), Some((0, 4)));
+    // The wheel over the half the cursor is in: that half alone.
+    wheel(&mut app, (80, 5), -2);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!((app.in_right_half(), app.top), (Some(true), 2), "{screen}");
+    assert_eq!(app.other_half().map(|h| h.top), Some(0));
+}
+
+#[test]
+fn the_wheel_scrolls_the_middle_side_by_side_and_compact_too_the_cursor_on_the_line_under_the_mouse() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    for view in ["Side by side", "Side by side, compact"] {
+        pick_view(&mut app, view);
+        // From the top, on a screen of 12 lines: the mouse over the middle's
+        // fourth line, then the wheel two lines down there, the title pinned
+        // on the middle's first line from then on.
+        key(&mut app, KeyCode::Home);
+        draw_sized(&mut app, 120, 12);
+        let over = (MIDDLE as u16 + 2, 4);
+        app.hover(over.0, over.1);
+        wheel(&mut app, over, 2);
+        let before = draw_sized(&mut app, 120, 12);
+        // Three lines down: the line that was three under the mouse is under
+        // it, the cursor on a row of it.
+        wheel(&mut app, over, 3);
+        let after = draw_sized(&mut app, 120, 12);
+        assert_eq!(line_at(&after, MIDDLE, 89, 4), line_at(&before, MIDDLE, 89, 7), "{view}:\n{before}\n{after}");
+        let row = app.rows[app.cursor].text.trim().to_string();
+        assert!(line_at(&after, MIDDLE, 89, 4).contains(&row), "{view}: {row:?}\n{after}");
+    }
+}
+
+#[test]
+fn the_wheel_scrolls_a_menu_longer_than_its_box_and_nothing_out_of_it_the_item_under_the_mouse_selected() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // The stack's menu, on a screen of 12 lines: longer than its box.
+    key(&mut app, KeyCode::Home);
+    draw_sized(&mut app, 120, 12);
+    key(&mut app, KeyCode::Char(' '));
+    let screen = draw_sized(&mut app, 120, 12);
+    let (bx, by, bw, bh) = menu_box(&screen, &menu_title(&app));
+    let all = items(&app);
+    let sel = |app: &App| match &app.mode {
+        Mode::Menu(m) => m.sel,
+        other => panic!("no menu: {other:?}"),
+    };
+    // The rows of its items, from the box's top: down to the empty one
+    // over its note, if it has one.
+    let rows = |screen: &str| {
+        let inside = (by + 1..by + bh - 1).map(|y| line_at(screen, bx + 1, bw - 2, y).trim().to_string());
+        inside.take_while(|r| !r.is_empty()).collect::<Vec<_>>()
+    };
+    let first = rows(&screen);
+    assert!(all.len() > first.len() && first[0].starts_with(&all[0].0), "{all:?}\n{screen}");
+    // The mouse over its second row; the wheel two lines down there: the
+    // box from what was its third row, the item now under the mouse
+    // selected (a line between items selects nothing).
+    let over = ((bx + 3) as u16, (by + 2) as u16);
+    app.hover(over.0, over.1);
+    let was = sel(&app);
+    wheel(&mut app, over, 2);
+    let screen = draw_sized(&mut app, 120, 12);
+    let now = rows(&screen);
+    assert_eq!(now[0], first[2], "{screen}");
+    match now[1].starts_with('─') {
+        true => assert_eq!(sel(&app), was),
+        false => assert!(now[1].starts_with(&all[sel(&app)].0), "{:?}: {screen}", all[sel(&app)]),
+    }
+    // No further than the last item on the box's bottom row, nor up past
+    // the first.
+    wheel(&mut app, over, 50);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert!(rows(&screen).last().unwrap().starts_with(&all.last().unwrap().0), "{screen}");
+    wheel(&mut app, over, -50);
+    assert_eq!(rows(&draw_sized(&mut app, 120, 12)), first);
+    // Out of the box, over the patches, nothing: the menu as it is.
+    let picked = sel(&app);
+    wheel(&mut app, (2, 3), 3);
+    assert_eq!((rows(&draw_sized(&mut app, 120, 12)), sel(&app)), (first.clone(), picked));
+    // After a key, the wheel is ↑↓ in the menu, wherever the mouse is: a
+    // notch down, the next item, as ↓ goes, and ↑ back.
+    key(&mut app, KeyCode::Down);
+    draw_sized(&mut app, 120, 12);
+    let down = sel(&app);
+    wheel(&mut app, (2, 3), 1);
+    assert_ne!(sel(&app), down);
+    key(&mut app, KeyCode::Up);
+    assert_eq!(sel(&app), down);
+}
+
+#[test]
+fn the_wheel_scrolls_the_banner_open_its_cursor_on_the_line_under_the_mouse() {
+    let (_tmp, db, _src) = setup();
+    for k in 1..=12 {
+        stack_note(&db, &format!("n{k:02}"), &format!("comment number {k:02}"));
+    }
+    let mut app = open(&db).unwrap();
+    // Esc opens the banner, its first comment picked; on a screen of 16
+    // lines it has 6 rows, its section's title and 5 of the 12 comments.
+    draw_sized(&mut app, 120, 16);
+    key(&mut app, KeyCode::Esc);
+    let screen = draw_sized(&mut app, 120, 16);
+    assert!(app.on_banner && app.banner_sel == 0, "{screen}");
+    assert!(line_at(&screen, 0, 120, 2).starts_with(" open comments"), "{screen}");
+    // The mouse over its third row, the second comment: picked.
+    app.hover(10, 4);
+    assert_eq!(app.banner_sel, 1);
+    // Three lines down: the comment now under the mouse picked, the fifth.
+    wheel(&mut app, (10, 4), 3);
+    assert_eq!((app.on_banner, app.banner_sel), (true, 4));
+    // No further than the last on the bottom row, the ninth under the
+    // mouse; nor up past the title.
+    wheel(&mut app, (10, 4), 50);
+    assert_eq!(app.banner_sel, 8);
+    let screen = draw_sized(&mut app, 120, 16);
+    assert!(!line_at(&screen, 0, 120, 7).is_empty() && line_at(&screen, 0, 120, 8).starts_with(" ≡ s"), "{screen}");
+    wheel(&mut app, (10, 4), -50);
+    assert_eq!(app.banner_sel, 1);
+}
+
+#[test]
+fn the_wheel_scrolls_history_s_list_and_stack_diff_the_tree_and_a_text_each_under_the_mouse() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    // Twenty records more, each a patch moved: a history, and a tree, longer
+    // than the screen.
+    for _ in 0..20 {
+        Db::edit(&db, |d| stacked::ops::move_patch(d, "s", 1, 0).map(|_| ())).unwrap();
+    }
+    let mut app = open(&db).unwrap();
+    key(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "History…");
+    // On a screen of 12 lines: the history, newest first, 9 records under
+    // its title; the mouse over the third, picked.
+    draw_sized(&mut app, 120, 12);
+    assert_eq!((app.screen, app.pick), (Screen::History, 0));
+    app.hover(5, 4);
+    assert_eq!(app.pick, 2);
+    // Three lines down: the record now under the mouse picked, the sixth; no
+    // further than the oldest on the bottom line.
+    wheel(&mut app, (5, 4), 3);
+    assert_eq!(app.pick, 5);
+    let n = app.history().len();
+    wheel(&mut app, (5, 4), 100);
+    assert_eq!(app.pick, n - 7);
+    // A click on it, picked, goes to it in the tree, which has its own pick
+    // in sight: what the wheel did on the history is the history's.
+    let rev = app.history()[n - 7].to.unwrap();
+    app.click(5, 4, false);
+    assert_eq!(app.screen, Screen::Tree);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert!(screen.lines().any(|l| line_at(l, 0, 30, 0).contains(&format!("@{rev} "))), "@{rev} in the tree's list:\n{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_unseen(&mut app, "History…");
+    // The oldest's stack diff, the import's, beside it: the mouse over its
+    // third line, the cursor there; the wheel scrolls it, the cursor on the
+    // line then under the mouse, the record picked as it was.
+    key(&mut app, KeyCode::End);
+    draw_sized(&mut app, 120, 12);
+    let lines = app.hist_rows.len();
+    assert!(lines > 12, "{lines}");
+    app.hover(60, 5);
+    assert_eq!((app.hist_focus, app.hist_cursor), (stacked::tui::HistFocus::Diff, 2));
+    wheel(&mut app, (60, 5), 4);
+    assert_eq!((app.hist_cursor, app.pick), (6, n - 1));
+    wheel(&mut app, (60, 5), 100);
+    assert_eq!(app.hist_cursor, lines - 8 + 2);
+    // Enter on it in the list goes to it, in the tree, as ever; there, from
+    // its top, the wheel scrolls the tree, the node under the mouse picked.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Enter]);
+    key(&mut app, KeyCode::Home);
+    draw_sized(&mut app, 120, 12);
+    assert_eq!((app.screen, app.pick), (Screen::Tree, 0));
+    app.hover(5, 3);
+    wheel(&mut app, (5, 3), 3);
+    assert_eq!(app.pick, 5);
+    // What the import changed, on a screen of its own: the wheel scrolls it,
+    // as far as the arrows go, its last line the first shown.
+    key(&mut app, KeyCode::End);
+    choose_unseen(&mut app, "What this edit changed…");
+    draw_sized(&mut app, 120, 12);
+    assert_eq!(app.screen, Screen::Text);
+    let all = app.text.as_ref().unwrap().lines.len();
+    assert!(all > 12, "{all}");
+    app.hover(5, 5);
+    wheel(&mut app, (5, 5), 5);
+    assert_eq!(app.text.as_ref().unwrap().scroll, 5);
+    wheel(&mut app, (5, 5), 1000);
+    assert_eq!(app.text.as_ref().unwrap().scroll, all - 1);
+    wheel(&mut app, (5, 5), -1000);
+    assert_eq!(app.text.as_ref().unwrap().scroll, 0);
+}
+
+#[test]
+fn the_wheel_scrolls_the_comment_written_taller_than_its_box_and_nothing_out_of_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    // Twenty lines written, on a screen of 16 lines: the box, half the pane,
+    // shows the last five, the cursor at the end of the last.
+    for k in 1..=20 {
+        typed(&mut app, &format!("line {k}"));
+        if k < 20 {
+            key(&mut app, KeyCode::Enter);
+        }
+    }
+    let inside = |app: &mut App| editor_box(&draw_sized(app, 120, 16)).0;
+    assert_eq!(inside(&mut app), ["line 16", "line 17", "line 18", "line 19", "line 20"]);
+    let (bx, by) = at(&draw_sized(&mut app, 120, 16), "┌─ a comment on");
+    let over = (bx + 3, by + 2);
+    // The mouse over it moves nothing; the wheel five lines up there: the
+    // text five lines further up, the cursor kept in the box, on its last
+    // line, where what is typed goes.
+    app.hover(over.0, over.1);
+    wheel(&mut app, over, -5);
+    assert_eq!(inside(&mut app), ["line 11", "line 12", "line 13", "line 14", "line 15"]);
+    // Out of the box, nothing: not the patches, nor the middle.
+    wheel(&mut app, (5, 3), 3);
+    wheel(&mut app, (60, 2), 3);
+    assert_eq!(inside(&mut app), ["line 11", "line 12", "line 13", "line 14", "line 15"]);
+    typed(&mut app, "x");
+    let text = |app: &App| match &app.mode {
+        Mode::Edit(e) => e.ed.text(),
+        other => panic!("{other:?}"),
+    };
+    assert!(text(&app).contains("\nline 15x\n"), "{}", text(&app));
+    // After a key, the wheel is ↑↓ in the comment, wherever the mouse is: a
+    // line up.
+    draw_sized(&mut app, 120, 16);
+    wheel(&mut app, (5, 3), -1);
+    typed(&mut app, "y");
+    assert!(text(&app).contains("\nline 14y\n"), "{}", text(&app));
+}
+
+#[test]
+fn the_wheel_scrolls_what_the_question_mark_says_taller_than_its_box_and_nothing_out_of_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // `?` on a screen of 8 lines: its box as tall as the 6 lines between the
+    // top bar and the bottom one, 4 lines of what it says.
+    draw_sized(&mut app, 120, 8);
+    key(&mut app, KeyCode::Char('?'));
+    let screen = draw_sized(&mut app, 120, 8);
+    let (bx, by, bw, bh) = menu_box(&screen, "what can I do here");
+    assert_eq!(bh, 6, "{screen}");
+    let said = |screen: &str| (by + 1..by + bh - 1).map(|y| line_at(screen, bx + 2, bw - 4, y)).collect::<Vec<_>>();
+    let first = said(&screen);
+    // The mouse over it moves nothing; the wheel two lines down there: what
+    // it says from its third line.
+    let over = ((bx + 4) as u16, (by + 2) as u16);
+    app.hover(over.0, over.1);
+    wheel(&mut app, over, 2);
+    let screen = draw_sized(&mut app, 120, 8);
+    assert!(matches!(app.mode, Mode::Help { .. }), "{:?}", app.mode);
+    let scrolled = said(&screen);
+    assert_eq!(scrolled[..2], first[2..], "{screen}");
+    // Out of the box, nothing.
+    wheel(&mut app, (2, 2), 2);
+    assert_eq!(said(&draw_sized(&mut app, 120, 8)), scrolled);
+    // No further than its last line on the box's bottom row.
+    wheel(&mut app, over, 50);
+    let end = said(&draw_sized(&mut app, 120, 8));
+    wheel(&mut app, over, 1);
+    assert_eq!(said(&draw_sized(&mut app, 120, 8)), end);
+    assert!(!end.last().unwrap().is_empty(), "{end:?}");
+    // A key: back where it was, as ever.
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn the_wheel_scrolls_what_the_search_found_the_match_under_the_mouse_picked() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    key(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "Search");
+    typed(&mut app, "line");
+    let found = searched(&mut app).len();
+    assert!(found > 12, "{found}");
+    // On a screen of 12 lines, 8 of the matches under the search's line; the
+    // mouse over the third, picked.
+    draw_sized(&mut app, 120, 12);
+    let sel = |app: &App| app.searching.as_ref().unwrap().sel;
+    app.hover(5, 4);
+    assert_eq!(sel(&app), 2);
+    // Three lines down: the match now under the mouse picked; no further than
+    // the last on the bottom line.
+    wheel(&mut app, (5, 4), 3);
+    assert_eq!(sel(&app), 5);
+    wheel(&mut app, (5, 4), 100);
+    assert_eq!(sel(&app), found - 6);
+    // Over the search's own line, which does not scroll, nothing.
+    wheel(&mut app, (5, 1), -100);
+    assert_eq!(sel(&app), found - 6);
+    wheel(&mut app, (5, 4), -100);
+    assert_eq!(sel(&app), 2);
+}
+
+#[test]
+fn the_wheel_scrolls_the_review_s_pane_on_the_right_the_cursor_staying_on_its_line_until_a_key() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // On a screen of 10 lines: the list on the left, 48 columns; on the
+    // right, from column 49, what the line the cursor is on shows, 7 lines
+    // under its title.
+    let right = |screen: &str| (2..9).map(|y| line_at(screen, 49, 71, y)).collect::<Vec<_>>();
+    let screen = draw_sized(&mut app, 120, 10);
+    let before = right(&screen);
+    let sel = app.reviewing.as_ref().unwrap().sel;
+    // The wheel three lines down over the pane on the right, the mouse
+    // there: what it shows three lines further; the cursor on its line of
+    // the list still.
+    app.hover(60, 4);
+    wheel(&mut app, (60, 4), 3);
+    let screen = draw_sized(&mut app, 120, 10);
+    assert_eq!(right(&screen)[..4], before[3..], "{screen}");
+    let rv = app.reviewing.as_ref().unwrap();
+    assert_eq!((rv.sel, rv.in_main), (sel, false));
+    // A key brings it back where the part of that line is.
+    key(&mut app, KeyCode::Char('x'));
+    assert_eq!(right(&draw_sized(&mut app, 120, 10)), before);
+}
+
+#[test]
+fn the_wheel_scrolls_the_patches_while_a_patch_is_moved_the_patch_going_under_the_mouse() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    // Patch 3 moved, on a screen of 12 lines: the mouse over the fifth line
+    // of the patches puts it there.
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Down);
+    choose_unseen(&mut app, "Move this patch…");
+    draw_sized(&mut app, 120, 12);
+    app.hover(5, 6);
+    assert_eq!(app.mode, Mode::Moving { from: 2, to: 4 });
+    // Three lines down: the patches three further, patch 5 first as patch 3
+    // goes after it, and the patch moved under the mouse still, now at 8.
+    wheel(&mut app, (5, 6), 3);
+    assert_eq!(app.mode, Mode::Moving { from: 2, to: 7 });
+    assert_eq!(row_of(&pane_rows(&mut app, 120, 12), 5), Some(0));
+    // Over the middle, nothing: what is moved is the patch.
+    let top = app.top;
+    wheel(&mut app, (60, 5), 3);
+    assert_eq!((app.mode.clone(), app.top), (Mode::Moving { from: 2, to: 7 }, top));
+    // Esc leaves it where it was, as ever.
+    key(&mut app, KeyCode::Esc);
+    assert_eq!((app.mode.clone(), app.sel), (Mode::Normal, 2));
+}
+
+#[test]
+fn the_wheel_scrolls_a_reference_s_preview_and_nothing_out_of_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        let said = "All of these.\n\n```refs\na.txt:3-40 @1\n```";
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, said, Some("answer")),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    draw(&mut app);
+    down_to(&mut app, "     ▎   ⇢ a.txt:3");
+    keys(&mut app, &[KeyCode::Enter]);
+    let top = |app: &App| match &app.mode {
+        Mode::Preview(p) => (p.top, p.lines.len()),
+        other => panic!("no preview: {other:?}"),
+    };
+    assert_eq!(top(&app), (0, 38));
+    // On a screen of 16 lines, its box in the middle of the screen: the
+    // wheel three lines down over it, from its fourth line; out of it,
+    // nothing; no further than the arrows take it, its last line the first.
+    let screen = draw_sized(&mut app, 120, 16);
+    let (x, y) = at(&screen, "    3 │ three");
+    app.hover(x, y);
+    wheel(&mut app, (x, y), 3);
+    assert_eq!(top(&app), (3, 38));
+    wheel(&mut app, (1, 2), 3);
+    assert_eq!(top(&app), (3, 38));
+    wheel(&mut app, (x, y), 100);
+    assert_eq!(top(&app), (37, 38));
+    wheel(&mut app, (x, y), -100);
+    assert_eq!(top(&app), (0, 38));
+}
+
+#[test]
+fn the_wheel_scrolls_a_transcript_up_from_its_end_and_back() {
+    let (_tmp, db, _src) = setup();
+    Db::edit(&db, |d| {
+        d.add_run(stacked::db::Run {
+            id: "run-long".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            output: (1..=40).map(|k| format!("said {k}")).collect::<Vec<_>>().join("\n"),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    let mut app = open(&db).unwrap();
+    choose_unseen(&mut app, "Runs…");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Transcript);
+    // On a screen of 12 lines, its end on the bottom line; five lines up,
+    // and back, no further than its end, then as far as its first line on
+    // the top one.
+    let bottom = |app: &mut App| line_at(&draw_sized(app, 120, 12), 1, 119, 10);
+    assert_eq!(bottom(&mut app), "said 40");
+    app.hover(5, 5);
+    wheel(&mut app, (5, 5), -5);
+    assert_eq!(bottom(&mut app), "said 35");
+    wheel(&mut app, (5, 5), 100);
+    assert_eq!(bottom(&mut app), "said 40");
+    wheel(&mut app, (5, 5), -100);
+    let screen = draw_sized(&mut app, 120, 12);
+    assert_eq!((line_at(&screen, 1, 119, 1), line_at(&screen, 1, 119, 2)), (String::new(), "said 1".to_string()), "{screen}");
+    assert_eq!(bottom(&mut app), "said 9");
+}
+
+#[test]
+fn the_wheel_scrolls_the_pane_on_the_right_of_why_move_head_does_not_move_head_the_cursor_in_its_list() {
+    let (_tmp, db, src) = setup();
+    std::fs::write(src.join("c.txt"), "c\n").unwrap();
+    git(&src, &["add", "c.txt"]);
+    git(&src, &["commit", "-qm", "Mine"]);
+    let mut app = open_in(&db, &src);
+    choose(&mut app, "Move HEAD…");
+    app.settle();
+    assert_eq!(app.screen, Screen::HeadWhy);
+    // On a screen of 10 lines: the wheel two lines down over the pane on
+    // the right, the mouse there, scrolls it, the cursor in the list as it
+    // was; no further than the arrows take it.
+    draw_sized(&mut app, 120, 10);
+    let at = |app: &App| app.head_why.as_ref().map(|v| (v.sel, v.in_main, v.scroll)).unwrap();
+    let (sel, _, _) = at(&app);
+    app.hover(70, 5);
+    wheel(&mut app, (70, 5), 2);
+    assert_eq!(at(&app), (sel, false, 2));
+    wheel(&mut app, (70, 5), -5);
+    assert_eq!(at(&app), (sel, false, 0));
 }
 
 /// The editor that `open` opens, clicked with each button. Out of its box,

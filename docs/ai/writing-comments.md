@@ -71,9 +71,10 @@ dimmed, its thread as it was (`you: why so loud?`, `agent: It is a shout.`),
 to read before you write. The box grows to show the whole thread, up to
 half the pane. When the thread is longer, ↑↓ (pgup, pgdn) scroll it down to
 its last line, and the box's foot and the bottom bar say so (`↑↓: read the
-last comment closed here`); the wheel and the trackpad scroll it too
-wherever they are ↑↓ (in the browser, in StackED, and in a terminal that
-sends ↑↓ for them). When the whole thread shows, there is nothing to
+last comment closed here`); the wheel and the trackpad scroll it too: in
+the browser and in StackED over the box while the mouse is in use, and
+after a key wherever the mouse is, as they are ↑↓ then; in a terminal
+that sends ↑↓ for them, as ↑↓ do. When the whole thread shows, there is nothing to
 scroll, and neither says ↑↓. The first thing you type takes its place.
 What you write is the comment; the closed one stays as it was.
 ctrl-a and ctrl-e go to the start and the end of the line. ctrl-k cuts the

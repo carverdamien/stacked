@@ -299,6 +299,11 @@ impl App {
     /// side by side, the cursor's line lit.
     pub(super) fn draw_submit(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
+        // Scrolled by the wheel: by the lines it turned, as far as the last
+        // on the bottom line; and since, until a key, where the wheel left
+        // it, the cursor's line in sight or not.
+        self.scrolls_in(area, Wheeled::Submit);
+        let (turned, free) = (self.turned(Wheeled::Submit), self.free(Wheeled::Submit));
         let Some(sub) = self.submitting.as_mut() else { return };
         // Too narrow for two sides: unified meanwhile.
         let side = sub.side && w >= 63;
@@ -314,10 +319,15 @@ impl App {
         sub.lines = if side { lines.len() } else { sub.rows.len() };
         sub.cursor = sub.cursor.min(sub.lines.saturating_sub(1));
         let rows_h = h.saturating_sub(1).max(1);
-        if sub.cursor < sub.top {
-            sub.top = sub.cursor;
-        } else if sub.cursor >= sub.top + rows_h {
-            sub.top = sub.cursor + 1 - rows_h;
+        if let Some(n) = turned {
+            sub.top = moved(sub.top, n, sub.lines.saturating_sub(rows_h));
+        }
+        if !free {
+            if sub.cursor < sub.top {
+                sub.top = sub.cursor;
+            } else if sub.cursor >= sub.top + rows_h {
+                sub.top = sub.cursor + 1 - rows_h;
+            }
         }
         for (y, k) in (sub.top..sub.lines).take(rows_h).enumerate() {
             let lit = k == sub.cursor;

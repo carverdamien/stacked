@@ -91,6 +91,9 @@ pub struct Editor {
     under: Vec<String>,
     /// A line to write, not a comment: Enter is its caller's.
     single: bool,
+    /// How wide the text was last drawn inside the box, and how many of
+    /// its lines the box held: what the wheel scrolls it by (`scroll`).
+    shown: Cell<(usize, usize)>,
 }
 
 impl Editor {
@@ -112,6 +115,7 @@ impl Editor {
             attached: None,
             under: Vec::new(),
             single: false,
+            shown: Cell::new((0, 0)),
         }
     }
 
@@ -423,20 +427,48 @@ impl Editor {
         if self.ghosted() || !(1..=inner).contains(&x) || !(1..=text_h).contains(&y) {
             return;
         }
-        // The screen line clicked, among those `visual` folds the lines into.
-        let mut at = self.vtop.get() + y - 1;
+        self.put_cursor(self.vtop.get() + y - 1, x - 1, inner);
+        // A ctrl-k after the click cuts anew.
+        self.cutting = false;
+    }
+
+    /// The cursor on column `x` of screen line `at`, among those `visual`
+    /// folds the lines into at `inner` columns: at the end of its line past
+    /// it, at the end of the text past that.
+    fn put_cursor(&mut self, mut at: usize, x: usize, inner: usize) {
         let last = self.lines.len() - 1;
         (self.row, self.col) = (last, self.lines[last].len());
         for (row, line) in self.lines.iter().enumerate() {
             let pieces = line.len().div_ceil(inner).max(1);
             if at < pieces {
-                (self.row, self.col) = (row, (at * inner + x - 1).min(line.len()));
+                (self.row, self.col) = (row, (at * inner + x).min(line.len()));
                 break;
             }
             at -= pieces;
         }
-        // A ctrl-k after the click cuts anew.
-        self.cutting = false;
+    }
+
+    /// The box scrolled `n` lines down (up, below 0), as the wheel scrolls
+    /// it, as far as its last line on the box's bottom one, and no further
+    /// up than its first: what was closed here, while it shows, as ↑↓ do;
+    /// else the text, the cursor kept in the box, on its nearest line, at
+    /// its column there. Nothing before the box is drawn.
+    pub fn scroll(&mut self, n: isize) {
+        if self.ghosted() {
+            self.ghost_top.set(self.ghost_top.get().saturating_add_signed(n).min(self.ghost_end.get()));
+            return;
+        }
+        let (inner, text_h) = self.shown.get();
+        if inner == 0 || text_h == 0 {
+            return;
+        }
+        let (vis, cur_vrow, cur_vcol) = self.visual(inner);
+        let top = self.vtop.get().saturating_add_signed(n).min(vis.len().saturating_sub(text_h));
+        self.vtop.set(top);
+        let kept = cur_vrow.clamp(top, top + text_h - 1);
+        if kept != cur_vrow {
+            self.put_cursor(kept, cur_vcol, inner);
+        }
     }
 
     /// Draws the editor as a box of `w` by `h` at `(x, y)` of `area`: `title`
@@ -446,6 +478,7 @@ impl Editor {
     pub fn draw(&self, buf: &mut Buffer, area: Rect, x: usize, y: usize, w: usize, h: usize, title: &str, esc: &str) -> (u16, u16) {
         let (w, h) = (w.max(8), h.max(3));
         let (inner, text_h, under) = self.inside(w, h);
+        self.shown.set((inner, text_h));
         type Spans = Vec<(String, ratatui::style::Style)>;
         // Nothing written yet: what was closed here, dimmed, scrolled by
         // ↑↓ as far as its last line at the box's bottom, the cursor at its
@@ -606,6 +639,40 @@ mod tests {
         // Nothing written, Esc closes.
         let mut e = Editor::new("").with_ghost(vec!["a".into()]);
         assert_eq!(press(&mut e, KeyCode::Esc), Op::Close);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_box_as_far_as_its_ends_the_cursor_kept_in_it() {
+        let draw = |e: &Editor| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+            let area = buf.area;
+            let at = e.draw(&mut buf, area, 0, 0, 20, 5, "t", "esc: close");
+            (buf, at)
+        };
+        let mut e = Editor::new(&(1..=10).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n"));
+        // Before the box is drawn, nothing to scroll.
+        e.scroll(-3);
+        // In a box of 3 lines inside: the last three, the cursor at the end.
+        let (buf, at) = draw(&e);
+        assert_eq!((inside(&buf, 1), at), ("line 8".to_string(), (8, 3)));
+        // Five lines up: from line 3, the cursor kept in the box, on its last
+        // line, at its column there, the end of line 5.
+        e.scroll(-5);
+        let (buf, at) = draw(&e);
+        assert_eq!((inside(&buf, 1), inside(&buf, 3), at), ("line 3".to_string(), "line 5".to_string(), (7, 3)));
+        // No further up than its first line, nor down than its last on the
+        // box's bottom one.
+        e.scroll(-50);
+        assert_eq!(inside(&draw(&e).0, 1), "line 1");
+        e.scroll(50);
+        assert_eq!(inside(&draw(&e).0, 1), "line 8");
+        // What was closed here, while it shows: as ↑↓ scroll it.
+        let mut g = Editor::new("").with_ghost((1..=10).map(|n| format!("line {n}")).collect());
+        draw(&g);
+        g.scroll(3);
+        assert_eq!(inside(&draw(&g).0, 1), "line 4");
+        g.scroll(50);
+        assert_eq!(inside(&draw(&g).0, 1), "line 8");
     }
 
     #[test]

@@ -821,10 +821,20 @@ impl App {
         let rows = self.banner_rows(lines);
         let at = rows.iter().position(|&(i, _)| i == Some(self.banner_sel)).unwrap_or(0);
         let titled = if at > 0 && rows[at - 1].0.is_none() { at - 1 } else { at };
-        if titled < self.banner_top {
-            self.banner_top = titled;
-        } else if at >= self.banner_top + room {
-            self.banner_top = at + 1 - room;
+        // Open, over its line and its rows, the wheel scrolls it: by the
+        // lines it turned, as far as its last row on the bottom one; and
+        // since, until a key, it stays where the wheel left it, the line
+        // picked in sight or not.
+        self.scrolls_on(area, (0, 1, w, room + 1), Wheeled::Banner);
+        if let Some(n) = self.turned(Wheeled::Banner) {
+            self.banner_top = moved(self.banner_top, n, rows.len().saturating_sub(room));
+        }
+        if !self.free(Wheeled::Banner) {
+            if titled < self.banner_top {
+                self.banner_top = titled;
+            } else if at >= self.banner_top + room {
+                self.banner_top = at + 1 - room;
+            }
         }
         for (y, &(i, k)) in rows.iter().skip(self.banner_top).take(room).enumerate() {
             let Some(i) = i else {
