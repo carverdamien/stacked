@@ -195,8 +195,11 @@
   stack, of the patch's revision, with its choice, or into a new stack,
   and the stack's pull under way, reading Phabricator, waiting its turn
   or being made, its line's menu and its drop, the submit item as
-  its revision's status has it, the patch's `Phabricator` menu, and the
-  fetch, asked from a menu; `tui/compared.rs`, two
+  its revision's status has it, and the
+  fetch, asked from a menu; `tui/phab_menus.rs`, every `Phabricator`
+  menu made in one place, the stack's, a patch's and its line's: its
+  entry, its title, its items in their order and its note, with the
+  feature's and the settings' gates; `tui/compared.rs`, two
   versions of a text compared word by word where their lines wrap aside,
   as rows: a title and summary in the review of a submit, a reviewer's
   comment edited on Phabricator, or read again with its suggested edit,

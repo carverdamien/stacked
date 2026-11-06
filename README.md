@@ -361,8 +361,8 @@ With the `moz-phab` feature, stacked reads the revision each patch's
 moz-phab (or arc) keeps in `~/.arcrc`; curl makes the calls.
 
 stacked reads Phabricator only when you ask, never by itself:
-`Fetch the latest from Phabricator`, on the stack's menu or in a patch's
-`Phabricator` menu, reads every revision of the stack and stores what it
+`Fetch the latest from Phabricator`, in the stack's `Phabricator` menu or
+in a patch's, reads every revision of the stack and stores what it
 found in the database; a pull reads it too, and a submit what the
 database lacks of its revision. Each patch then
 shows its revision's status after its number, a letter (`[R]` Needs
@@ -379,6 +379,12 @@ Phabricator: D123456 · Needs Review · the diff differs · 2 new comments to pu
 
 Space on that line shows what differs, and Enter opens its menu.
 
+The stack's menu and each patch's end with `Phabricator`, which opens a
+menu of all you can do there with the stack or that patch: `the stack
+NAME on Phabricator`, `D123 on Phabricator`. Every such menu, and the
+line's, has its items in the same order: the submit, what differs, the
+pull, the drop of a pull waiting its turn, and the fetch.
+
 A patch whose revision is Accepted or Landed, as last fetched, should not
 change: whatever would give it another version (an undo or a redo, a
 version put back, a review closed, an edit by hand, asked about before
@@ -388,7 +394,7 @@ line, stacked asks on the terminal, and with no terminal it refuses. Moving
 or dropping such a patch asks nothing, and nor does a pull that brings it
 to Phabricator's own latest diff.
 
-- **Pulling.** `Pull from Phabricator`, on the stack's menu, or `stacked
+- **Pulling.** `Pull from Phabricator`, in the stack's `Phabricator` menu, or `stacked
   moz-phab pull NAME`, brings in what changed there: each revision's
   latest diff, title and summary that are no version of its patch stacked
   knows, as new versions; the open revisions the stack stacks on and does

@@ -1219,7 +1219,16 @@ ago as the minute goes by, nothing written nor read; the patch's
 naming none, with its submit and the fetch, its items not on the patch's
 menu itself, `?` saying what it opens and what the fetch does, the fetch
 one at a time, the bars saying it is fetching, the line's menu offering
-the same items directly, the stack's menu the fetch after the pull; what a
+the same items directly, the stack's menu its own `Phabricator` menu,
+titled for the stack, `?` saying what it opens, the fetch in it after the
+pull, neither of them on the stack's menu itself; every `Phabricator`
+menu made alike, the stack's, a patch's and its line's, the same entry, a
+line then `Phabricator`, titles ending ` on Phabricator`, the line's
+items and title those of the patch's menu, and in each the items in one
+order, the submit, what differs, the pull, the drop of the waiting pull,
+the fetch last; the stack's pull waiting its turn dropped from the
+stack's `Phabricator` menu, between the pull and the fetch, and not from
+a patch's; what a
 submit fetches first, nothing of its revision stored, the bottom line
 saying so, stored as a fetch stores it, its state, whether it is a draft
 and its repository with it, its raw diff, its comments, and when, though
@@ -1493,7 +1502,7 @@ bar, then by pgdn, by the wheel's ↓ after that key over the top bar, and
 by ↓, then up a line by the wheel over the box once the mouse moved, and, with
 moz-phab, the Phabricator line saying first that the revision is not
 fetched yet, nothing read as the page opens; then, fetched from the
-stack's menu, its item clicked, by a stand-in for its database, the status
+stack's `Phabricator` menu, its entry then its item clicked, by a stand-in for its database, the status
 of a patch's revision after its number, a letter, then its mark (`✗`, its
 diff otherwise) on the screen its Phabricator line says so, the next
 patch's title after the column all the same, expanded and listing files, a
@@ -1725,7 +1734,7 @@ with the effort it was asked at, and its landed work named with it, in
 the banner and its review, a turn of before as ever; with
 moz-phab, the Phabricator line saying first that the revision is not
 fetched yet, nothing read as the window opens; then, fetched from the
-stack's menu, its item clicked, by a stand-in for its database, the status
+stack's `Phabricator` menu, its entry then its item clicked, by a stand-in for its database, the status
 of a patch's revision after its number, a letter, then its mark (`✗`, its
 diff otherwise) on the screen its Phabricator line says so, the next
 patch's title after the column all the same, expanded and listing files, a

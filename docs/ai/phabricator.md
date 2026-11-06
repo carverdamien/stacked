@@ -4,8 +4,9 @@ What follows is built by default, with the `moz-phab` feature:
 `--no-default-features --features app,demo,try-push,web` builds stacked
 without it (Install).
 
-`stacked moz-phab pull NAME`, or the stack menu's `Pull from
-Phabricator`, pulls the stack from Phabricator, as one job held for one
+`stacked moz-phab pull NAME`, or `Pull from Phabricator` in the stack's
+own `Phabricator` menu (a line then `Phabricator`, at the end of a group
+of the stack's menu), pulls the stack from Phabricator, as one job held for one
 review: every revision its patches name in their `Differential
 Revision:` trailer (the settings can name another), with the revisions
 they stack on that the stack does not hold (the open parent of each,
@@ -75,8 +76,10 @@ patch 2, and what it brings then waits for your review`); chained
 (`agent.chain`), at once, from the stack that change makes, and reviewed
 after it. Waiting, it has a line of the banner (`◌ The pull from
 Phabricator, waiting its turn: the stack's revisions, with their parents
-and those stacked on top`), whose menu, and the stack's menu, have `Drop
-the waiting pull from Phabricator…`, which asks first; dropped, what it
+and those stacked on top`), whose menu, and the stack's own
+`Phabricator` menu, have `Drop the waiting pull from Phabricator…`, which
+asks first, as a patch's own `Phabricator` menu, and its line's, have it
+when it is a pull of that patch's revision; dropped, what it
 read stays stored, and nothing of it waits for your review; it is
 dropped only then (`the pull from Phabricator is reading Phabricator: it
 can be dropped once it waits its turn`, `the pull from Phabricator is

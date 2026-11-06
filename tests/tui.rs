@@ -19711,6 +19711,7 @@ fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
     gated_on_d12(&db, &phab, &go, &fail);
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "Phabricator");
     choose(&mut app, "Pull from Phabricator");
     // Under way at once, before a revision is read: its run written, its
     // line among the edits.
@@ -19743,6 +19744,7 @@ fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
     // A pull that fails: its line goes, its run failed, and why is said.
     fail.store(true, std::sync::atomic::Ordering::SeqCst);
     keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
+    choose(&mut app, "Phabricator");
     choose(&mut app, "Pull from Phabricator");
     assert_eq!(pulls(&app), 1);
     app.settle();
@@ -21557,9 +21559,16 @@ fn submitting_to_phabricator_is_on_a_patch_s_menu_with_moz_phab_and_reviews_from
         choose(&mut app, "Phabricator");
         assert!(offered(&app), "{:?}", items(&app));
     }
-    // Not on the stack's own menu: one patch at a time.
+    // Not on the stack's own menu, nor in its `Phabricator` menu: one patch
+    // at a time.
     keys(&mut app, &[KeyCode::Esc, KeyCode::Up, KeyCode::Char(' ')]);
-    assert!(!offered(&app) && !phabricator(&app), "{:?}", items(&app));
+    assert!(!offered(&app), "{:?}", items(&app));
+    assert_eq!(phabricator(&app), cfg!(feature = "moz-phab"), "{:?}", items(&app));
+    #[cfg(feature = "moz-phab")]
+    {
+        choose(&mut app, "Phabricator");
+        assert!(!offered(&app), "{:?}", items(&app));
+    }
     // Reviews from nowhere: nothing goes there either.
     #[cfg(feature = "moz-phab")]
     {
@@ -24324,6 +24333,7 @@ fn every_revision_is_fetched_in_a_few_calls_each_line_whole_at_once_and_read_aga
         p.revisions.get_mut(&12).unwrap().diffs.push(1500);
     }
     keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Phabricator");
     choose(&mut app, "Pull from Phabricator");
     app.settle();
     assert_eq!(app.status, "1 new version and 4 new comments from 3 revisions: they wait for your review");
@@ -24427,6 +24437,7 @@ fn a_patch_s_revision_is_pulled_alone_from_its_line_s_menu_what_it_brings_held_f
     // The stack's pull: every revision its patches name, D13's older title
     // taken as a new version of patch 3.
     keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Phabricator");
     choose(&mut app, "Pull from Phabricator");
     app.settle();
     assert_eq!(app.status, "1 new version from 3 revisions: it waits for your review");
@@ -24807,14 +24818,85 @@ fn the_patch_s_phabricator_menu_holds_its_items_about_phabricator_and_the_line_s
     assert_eq!(menu_title(&app), "Phabricator");
     assert_eq!(labels(&app), ["Submit to Phabricator as WIP", "Fetch the latest from Phabricator"]);
     keys(&mut app, &[KeyCode::Esc]);
-    // The stack's menu: the fetch, after the pull.
+    // The stack's menu: its own `Phabricator` menu, the last of its group,
+    // and neither the pull nor the fetch, which that menu holds, `?` saying
+    // so; in it, the fetch, after the pull.
     keys(&mut app, &[KeyCode::Home, KeyCode::Char(' ')]);
     let stack = labels(&app);
-    let at = stack.iter().position(|l| l == "Pull from Phabricator").unwrap_or_else(|| panic!("{stack:?}"));
-    assert_eq!(stack[at + 1], "Fetch the latest from Phabricator");
+    let at = stack.iter().position(|l| l == "Phabricator").unwrap_or_else(|| panic!("{stack:?}"));
+    assert_eq!((stack[at - 1].as_str(), stack[at + 1].as_str()), ("", ""), "{stack:?}");
+    assert!(!stack.iter().any(|l| l == "Pull from Phabricator" || l == "Fetch the latest from Phabricator"), "{stack:?}");
+    pick_item(&mut app, "Phabricator");
+    assert_eq!(
+        app.help()[0],
+        "Press Enter to open the menu of what can be done on Phabricator with the stack: pull it, drop the pull that waits its turn, and fetch the latest from Phabricator."
+    );
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(menu_title(&app), format!("the stack {} on Phabricator", app.stack));
+    assert_eq!(labels(&app), ["Pull from Phabricator", "Fetch the latest from Phabricator"]);
     choose(&mut app, "Fetch the latest from Phabricator");
     app.settle();
     assert_eq!((app.status.as_str(), phab.lock().unwrap().searched.len()), ("fetched the latest of D11 from Phabricator", searched + 3));
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn every_phabricator_menu_is_made_alike_its_entry_its_title_and_the_order_of_its_items() {
+    let (_tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), "Bug 2 - two", "Bug 3 - three"]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(11, "needs-review", "Bug 1 - one", &patch_of(&db, 0).diff)));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    fetched(&mut app);
+    let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    // Where an item of a Phabricator menu comes, by what it does: the
+    // submit, what differs, the pull, the drop of the waiting pull, the
+    // fetch.
+    let rank = |l: &str| {
+        [
+            l.starts_with("Submit to Phabricator") || l.starts_with("Update D"),
+            l.starts_with("What differs from"),
+            l.starts_with("Pull ") && l.ends_with("from Phabricator"),
+            l.starts_with("Drop the waiting pull"),
+            l == "Fetch the latest from Phabricator",
+        ]
+        .iter()
+        .position(|&b| b)
+    };
+    // A menu's entry, the same in the stack's menu and the patch's: a line,
+    // then `Phabricator`; what it opens, its title and its items.
+    let entry = |app: &mut App| -> (String, Vec<String>) {
+        keys(app, &[KeyCode::Char(' ')]);
+        let top = labels(app);
+        let at = top.iter().position(|l| l == "Phabricator").unwrap_or_else(|| panic!("{top:?}"));
+        assert_eq!(top[at - 1], "", "a line before it: {top:?}");
+        assert_eq!(top.iter().filter(|l| l.contains("Phabricator")).count(), 1, "nothing else about Phabricator: {top:?}");
+        choose(app, "Phabricator");
+        let opened = (menu_title(app), labels(app));
+        keys(app, &[KeyCode::Esc]);
+        opened
+    };
+    keys(&mut app, &[KeyCode::Home]);
+    let stack = entry(&mut app);
+    keys(&mut app, &[KeyCode::Down]);
+    let patch = entry(&mut app);
+    // The line's menu: the patch's items directly, under the same title.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up]);
+    assert!(app.on_line());
+    keys(&mut app, &[KeyCode::Enter]);
+    let line = (menu_title(&app), labels(&app).into_iter().filter(|l| rank(l).is_some()).collect::<Vec<_>>());
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((stack.0.as_str(), patch.0.as_str()), (format!("the stack {} on Phabricator", app.stack).as_str(), "D11 on Phabricator"));
+    assert_eq!(line, patch);
+    for (title, list) in [&stack, &patch, &line] {
+        assert!(title.ends_with(" on Phabricator"), "{title:?}");
+        let ranks: Vec<usize> = list.iter().map(|l| rank(l).unwrap_or_else(|| panic!("{l:?} is not one of a Phabricator menu's: {list:?}"))).collect();
+        assert!(ranks.windows(2).all(|w| w[0] < w[1]), "{title:?}: {list:?}");
+        assert_eq!(list.last().map(String::as_str), Some("Fetch the latest from Phabricator"), "{title:?}");
+    }
+    // Both of the stack's and of the patch's: a pull, and the fetch.
+    assert_eq!(stack.1, ["Pull from Phabricator", "Fetch the latest from Phabricator"]);
+    assert_eq!(patch.1[2..], ["Pull D11 from Phabricator", "Fetch the latest from Phabricator"]);
     stacked::phab::statuses_stand_in(&db, None);
 }
 
@@ -26460,6 +26542,7 @@ fn a_pull_turned_away_says_so_plainly_and_stores_nothing() {
     // From the editor too, said on the bottom line.
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Phabricator");
     choose(&mut app, "Pull from Phabricator");
     app.settle();
     assert_eq!(app.status, stacked::phab::TURNED_AWAY);
@@ -26518,6 +26601,7 @@ fn a_pull_waits_its_turn_as_an_edit_does_dropped_from_its_line_or_the_runs_else_
     // Pulled meanwhile: read, then waiting its turn, as an edit does; no
     // other pull of the stack while it waits.
     keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Phabricator");
     choose(&mut app, "Pull from Phabricator");
     app.settle();
     assert_eq!(
@@ -26789,6 +26873,7 @@ fn while_a_pull_reads_phabricator_the_stack_is_not_edited_by_hand_the_menus_and_
     // this process, held before anything of Phabricator is read.
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Phabricator");
     choose(&mut app, "Pull from Phabricator");
     hold.read(1);
     let run = last_pull(&db);
@@ -26921,6 +27006,19 @@ fn a_pull_says_where_it_is_reading_waiting_its_turn_or_being_made_a_reconcile_as
     assert_eq!(asked(&app).0, "pull from Phabricator, waiting its turn");
     assert_eq!(menu_note(&app), format!("The pull from Phabricator waits its turn: stacked makes it {waits}, and what it brings then waits for your review."));
     keys(&mut app, &[KeyCode::Esc]);
+    // Its drop in the stack's `Phabricator` menu, after the pull, before
+    // the fetch; a pull of the stack's, so not in a patch's.
+    (app.on_banner, app.focus, app.on_stack) = (false, Focus::List, true);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Phabricator");
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels, ["Pull from Phabricator", "Drop the waiting pull from Phabricator…", "Fetch the latest from Phabricator"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    (app.sel, app.on_stack) = (0, false);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Phabricator");
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Drop the waiting pull")), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
     // A reconcile with HEAD asked after it: it waits for the pull, and the
     // pull does not wait for it.
     Db::edit(&db, |d| {
@@ -26963,10 +27061,12 @@ fn a_pull_says_where_it_is_reading_waiting_its_turn_or_being_made_a_reconcile_as
     assert_eq!(app.status, "The pull from Phabricator is being made: what it brings then waits for your review");
     keys(&mut app, &[KeyCode::Delete]);
     assert_eq!(app.status, "the pull from Phabricator is being made, so it can no longer be dropped: what it brings waits for your review once it is made");
-    // Nor is it dropped from the stack's menu, which has no such item.
+    // Nor is it dropped from the stack's `Phabricator` menu, which has no
+    // such item.
     keys(&mut app, &[KeyCode::Esc]);
     (app.on_banner, app.focus, app.on_stack) = (false, Focus::List, true);
     keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Phabricator");
     assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Drop the waiting pull")), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);
     // Let go, it is filed: its change waits for your review, and the

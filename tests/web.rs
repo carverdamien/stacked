@@ -742,16 +742,19 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_brow
     // Nothing read as the page opens: the Phabricator line says that D11
     // is not fetched yet.
     until(&mut events, "the line, not fetched yet", |l| text(l).contains("Phabricator: D11 · not fetched yet:"));
-    // Fetched from the stack's menu, its item clicked.
+    // Fetched from the stack's `Phabricator` menu, its items clicked.
     ask(port, &host, &input, "k Up -\n");
     ask(port, &host, &input, "k c 20 -\n");
-    let item = "Fetch the latest from Phabricator";
-    let seen = until(&mut events, "the stack's menu", |l| text(l).contains(item));
-    let row = seen.last().unwrap();
-    let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
-    let said = text(row);
-    let x = said[..said.find(item).unwrap()].chars().count() + 1;
-    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    let click = |events: &mut BufReader<TcpStream>, what: &str, item: &str| {
+        let seen = until(events, what, |l| text(l).contains(item) && text(l).contains('│'));
+        let row = seen.last().unwrap();
+        let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
+        let said = text(row);
+        let x = said[..said.find(item).unwrap()].chars().count() + 1;
+        ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    };
+    click(&mut events, "the stack's menu", "Phabricator ");
+    click(&mut events, "the stack's Phabricator menu", "Fetch the latest from Phabricator");
     ask(port, &host, &input, "k Down -\n");
     // The Phabricator line over the message, in the middle; and, on the
     // rows under it as they come with it, a letter after the number, then

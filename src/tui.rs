@@ -64,6 +64,8 @@ mod interdiffs;
 pub use crate::config::{InterLayout, InterLines};
 pub mod notices;
 pub use notices::Notice;
+pub mod phab_menus;
+pub use phab_menus::PhabOf;
 pub mod places;
 pub mod protected_dialog;
 use protected_dialog::Again;
@@ -1633,9 +1635,10 @@ pub enum Action {
     /// latest version on Phabricator, on a screen of its own.
     #[cfg(feature = "moz-phab")]
     Differs,
-    /// The menu of every item of the patch picked about Phabricator.
+    /// The `Phabricator` menu of the stack, or of the patch picked: every
+    /// item about Phabricator of it (`phab_menus`).
     #[cfg(feature = "moz-phab")]
-    PhabMenu,
+    PhabMenu(PhabOf),
     /// Fetch the latest from Phabricator: every revision the stack's
     /// patches name, read and stored.
     #[cfg(feature = "moz-phab")]
@@ -1948,8 +1951,12 @@ fn about(action: &Action) -> String {
         #[cfg(feature = "moz-phab")]
         Action::Differs => "see what differs between Phabricator's latest version of this patch's revision and this version, on a screen of its own: the title and summary as a submit sends them, and the code".into(),
         #[cfg(feature = "moz-phab")]
-        Action::PhabMenu => {
+        Action::PhabMenu(PhabOf::Patch) => {
             "open the menu of what can be done on Phabricator with this patch: send it, see what differs from its revision, pull that revision, and fetch the latest from Phabricator".into()
+        }
+        #[cfg(feature = "moz-phab")]
+        Action::PhabMenu(PhabOf::Stack) => {
+            "open the menu of what can be done on Phabricator with the stack: pull it, drop the pull that waits its turn, and fetch the latest from Phabricator".into()
         }
         #[cfg(feature = "moz-phab")]
         Action::Fetch => {
@@ -7819,7 +7826,6 @@ impl App {
         // Why the items about Phabricator of the Phabricator line's menu
         // are grayed, if any is: HEAD holding the submit back, or a reason
         // of its own; what differs from its revision.
-        #[cfg(feature = "moz-phab")]
         let mut phab_why: Vec<String> = Vec::new();
         // What the menu says of the messages its item wraps, if it has one.
         let mut wraps: Option<String> = None;
@@ -7875,17 +7881,13 @@ impl App {
                     items.extend(waiting.and_then(|r| self.lint_stop_item(&r.id)));
                     items.push(Item::new("Tree of edits…", Action::Tree));
                     items.push(Item::new("History…", Action::History));
-                    #[cfg(feature = "moz-phab")]
-                    if self.cfg.reviews.source != crate::config::Source::None {
-                        items.push(Item::new(revisions::PULL, Action::Pull));
-                        items.push(Item::new(revisions::FETCH, Action::Fetch));
-                        // The stack's pull waiting its turn: dropped from the
-                        // queue.
-                        items.extend(self.pull_drop_item());
-                    }
                     if self.head_here().is_some() {
                         items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
                     }
+                    // Every item of the stack about Phabricator, in a menu of
+                    // its own (`phab_menus`): its pull, the drop of its pull
+                    // waiting its turn, and the fetch.
+                    self.phab_entry(&mut items, PhabOf::Stack);
                     items.push(Item::line());
                 }
                 if self.db.stacks().iter().any(|s| s.name != self.stack) {
@@ -7929,14 +7931,8 @@ impl App {
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
                 // Every item of this patch about Phabricator, in a menu of
-                // its own (`phab_menu`): its submit, what differs from its
-                // revision, the pull of that revision, and the fetch of the
-                // latest. Not while reviews come from nowhere.
-                #[cfg(feature = "moz-phab")]
-                if self.cfg.reviews.source != crate::config::Source::None {
-                    items.push(Item::line());
-                    items.push(Item::new("Phabricator", Action::PhabMenu));
-                }
+                // its own (`phab_menus`).
+                self.phab_entry(&mut items, PhabOf::Patch);
             }
             #[cfg(feature = "moz-phab")]
             (Screen::Submit, _) => {
@@ -7969,13 +7965,14 @@ impl App {
                     items.extend(self.comment_link_items(&c));
                 } else {
                     // On the Phabricator line: every item of the patch about
-                    // Phabricator, as its `Phabricator` menu has them.
-                    #[cfg(feature = "moz-phab")]
-                    if self.on_line() {
-                        if let Some(t) = self.line_title() {
-                            title = t;
-                        }
-                        phab_why = self.phab_items(&mut items);
+                    // Phabricator, as its `Phabricator` menu has them, under
+                    // the same title.
+                    if self.on_line()
+                        && let Some(p) = self.phab_items(PhabOf::Patch)
+                    {
+                        title = p.title;
+                        items.extend(p.items);
+                        phab_why = p.why;
                     }
                     if self.commentable().is_some() {
                         // A file's name: the file as a whole.
@@ -8049,7 +8046,6 @@ impl App {
         if items.iter().any(|i| i.enabled && i.choices.iter().any(|c| c.of == "edit" && c.list.iter().any(|ch| !ch.enabled))) {
             why.extend(self.here_edits_why().map(|w| format!("Editing in this checkout (pwd) is grayed: {w}.")));
         }
-        #[cfg(feature = "moz-phab")]
         why.extend(phab_why);
         let mut m = Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")));
         // What the item wrapping messages wraps, said whether or not an item
@@ -8928,7 +8924,7 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Action::Differs => self.open_differs(),
             #[cfg(feature = "moz-phab")]
-            Action::PhabMenu => self.mode = Mode::Menu(self.phab_menu()),
+            Action::PhabMenu(of) => self.mode = Mode::Menu(self.phab_menu(of)),
             #[cfg(feature = "moz-phab")]
             Action::Fetch => self.fetch_from_phabricator(),
             #[cfg(feature = "moz-phab")]

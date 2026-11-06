@@ -139,8 +139,8 @@ Phabricator line says how long ago that was (below); `↻`, that a submit
 changed the revision since, as stacked stored that too. stacked reads
 Phabricator only when you ask, never by itself, not even as the editor
 opens: a stack none of whose revisions was ever fetched has no letter at
-all. `Fetch the latest from Phabricator`, in the menu of the stack's
-header, in each patch's own `Phabricator` menu and in the menu of its
+all. `Fetch the latest from Phabricator`, in the stack's own
+`Phabricator` menu, in each patch's own `Phabricator` menu and in the menu of its
 Phabricator line (below), reads every revision the stack's patches name,
 away from the screen, over Conduit with the token a pull uses: all of
 them in one search (differential.revision.search; one for each
@@ -508,8 +508,19 @@ In the patches pane, a patch's menu has those items in a menu of their
 own, its `Phabricator` item, which opens a menu titled for the revision,
 `D12 on Phabricator`, or `Phabricator` for a patch that names none yet,
 which holds its submit and the fetch alone; none of them is on the
-patch's menu itself. An item grayed says why under the menu, as every
-item does. `?` says what the line says, and that the patches pane marks
+patch's menu itself. The menu of the stack's header ends its group the
+same way, a line then `Phabricator`, which opens the stack's own menu,
+titled `the stack NAME on Phabricator`: `Pull from Phabricator`, which
+pulls the stack (Phabricator, below), `Drop the waiting pull from
+Phabricator…` while the stack's pull waits its turn, and `Fetch the
+latest from Phabricator`. Every one of those menus is made in one place
+(`tui/phab_menus.rs`), so that they look the same: the same entry, the
+same shape of title, and their items in one order, each where it
+applies: the submit, what differs, the pull, the drop of the waiting
+pull, and the fetch. The drop is in a patch's menu, and its line's, too,
+when the pull waiting its turn is of that patch's revision. Under the
+menu, why the stack is read-only comes first, then why each grayed item
+is. An item grayed says why under the menu, as every item does. `?` says what the line says, and that the patches pane marks
 the same, what Space shows there, and what the menu has.
 
 What the lines say is read by `Fetch the latest from Phabricator`, with

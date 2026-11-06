@@ -424,11 +424,15 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_wind
     // Nothing read as the window opens: no letter yet, and the Phabricator
     // line says that D11 is not fetched yet.
     screen(&s, "the line, not fetched yet", |b| row(b, 2).starts_with("  1 Bug 1 - shout two") && find(b, "Phabricator: D11 · not fetched yet:").is_some());
-    // Fetched from the stack's menu, its item clicked.
+    // Fetched from the stack's `Phabricator` menu, its items clicked.
     press(&s, KeyCode::Up);
     press(&s, KeyCode::Char(' '));
+    let entry = "Phabricator ";
+    let menu = screen(&s, "the stack's menu", |b| find(b, "History…").is_some() && find(b, entry).is_some());
+    let (x, y) = find(&menu, entry).unwrap();
+    s.send(Input::Click { x, y, right: false });
     let item = "Fetch the latest from Phabricator";
-    let menu = screen(&s, "the stack's menu", |b| find(b, item).is_some());
+    let menu = screen(&s, "the stack's Phabricator menu", |b| find(b, "on Phabricator").is_some() && find(b, item).is_some());
     let (x, y) = find(&menu, item).unwrap();
     s.send(Input::Click { x, y, right: false });
     press(&s, KeyCode::Down);

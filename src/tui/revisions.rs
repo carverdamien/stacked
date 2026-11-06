@@ -16,8 +16,9 @@
 //! open but not in work, the update of its title, summary and parent alone,
 //! as that reading says what differs (`App::submit_item`). The patch's own
 //! `Phabricator` menu, and the line's, hold every item of the patch about
-//! Phabricator (`App::phab_items`): its submit, what differs, the pull of
-//! its reviews alone, and Fetch the latest from Phabricator, which reads
+//! Phabricator, put together as the stack's `Phabricator` menu's are
+//! (`phab_menus`): its submit, what differs, the pull of its reviews
+//! alone, and Fetch the latest from Phabricator, which reads
 //! every revision the stack's patches name, away from the screen, and
 //! stores it (`phab::fetch_latest`). Nothing of Phabricator is read by
 //! itself: only that, a pull, and a submit, which fetches what the
@@ -1006,7 +1007,7 @@ impl App {
     /// item's choice picks, the revisions stacked on it (`pull_choices`).
     /// Why the first is grayed, if it is, for the menu to say. No item,
     /// while reviews come from nowhere, or the patch names no revision.
-    fn revision_items(&self, items: &mut Vec<Item>) -> Option<String> {
+    pub(super) fn revision_items(&self, items: &mut Vec<Item>) -> Option<String> {
         if self.cfg.reviews.source == crate::config::Source::None {
             return None;
         }
@@ -1043,39 +1044,6 @@ impl App {
             ),
         ];
         Choices::new("pull", "with", list, self.db.choice(&self.stack, "pull"))
-    }
-
-    /// Every item of the patch the middle shows about Phabricator, in the
-    /// patch's `Phabricator` menu (`phab_menu`) and in the menu of its
-    /// Phabricator line alike: its submit (`submit_item`), what differs from
-    /// its revision and the pull of it (`revision_items`),
-    /// and Fetch the latest from Phabricator. Why those grayed are, for the
-    /// menu to say: HEAD holding the submit back, or a reason of its own,
-    /// then what differs. None while reviews come from nowhere.
-    pub(super) fn phab_items(&self, items: &mut Vec<Item>) -> Vec<String> {
-        if self.cfg.reviews.source == crate::config::Source::None {
-            return Vec::new();
-        }
-        let held = self.submit_held(self.sel);
-        let (item, submit_why) = self.submit_item(self.read_only().is_none() && held.is_none());
-        items.push(item);
-        let mut why: Vec<String> = held.into_iter().chain(submit_why).collect();
-        why.extend(self.revision_items(items));
-        items.push(Item::new(FETCH, Action::Fetch));
-        why
-    }
-
-    /// The patch's own `Phabricator` menu, from its menu in the patches
-    /// pane: every item of the patch picked about Phabricator
-    /// (`phab_items`), titled for its revision, `D123 on Phabricator`, or
-    /// `Phabricator` for a patch that names none yet; why each grayed item
-    /// is, under them, the stack being read-only first.
-    pub(super) fn phab_menu(&self) -> Menu {
-        let mut items = Vec::new();
-        let mut why: Vec<String> = self.read_only().map(String::from).into_iter().collect();
-        why.extend(self.phab_items(&mut items));
-        let title = self.line_title().unwrap_or_else(|| "Phabricator".into());
-        Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")))
     }
 
     /// The item of the patch's `Phabricator` menu, and of the menu of its
@@ -1130,13 +1098,6 @@ impl App {
             ),
         };
         (Item::new(label, Action::SubmitMeta).when(can && why.is_none()), why)
-    }
-
-    /// The title of the Phabricator line's menu, and of the patch's
-    /// `Phabricator` menu: its revision, on Phabricator.
-    pub(super) fn line_title(&self) -> Option<String> {
-        let (d, _) = crate::phab::revision_of(&self.shown_patch()?.message)?;
-        Some(format!("{d} on Phabricator"))
     }
 
     // -- reading Phabricator, when asked --------------------------------- //
@@ -1294,11 +1255,23 @@ impl App {
     }
 
     /// The item that drops the stack's pull from Phabricator waiting its
-    /// turn, asking first, if one waits.
+    /// turn, asking first, if one waits: whatever it was asked to pull, in
+    /// the stack's `Phabricator` menu, as in the banner's.
     pub(super) fn pull_drop_item(&self) -> Option<Item> {
         let r = review::pending(&self.db, &self.stack)?;
         let r = self.pull_waiting(&r.id)?;
         Some(Item::new("Drop the waiting pull from Phabricator…", Action::AskDropPull(r.id.clone())))
+    }
+
+    /// The same item (`pull_drop_item`), when the pull waiting its turn is
+    /// one of the revision of the patch of `change`, asked from that
+    /// patch's `Phabricator` menu or its line's: in those menus too.
+    pub(super) fn pull_drop_item_of(&self, change: &str) -> Option<Item> {
+        let r = review::pending(&self.db, &self.stack)?;
+        match &r.pull.as_deref()?.asked {
+            review::Asked::Patch { change: c, .. } if c == change => self.pull_drop_item(),
+            _ => None,
+        }
     }
 
     /// What pull `run`, under way, does, said: reading Phabricator, waiting
@@ -1591,8 +1564,9 @@ mod tests {
         // Nor does it fetch the latest.
         assert!(reaches_phabricator(&Action::Fetch));
         // What differs shows what is stored, and reads nothing; the menu of
-        // a patch's items opens all the same.
-        assert!(!reaches_phabricator(&Action::Differs) && !reaches_phabricator(&Action::PhabMenu));
+        // a patch's items, and of the stack's, opens all the same.
+        assert!(!reaches_phabricator(&Action::Differs) && !reaches_phabricator(&Action::PhabMenu(PhabOf::Patch)));
+        assert!(!reaches_phabricator(&Action::PhabMenu(PhabOf::Stack)));
     }
 
     #[test]
