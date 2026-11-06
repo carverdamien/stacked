@@ -14,7 +14,10 @@ for (const icon of document.querySelectorAll('link[rel=icon]')) icon.href = icon
 :root { --fg: #cccccc; --bg: #1e1e1e; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); }
 #screen { margin: 0; font: 14px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; user-select: none; cursor: default; }
-#screen div { height: 1.3em; overflow: hidden; }
+/* A row's height, and its line's, `--row`: a row's own height made whole
+   device pixels on each measure (`size`), so that every row is as tall as
+   the next and the n-th starts n rows down, as the mouse's cells say. */
+#screen div { height: var(--row, 1.3em); line-height: var(--row, 1.3); overflow: hidden; }
 .cur { outline: 1px solid var(--fg); outline-offset: -1px; }
 /* Over the screen while $EDITOR runs, or once the server is lost, the
    mouse over it, not the screen: what is done meanwhile is dropped. */
@@ -35,6 +38,9 @@ const token = new URLSearchParams(location.search).get('t');
 const screen = document.getElementById('screen'), gone = document.getElementById('gone'), editing = document.getElementById('editing');
 const enc = new TextEncoder(), dec = new TextDecoder();
 let w, cw = 8, ch = 16, pending = '', sending = false;
+// The screen's size this page last said to the server, and the one the
+// server last said the screen is, of this page's or of another tab's.
+let fits = '', drawn = '';
 // The server's lines (an EventSource), which the browser asks for again by
 // itself a second after it lost them, and each second after, at the same
 // address with the same token, saying the launch they came from; whether
@@ -244,16 +250,59 @@ const allow = e => {
 };
 addEventListener('mousedown', allow);
 addEventListener('keydown', allow);
-// A cell: a hundredth of a hundred characters' width, a row's height.
+// A cell, `cw` by `ch`, and how many fit the page, as the mouse reads them
+// (web/client.rs `cell`): a hundredth of a hundred characters' width, and
+// a row's height. A row is as tall as its line, 1.3 times the font, which
+// is seldom whole device pixels (18.2 at 14px): such rows are put on the
+// device's pixels each as it falls, some a pixel taller than the others,
+// and differently on a screen of another density. So a row is made the
+// whole device pixels nearest to its line, its height set (`--row`) on each
+// measure for the density the page is on now, and `ch` read back from a
+// row as the browser lays it out, which may round it again, so that the
+// n-th row starts n times `ch` down, exactly. A column needs none of this:
+// a row's characters follow each other at a fraction of a pixel's
+// precision, not each on whole pixels, so a long measure is exact enough.
 const size = () => {
+  const dpr = window.devicePixelRatio || 1;
   const row = document.createElement('div'), m = document.createElement('span');
   m.textContent = 'M'.repeat(100);
   row.append(m);
+  row.style.height = 'auto';
+  row.style.lineHeight = 'inherit';
   screen.append(row);
   cw = m.getBoundingClientRect().width / 100;
+  const line = row.getBoundingClientRect().height;
+  screen.style.setProperty('--row', Math.round(line * dpr) / dpr + 'px');
+  row.style.height = row.style.lineHeight = '';
   ch = row.getBoundingClientRect().height;
   row.remove();
   return [Math.floor(innerWidth / cw), Math.floor(innerHeight / ch)];
+};
+// The page measured again, and its size said only when it is not what this
+// page said last (`fits`): `cw` and `ch` change for the mouse all the same.
+// Looked at again, it says its size if the screen is another's (`drawn`),
+// as another tab, of another size, said its own since: the tab you look
+// at has the screen fit it. Never on the server's size alone, else two
+// tabs of two sizes would answer each other's for ever.
+const fit = (looked = false) => {
+  const now = size().join(' ');
+  if (now === fits && !(looked && drawn && now !== drawn)) return;
+  fits = now;
+  send('s ' + now);
+};
+// Measured again at most once a frame, however many asked meanwhile: the
+// window resized; the page moved to a screen of another density, which may
+// leave the page's size in CSS pixels as it was, and then the browser
+// fires no `resize`, though the font's metrics and the device pixels a row
+// is made of may differ there; a font loaded after the page was first
+// measured with another.
+let frame = 0;
+const refit = () => { frame ||= requestAnimationFrame(() => { frame = 0; fit(); }); };
+// The density the page is on: a query for it, which says once that it no
+// longer holds, then made again for the density the page is on then.
+const density = () => {
+  if (!window.matchMedia) return;
+  matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`).addEventListener('change', () => { refit(); density(); }, {once: true});
 };
 const heard = e => {
   const out = call(w.screen, e.data), nl = out.indexOf('\n');
@@ -267,6 +316,7 @@ const heard = e => {
     editing.style.display = 'none';
     gone.style.display = 'none';
     screen.replaceChildren(...Array.from({length: +b}, () => document.createElement('div')));
+    drawn = a + ' ' + b;
   }
   else if (op === 'row' && screen.children[+a]) screen.children[+a].innerHTML = out.slice(nl + 1);
   // The editor quit: the browser asks for the lines again each second, as
@@ -304,8 +354,9 @@ const heard = e => {
 // a launch that kept no address, gone for good once it quit.
 const connect = () => {
   const [cols, rows] = size();
+  fits = cols + ' ' + rows;
   const es = events = new EventSource(`/events?t=${token}&cols=${cols}&rows=${rows}` + (launch ? `&l=${launch}` : ''));
-  es.onopen = () => { connected = true; pending += `s ${size().join(' ')}\n`; flush(); };
+  es.onopen = () => { connected = true; fits = size().join(' '); pending += `s ${fits}\n`; flush(); };
   es.onmessage = heard;
   es.onerror = () => {
     connected = false;
@@ -372,7 +423,13 @@ WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instan
   // A paste: the keys that type it, but while the screen is the editor's,
   // its text as it is, for the server to bracket it if the editor asks.
   addEventListener('paste', e => { e.preventDefault(); send(call(terminal ? w.pasted : w.paste, e.clipboardData.getData('text'))); });
-  addEventListener('resize', () => send('s ' + size().join(' ')));
+  addEventListener('resize', refit);
+  density();
+  if (document.fonts) {
+    document.fonts.ready.then(refit, () => {});
+    document.fonts.addEventListener('loadingdone', refit);
+  }
+  addEventListener('focus', () => fit(true));
 });
 </script>
 </body>

@@ -455,7 +455,14 @@ wheel's small turns in pixels kept until they make a notch, 40 pixels, and
 each turn in lines or in pages a notch, whatever its size), carried by a
 hundred and ninety lines of JS (`web/index.html`), which tells whether the
 page is on a Mac (`navigator.userAgentData`'s platform, else
-`navigator.platform`); which reads the
+`navigator.platform`); which measures the page's cell, a row made the
+whole device pixels nearest to its line (`--row`) and its height read
+back as laid out, so that the mouse's cells are where the rows are, again
+at most once a frame as the window is resized, as the page moves to a
+screen of another density (a query for its `resolution`, as no `resize`
+may come), and as a font loads, saying its size only when the cells that
+fit it changed, or, looked at again, when another tab's size was said
+since, never in answer to the server's; which reads the
 wheel's mode before its turn: Firefox says a mouse's notches in lines only to a
 page that reads the mode first; which shows the notices, and asks the
 browser's permission for them; which rings the bell, its audio made on

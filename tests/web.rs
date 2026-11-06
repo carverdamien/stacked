@@ -310,9 +310,16 @@ fn the_page_s_tab_has_stacked_s_icon_asked_for_with_the_token_as_all_else_is() {
 /// through `t` and checks them with node's `assert`: the page's tab, two
 /// icons as its links say, the page not looked at; a canvas that draws
 /// nothing but writes what it was asked to draw in its data URL, for `t`
-/// to read back; pictures that load at once, from nowhere; no server, no
-/// network and no window. An exception, an assertion failed or a promise
-/// rejected that nothing handles fails it.
+/// to read back; pictures that load at once, from nowhere; a display, its
+/// density and its window's size set by `t` (`move`, `resize`), which lays
+/// out a row and a run of characters as a browser does, a row's height and
+/// a run's width in its layout's 64ths of a pixel, the font's advance the
+/// density's, as hinting makes it; frames run when `t` says (`frame`); the
+/// wasm, once `t` starts the page (`start`), a stand-in that makes the
+/// server's size line the page's and keeps the clicks, and lines sent to
+/// the server kept (`said`); no server, no network and no window. An
+/// exception, an assertion failed or a promise rejected that nothing
+/// handles fails it.
 const BROWSER: &str = r#"
 const vm = require('vm'), fs = require('fs'), assert = require('assert');
 process.on('unhandledRejection', e => { console.error('unhandled:', e); process.exit(1); });
@@ -325,8 +332,32 @@ const ofWindow = {}, ofDocument = {}, loaded = [], banners = [];
 let hidden = true, focused = false;
 const links = Array.from(page.matchAll(/<link rel="icon" type="image\/png" sizes="(\d+)x\d+" data-path="([^"]+)">/g),
   ([, px, path]) => ({dataset: {path}, href: '', getAttribute: n => (n === 'sizes' ? `${px}x${px}` : null)}));
-const element = () => ({style: {}, children: [], dataset: {}, textContent: '', append() {}, remove() {}, replaceChildren() {},
-  addEventListener() {}, getBoundingClientRect: () => ({width: 800, height: 16, left: 0, top: 0})});
+// The display: its density, the window's size in CSS pixels, a line's
+// height, 1.3 times the page's 14px font, and the font's advance at each
+// density.
+const display = {dpr: 1, width: 1200, height: 800, line: 18.2, advance: {1: 8.4}};
+const unit = v => Math.round(v * 64) / 64;
+const element = tag => {
+  const el = {tag, style: {setProperty(k, v) { this[k] = v; }}, children: [], dataset: {}, textContent: '', listeners: {}, parent: null,
+    append(...c) { for (const x of c) { x.parent = el; el.children.push(x); } },
+    remove() { if (el.parent) el.parent.children = el.parent.children.filter(x => x !== el); el.parent = null; },
+    replaceChildren(...c) { el.children = []; el.append(...c); },
+    addEventListener(type, f) { (el.listeners[type] ||= []).push(f); },
+    // A run of characters as wide as their advances; a row as tall as its
+    // own height, the screen's `--row` it is given, else its line's.
+    getBoundingClientRect() {
+      if (tag === 'span') return {width: unit(el.textContent.length * display.advance[display.dpr]), height: unit(display.line), left: 0, top: 0};
+      if (tag === 'div' && el.parent) {
+        const row = el.parent.style['--row'];
+        const h = el.style.height === 'auto' || !row ? display.line : parseFloat(row);
+        return {width: display.width, height: unit(h), left: 0, top: 0};
+      }
+      return {width: 800, height: 16, left: 0, top: 0};
+    },
+  };
+  return el;
+};
+const ids = {};
 const canvas = () => {
   const drawn = {width: 0, fills: [], strokes: [], texts: [], images: []};
   const g = {
@@ -350,19 +381,54 @@ const document = {
   get hidden() { return hidden; },
   hasFocus: () => focused,
   querySelectorAll: q => (q === 'link[rel=icon]' ? links : []),
-  getElementById: element,
-  createElement: tag => (tag === 'canvas' ? canvas() : element()),
+  getElementById: id => (ids[id] ||= element('pre')),
+  createElement: tag => (tag === 'canvas' ? canvas() : element(tag)),
   addEventListener: on(ofDocument), removeEventListener: off(ofDocument),
 };
+// The queries for a density the page made, each told once that it no
+// longer holds; the frames asked for; the events asked for; what the page
+// sent the server; and the wasm, made once the page is started.
+let queries = [], frames = [], frameId = 0, wasm;
+const events = [], posted = [], clicks = [], ofFonts = {};
+const matchMedia = q => ({
+  addEventListener(type, f) { queries.push([parseFloat(q.match(/resolution: ([\d.]+)dppx/)[1]), f]); },
+});
+class EventSource {
+  constructor(url) { this.url = url; this.readyState = 1; events.push(this); }
+  close() {}
+}
+EventSource.CLOSED = 2;
 const window = {
   document, navigator, Image, URLSearchParams, TextEncoder, TextDecoder, performance, queueMicrotask, setTimeout, console, Buffer,
   location: {search: '?t=token', reload() {}},
+  devicePixelRatio: display.dpr, innerWidth: display.width, innerHeight: display.height, matchMedia, EventSource,
+  requestAnimationFrame: f => { frames.push(f); return ++frameId; },
   sessionStorage: {getItem: () => null, setItem() {}},
   addEventListener: on(ofWindow), removeEventListener: off(ofWindow),
-  fetch: () => new Promise(() => {}),
+  fetch: (url, o) => (url.startsWith('/input') ? (posted.push(o.body), Promise.resolve({})) : new Promise(() => {})),
   focus() {},
 };
 window.window = window;
+let fontsReady;
+document.fonts = {ready: new Promise(r => { fontsReady = r; }), addEventListener: on(ofFonts)};
+// The wasm's stand-in: a line of the server's sizing the screen made the
+// page's (`size COLS ROWS`), any other nothing; a click kept as the page
+// gives it; all else nothing.
+const exports = () => {
+  const memory = {buffer: new ArrayBuffer(4096)}, OUT = 2048;
+  const give = text => { const b = new TextEncoder().encode(text); new Uint8Array(memory.buffer, OUT, b.length).set(b); return b.length; };
+  const nothing = () => 0;
+  return {
+    memory, alloc: () => 0, out: () => OUT,
+    screen: (p, n) => {
+      const [op, c, r] = new TextDecoder().decode(new Uint8Array(memory.buffer, p, n)).split(' ');
+      return op === 's' ? give(`size ${c} ${r}`) : 0;
+    },
+    click: (x, y, cw, ch, right) => { clicks.push({x, y, cw, ch, right}); return 0; },
+    key: nothing, moved: nothing, dragged: nothing, up: nothing, wheel: nothing, left: nothing, blur: nothing, focus: nothing,
+    paste: nothing, pasted: nothing,
+  };
+};
 // Node's assert, but for values of two realms, the page's and node's own,
 // whose arrays it would never find equal: compared as JSON.
 const check = (ok, why) => assert(ok, why);
@@ -383,6 +449,51 @@ const t = {
   focus() { focused = true; fire(ofWindow, 'focus'); },
   blur() { focused = false; fire(ofWindow, 'blur'); },
   look() { this.show(); this.focus(); },
+  display, events, clicks,
+  // The page started as the browser starts it: its wasm made, its events
+  // asked for and opened, the fonts it had loaded.
+  async start() {
+    wasm({exports: exports()});
+    await t.settle();
+    events[0].onopen();
+    fontsReady();
+    await t.settle();
+  },
+  // The frame the browser draws next: what the page asked to run there run.
+  async frame() {
+    const now = frames;
+    frames = [];
+    for (const f of now) f(performance.now());
+    await t.settle();
+  },
+  // The lines the page sent the server since this was last asked.
+  said() { return posted.splice(0).join('').split('\n').filter(l => l); },
+  // The window moved to a screen of density `dpr`, its font's advance
+  // `advance` there, its size in CSS pixels as it was: no resize, but each
+  // query for another density told so.
+  move(dpr, advance) {
+    display.dpr = window.devicePixelRatio = dpr;
+    display.advance[dpr] = advance;
+    const told = queries.filter(([d]) => d !== dpr);
+    queries = queries.filter(([d]) => d === dpr);
+    for (const [, f] of told) f({type: 'change'});
+  },
+  resize(width, height) {
+    display.width = window.innerWidth = width;
+    display.height = window.innerHeight = height;
+    fire(ofWindow, 'resize');
+  },
+  // A font loaded, its advance `advance` at the density the page is on.
+  fontLoaded(advance) {
+    display.advance[display.dpr] = advance;
+    fire(ofFonts, 'loadingdone');
+  },
+  // The server's line `line` read by the page.
+  heard(line) { events[0].onmessage({data: line, target: events[0]}); },
+  // A left click at `(x, y)` on the screen.
+  click(x, y) {
+    for (const f of document.getElementById('screen').listeners.mousedown || []) f({button: 0, clientX: x, clientY: y, preventDefault() {}});
+  },
   away() { this.blur(); this.hide(); },
   // Banners allowed, made as the page asks, kept.
   allow() {
@@ -392,7 +503,9 @@ const t = {
 };
 window.t = t;
 vm.createContext(window);
-vm.runInContext('globalThis.WebAssembly = {instantiateStreaming: () => new Promise(() => {})};', window);
+// Never made, unless `t` starts the page.
+window.made = f => { wasm = f; };
+vm.runInContext('globalThis.WebAssembly = {instantiateStreaming: () => new Promise(r => made(instance => r({instance})))};', window);
 for (const s of scripts) vm.runInContext(s, window);
 vm.runInContext(`(async () => {\n${process.env.STACKED_SCENARIO}\n})()`, window).then(
   () => t.settle().then(() => console.log('ok')),
@@ -555,6 +668,137 @@ fn an_installed_app_s_badge_says_the_count_where_the_browser_has_one_and_without
         t.look();
         await t.settle();
         assert.deepStrictEqual(t.icons(), t.plain);
+        "#,
+    );
+}
+
+#[test]
+fn the_page_moved_to_a_screen_of_another_density_without_a_resize_measures_itself_again_and_says_its_new_size_once() {
+    in_the_page(
+        r#"
+        const {assert} = t;
+        // At 1x, the font's advance 8.4 and its line 18.2: rows of 18 pixels,
+        // 142 by 44 cells in 1200 by 800, asked for and said as the events
+        // open; the fonts loaded as they were measured, nothing more.
+        await t.start();
+        assert(t.events[0].url.includes('&cols=142&rows=44'), t.events[0].url);
+        assert.deepStrictEqual(t.said(), ['s 142 44']);
+        await t.frame();
+        assert.deepStrictEqual(t.said(), []);
+        assert.strictEqual(document.getElementById('screen').style['--row'], '18px');
+        // Moved to a 2x screen, its size in CSS pixels the same, where the
+        // font's advance is 8.5: no resize, measured again in the next
+        // frame, and said once.
+        t.move(2, 8.5);
+        assert.deepStrictEqual(t.said(), []);
+        await t.frame();
+        assert.deepStrictEqual(t.said(), ['s 141 44']);
+        await t.frame();
+        assert.deepStrictEqual(t.said(), []);
+        // Back, the query made again for 2x tells so too.
+        t.move(1, 8.4);
+        await t.frame();
+        assert.deepStrictEqual(t.said(), ['s 142 44']);
+        // At 1.25x, 18.2 is 22.75 device pixels: a row is made 23, 18.4
+        // pixels, which the layout keeps as 18.40625, fewer rows fitting.
+        t.move(1.25, 8.4);
+        await t.frame();
+        assert.deepStrictEqual(t.said(), ['s 142 43']);
+        assert.strictEqual(document.getElementById('screen').style['--row'], '18.4px');
+        assert.deepStrictEqual([cw, ch], [8.4, 18.40625]);
+        "#,
+    );
+}
+
+#[test]
+fn an_unchanged_grid_says_nothing_and_several_resizes_in_a_frame_say_the_size_once() {
+    in_the_page(
+        r#"
+        const {assert} = t;
+        await t.start();
+        await t.frame();
+        assert.deepStrictEqual(t.said(), ['s 142 44']);
+        // Three resizes, a font loaded and a move in one frame: measured
+        // once, the last size said.
+        t.resize(1000, 700);
+        t.resize(1100, 750);
+        t.fontLoaded(8.4);
+        t.move(2, 8.4);
+        t.resize(1210, 800);
+        assert.deepStrictEqual(t.said(), []);
+        await t.frame();
+        assert.deepStrictEqual(t.said(), ['s 144 44']);
+        // Resized, and a font of another advance, but the same cells fit:
+        // nothing said, the cell's size changed for the mouse all the same.
+        t.resize(1212, 805);
+        await t.frame();
+        t.fontLoaded(8.41);
+        await t.frame();
+        assert.deepStrictEqual(t.said(), []);
+        assert.deepStrictEqual([cw, ch], [8.41, 18]);
+        "#,
+    );
+}
+
+#[test]
+fn a_font_loaded_after_the_page_was_measured_measures_it_again() {
+    in_the_page(
+        r#"
+        const {assert} = t;
+        await t.start();
+        await t.frame();
+        assert.deepStrictEqual(t.said(), ['s 142 44']);
+        t.fontLoaded(8);
+        await t.frame();
+        assert.deepStrictEqual(t.said(), ['s 150 44']);
+        "#,
+    );
+}
+
+#[test]
+fn a_click_after_a_move_to_a_screen_of_another_density_is_on_the_cell_the_display_shows_there() {
+    in_the_page(
+        r#"
+        const {assert} = t;
+        await t.start();
+        await t.frame();
+        // At 1.25x, the font's advance 8.4375 and a row 18.40625 pixels:
+        // the middle of the cell of column 130, row 30, as the display lays
+        // it out, is clicked with the cell's size there, on that cell, as
+        // web/client.rs `cell` reads it; with the size at 1x, it was not.
+        t.move(1.25, 8.4375);
+        await t.frame();
+        const [x, y] = [130.5 * 8.4375, 30.5 * 18.40625];
+        t.click(x, y);
+        const c = t.clicks.pop();
+        assert.deepStrictEqual([Math.floor(c.x / c.cw), Math.floor(c.y / c.ch)], [130, 30]);
+        assert(Math.floor(x / 8.4) !== 130 && Math.floor(y / 18) !== 30, 'the size at 1x clicks the cell anyway');
+        "#,
+    );
+}
+
+#[test]
+fn a_tab_looked_at_again_says_its_size_if_another_tab_s_was_said_since_and_never_on_the_server_s_size_alone() {
+    in_the_page(
+        r#"
+        const {assert} = t;
+        await t.start();
+        await t.frame();
+        assert.deepStrictEqual(t.said(), ['s 142 44']);
+        // Another tab's size, the screen sized so: nothing said in answer.
+        t.heard('s 100 30');
+        await t.frame();
+        assert.deepStrictEqual(t.said(), []);
+        // This tab looked at again: its own size said.
+        t.focus();
+        await t.settle();
+        assert.deepStrictEqual(t.said(), ['s 142 44']);
+        // Looked at again, the screen its size: nothing.
+        t.heard('s 142 44');
+        t.blur();
+        t.focus();
+        await t.settle();
+        assert.deepStrictEqual(t.said(), []);
         "#,
     );
 }
