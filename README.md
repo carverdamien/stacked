@@ -406,6 +406,9 @@ moved, the lines it adds and removes and their context the same), it is no
 change; one whose diff has to change (a line of its context, a conflict
 resolved) is asked about.
 
+- **Opening a revision.** `Open D123 in your browser`, first in a
+  patch's `Phabricator` menu, opens the revision its `Differential
+  Revision:` trailer names in your browser.
 - **Pulling.** `Pull from Phabricator`, in the stack's `Phabricator` menu, or `stacked
   moz-phab pull NAME`, brings in what changed there: each revision's
   latest diff, title and summary that are no version of its patch stacked

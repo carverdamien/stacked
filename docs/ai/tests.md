@@ -1246,8 +1246,13 @@ pull, neither of them on the stack's menu itself; every `Phabricator`
 menu made alike, the stack's, a patch's and its line's, the same entry, a
 line then `Phabricator`, titles ending ` on Phabricator`, the line's
 items and title those of the patch's menu, and in each the items in one
-order, the submit, what differs, the pull, the drop of the waiting pull,
-the fetch last; the stack's pull waiting its turn dropped from the
+order, the opening of the revision in your browser first, the submit,
+what differs, the pull, the drop of the waiting pull, the fetch last; a
+patch's `Phabricator` menu opening its revision in your browser first,
+`Open D123 in your browser`, its link exactly, by the stand-in that opens
+links, never a browser, the bottom line saying so, offered while the stack
+is read-only, nothing fetched and nothing written, and neither in the
+stack's menu nor in that of a patch naming no revision; the stack's pull waiting its turn dropped from the
 stack's `Phabricator` menu, between the pull and the fetch, and not from
 a patch's; what a
 submit fetches first, nothing of its revision stored, the bottom line

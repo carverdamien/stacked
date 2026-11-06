@@ -1977,7 +1977,7 @@ fn about(action: &Action) -> String {
         Action::Differs => "see what differs between Phabricator's latest version of this patch's revision and this version, on a screen of its own: the title and summary as a submit sends them, and the code".into(),
         #[cfg(feature = "moz-phab")]
         Action::PhabMenu(PhabOf::Patch) => {
-            "open the menu of what can be done on Phabricator with this patch: send it, see what differs from its revision, pull that revision, and fetch the latest from Phabricator".into()
+            "open the menu of what can be done on Phabricator with this patch: open its revision in your browser, send it, see what differs from its revision, pull that revision, and fetch the latest from Phabricator".into()
         }
         #[cfg(feature = "moz-phab")]
         Action::PhabMenu(PhabOf::Stack) => {

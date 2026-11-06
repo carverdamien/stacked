@@ -494,7 +494,12 @@ the line says it once the revision is fetched and compared. Space there
 marks nothing read, even in the reading mode, and opens no menu: Enter
 opens it, titled `D12 on Phabricator`. Its first items are every item of
 the patch about Phabricator, as the patch's own `Phabricator` menu holds
-them (below): the patch's submit, `Submit to Phabricator as WIP`, or, for
+them (below): `Open D12 in your browser`, which opens the revision's
+link, as its `Differential Revision:` trailer gives it, in your browser,
+as a link of the message opens (the bottom line says what came of it),
+offered while the stack is read-only and before any fetch, as it changes
+nothing and reads nothing of Phabricator; the patch's submit, `Submit to
+Phabricator as WIP`, or, for
 a revision open but not in work, the update of its title, summary and
 parent alone, which the line's comparison names, offers or grays
 (`Update D12 on Phabricator: its title and summary`, Submitting a patch,
@@ -507,7 +512,8 @@ Phabricator` (above).
 In the patches pane, a patch's menu has those items in a menu of their
 own, its `Phabricator` item, which opens a menu titled for the revision,
 `D12 on Phabricator`, or `Phabricator` for a patch that names none yet,
-which holds its submit and the fetch alone; none of them is on the
+which holds its opening in your browser while it names a revision, its
+submit and the fetch alone; none of them is on the
 patch's menu itself. The menu of the stack's header ends its group the
 same way, a line then `Phabricator`, which opens the stack's own menu,
 titled `the stack NAME on Phabricator`: `Pull from Phabricator`, which
@@ -516,8 +522,10 @@ Phabricator…` while the stack's pull waits its turn, and `Fetch the
 latest from Phabricator`. Every one of those menus is made in one place
 (`tui/phab_menus.rs`), so that they look the same: the same entry, the
 same shape of title, and their items in one order, each where it
-applies: the submit, what differs, the pull, the drop of the waiting
-pull, and the fetch. The drop is in a patch's menu, and its line's, too,
+applies: the opening of the patch's revision in your browser, the
+submit, what differs, the pull, the drop of the waiting pull, and the
+fetch. The opening is in a patch's menu, and its line's, alone, and only
+while the patch names a revision. The drop is in a patch's menu, and its line's, too,
 when the pull waiting its turn is of that patch's revision. Under the
 menu, why the stack is read-only comes first, then why each grayed item
 is. An item grayed says why under the menu, as every item does. `?` says what the line says, and that the patches pane marks

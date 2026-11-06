@@ -387,7 +387,12 @@ A line of a commit message that names a bug (`Bug 123`), or the revision
 (`Differential Revision:`), opens it in your browser: `o` there, or the
 line's `Open bug 123 in your browser` (The editor, above), the bug on
 Bugzilla, `reviews.bugzilla` (Settings, below). A line of what a comment
-says opens them from its menu too (Writing comments, above).
+says opens them from its menu too (Writing comments, above). A patch's
+`Phabricator` menu, and the menu of its Phabricator line, open its
+revision first, `Open D123 in your browser`, as the line of its trailer
+does, the link as the trailer gives it, while the stack is read-only too
+and before any fetch: it changes nothing and reads nothing of
+Phabricator. The stack's `Phabricator` menu has no such item.
 
 The patches pane shows the status of each patch's revision after its number
 (`[W]`: The editor, above), as `Fetch the latest from Phabricator` read and

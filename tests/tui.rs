@@ -24169,11 +24169,17 @@ fn space_on_the_phabricator_line_shows_what_differs_on_a_screen_of_its_own_esc_c
     // what differs from there too.
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(menu_title(&app), "D12 on Phabricator");
-    let first: Vec<(String, bool)> = ["Submit to Phabricator as WIP", "What differs from D12 on Phabricator…", "Pull D12 from Phabricator", "Fetch the latest from Phabricator"]
-        .iter()
-        .map(|l| (l.to_string(), true))
-        .collect();
-    assert_eq!(items(&app)[..4], first);
+    let first: Vec<(String, bool)> = [
+        "Open D12 in your browser",
+        "Submit to Phabricator as WIP",
+        "What differs from D12 on Phabricator…",
+        "Pull D12 from Phabricator",
+        "Fetch the latest from Phabricator",
+    ]
+    .iter()
+    .map(|l| (l.to_string(), true))
+    .collect();
+    assert_eq!(items(&app)[..5], first);
     choose(&mut app, "What differs from D12 on Phabricator…");
     assert_eq!(differs_seen(&mut app).map(|(t, _)| t).as_deref(), Some("D12 on Phabricator, then patch 2 as it is"));
     keys(&mut app, &[KeyCode::Esc]);
@@ -24222,7 +24228,8 @@ fn what_differs_is_offered_on_the_line_s_menu_and_the_patch_s_grayed_until_it_is
     assert_eq!(app.screen, Screen::Main);
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(menu_title(&app), "D11 on Phabricator");
-    assert_eq!(items(&app)[1..3], [view.clone(), pull.clone()]);
+    assert_eq!(items(&app)[0], ("Open D11 in your browser".to_string(), true));
+    assert_eq!(items(&app)[2..4], [view.clone(), pull.clone()]);
     assert_eq!(menu_note(&app), grayed);
     keys(&mut app, &[KeyCode::Esc, KeyCode::Left]);
     assert_eq!(app.focus, Focus::List);
@@ -24939,6 +24946,7 @@ fn the_patch_s_phabricator_menu_holds_its_items_about_phabricator_and_the_line_s
     fetched(&mut app);
     let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
     let held = [
+        "Open D11 in your browser",
         "Update D11 on Phabricator: its title, summary and parent",
         "What differs from D11 on Phabricator…",
         "Pull D11 from Phabricator",
@@ -24951,12 +24959,13 @@ fn the_patch_s_phabricator_menu_holds_its_items_about_phabricator_and_the_line_s
     assert!(top.contains(&"Phabricator".to_string()), "{top:?}");
     assert!(!top.iter().any(|l| held.contains(&l.as_str()) || l.starts_with("Submit to Phabricator")), "{top:?}");
     // `?` on it says what it opens; Enter opens it, titled for the
-    // revision: the submit, as the status picks it, what differs, the pull
-    // of its reviews and the fetch, grayed items saying why.
+    // revision: the opening of the revision in your browser, the submit, as
+    // the status picks it, what differs, the pull of its reviews and the
+    // fetch, grayed items saying why.
     pick_item(&mut app, "Phabricator");
     assert_eq!(
         app.help()[0],
-        "Press Enter to open the menu of what can be done on Phabricator with this patch: send it, see what differs from its revision, pull that revision, and fetch the latest from Phabricator."
+        "Press Enter to open the menu of what can be done on Phabricator with this patch: open its revision in your browser, send it, see what differs from its revision, pull that revision, and fetch the latest from Phabricator."
     );
     key(&mut app, KeyCode::Enter);
     assert_eq!(menu_title(&app), "D11 on Phabricator");
@@ -24984,7 +24993,7 @@ fn the_patch_s_phabricator_menu_holds_its_items_about_phabricator_and_the_line_s
     assert!(app.on_line());
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(menu_title(&app), "D11 on Phabricator");
-    assert_eq!(labels(&app)[..4], held);
+    assert_eq!(labels(&app)[..5], held);
     choose(&mut app, "Fetch the latest from Phabricator");
     app.settle();
     assert_eq!((app.status.as_str(), phab.lock().unwrap().searched.len()), ("fetched the latest of D11 from Phabricator", searched + 2));
@@ -25027,10 +25036,11 @@ fn every_phabricator_menu_is_made_alike_its_entry_its_title_and_the_order_of_its
     fetched(&mut app);
     let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
     // Where an item of a Phabricator menu comes, by what it does: the
-    // submit, what differs, the pull, the drop of the waiting pull, the
-    // fetch.
+    // opening of the revision, the submit, what differs, the pull, the drop
+    // of the waiting pull, the fetch.
     let rank = |l: &str| {
         [
+            l.starts_with("Open D") && l.ends_with(" in your browser"),
             l.starts_with("Submit to Phabricator") || l.starts_with("Update D"),
             l.starts_with("What differs from"),
             l.starts_with("Pull ") && l.ends_with("from Phabricator"),
@@ -25073,8 +25083,78 @@ fn every_phabricator_menu_is_made_alike_its_entry_its_title_and_the_order_of_its
     }
     // Both of the stack's and of the patch's: a pull, and the fetch.
     assert_eq!(stack.1, ["Pull from Phabricator", "Fetch the latest from Phabricator"]);
-    assert_eq!(patch.1[2..], ["Pull D11 from Phabricator", "Fetch the latest from Phabricator"]);
+    assert_eq!(patch.1[0], "Open D11 in your browser", "first, the patch's revision opened");
+    assert_eq!(patch.1[3..], ["Pull D11 from Phabricator", "Fetch the latest from Phabricator"]);
     stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_patch_s_phabricator_menu_opens_its_revision_in_your_browser_first_read_only_and_never_fetched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let n = number_of(&here);
+    // The test's own link, which no other test opens.
+    let url = format!("https://phabricator.example.com/{here}/D{n}");
+    let db = tmp.path().join("db.jsonl");
+    // As a stacked from before the check wrote it: no base, so read-only.
+    let patches: Vec<stacked::db::Patch> = [format!("Bug 1 - one\n\nDifferential Revision: {url}"), "Bug 2 - two".to_string()]
+        .iter()
+        .zip(["one", "two"])
+        .map(|(message, f)| {
+            stacked::ops::new_patch(stacked::mbox::Draft {
+                message: message.clone(),
+                diff: format!("diff --git a/{f} b/{f}\nnew file mode 100644\n--- /dev/null\n+++ b/{f}\n@@ -0,0 +1 @@\n+{f}\n"),
+                author: Some("A <a@b>".into()),
+                ..Default::default()
+            })
+        })
+        .collect();
+    let mut recs: Vec<stacked::db::Record> = patches.iter().cloned().map(stacked::db::Record::Patch).collect();
+    recs.push(stacked::db::Record::Stack(stacked::db::Stack {
+        name: "s".into(),
+        patches: patches.iter().map(|p| p.id.clone()).collect(),
+        base: None,
+        repo: None,
+        parent: None,
+        op: "from before".into(),
+        time: 0,
+    }));
+    Db::append(&db, &recs).unwrap();
+    let before = std::fs::read(&db).unwrap();
+    let mut app = open(&db).unwrap();
+    assert!(app.read_only().is_some());
+    let item = format!("Open D{n} in your browser");
+    // Not in the stack's submenu.
+    keys(&mut app, &[KeyCode::Home]);
+    open_phab_menu(&mut app);
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Open ")), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Not in the submenu of a patch that names no revision.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    open_phab_menu(&mut app);
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Open ")), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // First in the submenu of the patch naming it, before the submit, and
+    // offered though the stack is read-only, nothing fetched.
+    keys(&mut app, &[KeyCode::Up]);
+    open_phab_menu(&mut app);
+    assert_eq!(menu_title(&app), format!("D{n} on Phabricator"));
+    let all = items(&app);
+    assert_eq!(all[0], (item.clone(), true), "{all:?}");
+    assert!(all[1].0.starts_with("Update D") || all[1].0.starts_with("Submit to Phabricator"), "{all:?}");
+    assert!(menu_note(&app).starts_with("read-only: "), "{}", menu_note(&app));
+    assert_eq!(app.help()[0], format!("Press Enter to open {url} in your browser."));
+    // Chosen, the revision's link is opened, by the stand-in and never a
+    // browser, and the bottom line says what came of it.
+    assert_eq!(stacked::refs::opener(), Some(fake_opener()));
+    choose(&mut app, &item);
+    assert_eq!(app.status, format!("opening {url}…"));
+    app.settle();
+    assert_eq!(app.status, format!("opened {url} in your browser"));
+    assert!(opened(&url));
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
 }
 
 #[cfg(feature = "moz-phab")]

@@ -6,7 +6,8 @@
 //! what it is of: `D123 on Phabricator` for a patch's revision,
 //! `Phabricator` for a patch that names none yet, `the stack NAME on
 //! Phabricator` for the stack (`App::phab_title`). Its items come in one
-//! order, each where it applies: the submit, what differs, the pull, the
+//! order, each where it applies: for a patch naming its revision, Open D123
+//! in your browser, then the submit, what differs, the pull, the
 //! drop of the pull waiting its turn, and Fetch the latest from
 //! Phabricator. Its note says why the stack is read-only first, then why
 //! each grayed item is. None of it built without the `moz-phab` feature,
@@ -53,7 +54,8 @@ impl App {
     /// The items of the Phabricator submenu `of`, in their order, under its
     /// title, with why those grayed are: for the stack, its pull, the drop of
     /// its pull waiting its turn, and the fetch; for the patch the middle
-    /// shows, its submit (held back by HEAD, or not), what differs from its
+    /// shows, the opening of its revision in your browser when it names one
+    /// (`Action::OpenLink`, as a link of its message opens), its submit (held back by HEAD, or not), what differs from its
     /// revision, the pull of that revision, the drop of the pull waiting its
     /// turn when it is that revision's, and the fetch. None built without
     /// the `moz-phab` feature, nor while reviews come from nowhere.
@@ -68,6 +70,9 @@ impl App {
                     items.extend(self.pull_drop_item());
                 }
                 PhabOf::Patch => {
+                    if let Some((d, link)) = self.shown_patch().and_then(|p| crate::phab::revision_of(&p.message)) {
+                        items.push(Item::new(format!("Open {d} in your browser"), Action::OpenLink(link)));
+                    }
                     let held = self.submit_held(self.sel);
                     let (item, submit_why) = self.submit_item(self.read_only().is_none() && held.is_none());
                     items.push(item);
