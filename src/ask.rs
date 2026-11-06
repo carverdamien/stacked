@@ -482,23 +482,31 @@ comment on the patch's title or on the stack.";
 
 /// Whether `n` may be asked to draft a bug (`bug`): a comment on a patch, on
 /// it as a whole or on one of its lines, whose title names no bug as
-/// moz-phab reads one (`bug::names_none`); never one on the stack, nor on
-/// the stack's history.
+/// moz-phab reads one (`bug::names_none`), or one of whose turns says the
+/// word bug (`said_bug`); never one on the stack, nor on the stack's
+/// history.
 #[cfg(feature = "moz-phab")]
 pub fn can_bug(db: &Db, n: &Note) -> bool {
-    n.about.is_none() && !n.on_stack() && db.latest_version(&n.change).is_some_and(|p| crate::bug::names_none(p.title()))
+    n.about.is_none() && !n.on_stack() && db.latest_version(&n.change).is_some_and(|p| crate::bug::names_none(p.title()) || said_bug(&n.text))
+}
+
+/// Whether a turn of the thread `text` that stands, yours, the agent's or
+/// a reviewer's, says the word bug (`bug::mentioned`).
+#[cfg(feature = "moz-phab")]
+pub fn said_bug(text: &str) -> bool {
+    crate::thread::thread_turns(text).iter().any(|t| crate::bug::mentioned(&t.body))
 }
 
 /// Why a comment is not asked to draft a bug, as every way of asking one
 /// says it.
 #[cfg(feature = "moz-phab")]
-pub const BUG_OF_A_PATCH: &str = "A bug is drafted for a patch whose title names none, from a comment on that patch: \
-not from the stack's comments, nor once the title names a bug.";
+pub const BUG_OF_A_PATCH: &str = "A bug is drafted from a comment on a patch whose title names none, or from one that says the word bug: \
+not from the stack's comments, nor from other comments once the title names a bug.";
 
 /// Whether `n` may be asked in `way`, of those the comment's own choices
 /// have: a build and test, and a try push, on the stack or a patch as a
 /// whole, a try push not on the history; a bug's draft, on a patch whose
-/// title names none.
+/// title names none, or from a comment that says bug.
 pub fn fits_way(db: &Db, n: &Note, way: Way) -> bool {
     match way {
         Way::Test => can_test(db, n),
@@ -2814,14 +2822,16 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
         // stacked.
         #[cfg(feature = "moz-phab")]
         (Way::Bug, _) => {
-            let what = format!("patch {} of {n}, \"{}\"", k.map_or(0, |k| k + 1), k.and_then(|k| s.patches.get(k)).map_or("", |p| db.patch(p).title()));
+            let title = k.and_then(|k| s.patches.get(k)).map_or("", |p| db.patch(p).title());
+            let what = format!("patch {} of {n}, \"{title}\"", k.map_or(0, |k| k + 1));
+            let named = crate::bug::named_in(title);
             let here = format!(
                 "The current directory is a git worktree made for you: the commits {}..HEAD are the stack up to \
                  that patch, the patch itself at HEAD; `git show` to read it; `{export}` prints the whole stack. Of \
                  mach, you may run `./mach file-info bugzilla-component` there, and nothing else.",
                 i.base
             );
-            crate::bug::prompt(&what, &here, web)
+            crate::bug::prompt(&what, named.as_deref(), &here, web)
         }
     };
     // A follow-up: what it brought back waits for the user's review as it

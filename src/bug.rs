@@ -1,4 +1,5 @@
-//! A bug filed for a patch whose title names none, as Firefox's own
+//! A bug filed for a patch whose title names none, or that a comment on it
+//! asks for (`mentioned`), as Firefox's own
 //! bug-filing skill files one, with no Bugzilla key: the agent drafts it
 //! (`Way::Bug`, built with the `moz-phab` feature), its product and
 //! component as `./mach file-info bugzilla-component` names them, its type,
@@ -6,9 +7,11 @@
 //! lands for your review, to read. Closing the review opens Bugzilla's form
 //! to file a bug (`enter_bug.cgi`), filled in with the draft, in your
 //! browser: nothing is filed until you submit it there, under your own
-//! account. Then the bug's number, typed or pasted as a link, goes in the
-//! patch's title as moz-phab writes it (`Bug N - title`), a new version of
-//! the patch, its message alone changed, which the next submit sends.
+//! account. Then, the patch's title naming no bug, the bug's number, typed
+//! or pasted as a link, goes in the patch's title as moz-phab writes it
+//! (`Bug N - title`), a new version of the patch, its message alone
+//! changed, which the next submit sends; the title naming one already, it
+//! keeps it, and nothing changes.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -168,7 +171,33 @@ pub fn titled(title: &str, n: u64) -> String {
 /// (`links::bug_in`): then a bug may be drafted for its patch.
 #[cfg(feature = "moz-phab")]
 pub fn names_none(title: &str) -> bool {
-    crate::links::bug_in(&title.chars().collect::<Vec<_>>()).is_none()
+    named_in(title).is_none()
+}
+
+/// The bug the title `title` names, as moz-phab reads one in a title
+/// (`links::bug_in`): its number. None when it names none.
+#[cfg(feature = "moz-phab")]
+pub fn named_in(title: &str) -> Option<String> {
+    crate::links::bug_in(&title.chars().collect::<Vec<_>>()).map(|(_, _, n)| n)
+}
+
+/// Whether `text`, a comment's, says the word bug, in any case, as a word
+/// of its own (`bug`, `Bug:`, `BUG`, `follow-up bug`, `bug 123`, `bug123`),
+/// or its plural (`bugs`): then a bug may be drafted from it, as it may be
+/// asking for one, whatever its patch's title names. Not in another word
+/// (`debug`, `bugzilla`, `humbug`): a word is made of letters, digits and
+/// `_`, but for the digits of a number right after `bug`.
+pub fn mentioned(text: &str) -> bool {
+    let s: Vec<char> = text.chars().collect();
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    (0..s.len()).any(|at| {
+        let is = |k: usize, c: char| s.get(at + k).is_some_and(|x| x.eq_ignore_ascii_case(&c));
+        if !(is(0, 'b') && is(1, 'u') && is(2, 'g')) || (at > 0 && word(s[at - 1])) {
+            return false;
+        }
+        let end = if is(3, 's') { at + 4 } else { at + 3 };
+        s.get(end).is_none_or(|c| !word(*c) || (end == at + 3 && c.is_ascii_digit()))
+    })
 }
 
 /// Bug `n` put in the title of the patch of `change` in stack `name`, as
@@ -195,17 +224,33 @@ pub fn put_in_title(db: &mut crate::db::Db, name: &str, change: &str, n: u64) ->
 }
 
 /// What an ask drafting a bug is told it does, `what` being the patch it
-/// is for, `here` where it works and how it reads the stack, `web` what it
-/// may read of the web: the skill's rules for each field, in its own words,
-/// close to them; and nothing filed, nothing opened, nothing changed.
-pub fn prompt(what: &str, here: &str, web: &str) -> String {
+/// is for, `named` the bug its title names, if it names one, `here` where
+/// it works and how it reads the stack, `web` what it may read of the web:
+/// the skill's rules for each field, in its own words, close to them; and
+/// nothing filed, nothing opened, nothing changed. The title naming a bug,
+/// the bug drafted is another one, as the comments ask, which may point at
+/// the title's.
+pub fn prompt(what: &str, named: Option<&str>, here: &str, web: &str) -> String {
+    let (whose, then) = match named {
+        None => (
+            "the patch's title names no bug, and the bug you draft is the one it is for".to_string(),
+            ", and the patch's title then names it".to_string(),
+        ),
+        Some(n) => (
+            format!(
+                "the patch's title names bug {n} already, and the bug you draft is another one, a \
+                 follow-up, as the comments ask. Where it fits, set `see_also`, `blocked` or \
+                 `dependson` to bug {n}"
+            ),
+            format!(": the patch's title keeps bug {n}"),
+        ),
+    };
     format!(
-        "You are drafting a Bugzilla bug for {what}, as the comments below ask: the patch's title \
-         names no bug, and the bug you draft is the one it is for. {here} Do NOT modify anything, \
-         and do NOT file the bug: run no `file-bug.py`, open nothing, and send nothing to Bugzilla. \
-         Once you answer, stacked opens Bugzilla's form to file a bug, filled in with your draft, in \
-         the user's browser: the user reviews it there, and files it under their own name, and the \
-         patch's title then names it. Draft it so. (1) The product and the component: run `./mach \
+        "You are drafting a Bugzilla bug for {what}, as the comments below ask: {whose}. {here} Do \
+         NOT modify anything, and do NOT file the bug: run no `file-bug.py`, open nothing, and send \
+         nothing to Bugzilla. Once you answer, stacked opens Bugzilla's form to file a bug, filled in \
+         with your draft, in the user's browser: the user reviews it there, and files it under their \
+         own name{then}. Draft it so. (1) The product and the component: run `./mach \
          file-info bugzilla-component FILE` on a file the patch changes that stands for it best; it \
          prints `Product :: Component`. If it prints `UNKNOWN`, pick the closest sensible component \
          rather than leave it blank. (2) The type: `defect` when the software shipped does not behave \
@@ -341,5 +386,34 @@ mod tests {
             assert_eq!(number_in(typed), n, "{typed:?}");
         }
         assert_eq!(titled("shout two", 7), "Bug 7 - shout two");
+    }
+
+    #[test]
+    fn the_word_bug_is_found_in_any_case_as_a_word_of_its_own_or_its_plural() {
+        for text in [
+            "bug",
+            "Bug: the title is lost",
+            "THIS IS A BUG",
+            "File a follow-up bug for it.",
+            "as bug 123 says",
+            "see bug123",
+            "(bug)",
+            "these are bugs.",
+            "Bugs, both of them",
+            "line one\nand a bug on line two",
+        ] {
+            assert!(mentioned(text), "{text:?}");
+        }
+        for text in ["", "debug it", "bugzilla is down", "humbug", "a bug_fix", "bugsy", "bugs2", "b ug", "the build"] {
+            assert!(!mentioned(text), "{text:?}");
+        }
+    }
+
+    #[cfg(feature = "moz-phab")]
+    #[test]
+    fn the_bug_a_title_names_is_read_as_moz_phab_reads_it() {
+        assert_eq!(named_in("Bug 1234567 - shout two").as_deref(), Some("1234567"));
+        assert_eq!(named_in("shout two"), None);
+        assert!(names_none("shout two") && !names_none("Bug 7 - shout two"));
     }
 }

@@ -29466,11 +29466,18 @@ fn written_permissions(app: &mut App, text: &str) -> Vec<&'static str> {
     keys(app, &[KeyCode::Esc]);
     assert_eq!(choose(app, "Ask agent…"), Effect::None);
     let all = dialog(app).permission_labels();
-    // What file a bug lets the agent do, said under the permission.
+    // What file a bug lets the agent do, said under the permission: the
+    // bug of a title naming none, or another one.
     let d = dialog(app).clone();
     if let Some(at) = d.permissions.iter().position(|(p, _)| p.label() == "file a bug") {
         let said = app.ask_lines(&AskDialog { permission: Some(at), ..d })[1].clone();
-        assert!(said.starts_with("The agent drafts a bug for this patch, whose title names none: it files nothing and changes nothing"), "{said}");
+        assert!(
+            said.starts_with("The agent drafts a bug for this patch, whose title names none: it files nothing and changes nothing")
+                || (said.starts_with("The agent drafts another bug for this patch, as the comment asks, its title naming bug ")
+                    && said.contains(": it files nothing and changes nothing")
+                    && said.ends_with("and the patch's title keeps bug 1.")),
+            "{said}"
+        );
     }
     keys(app, &[KeyCode::Esc]);
     assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
@@ -29510,12 +29517,117 @@ fn file_a_bug_is_offered_on_a_patch_whose_title_names_none_and_nowhere_else() {
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
     choose(&mut app, "Comment on the stack…");
     assert!(!written_permissions(&mut app, "And the stack?").contains(&"file a bug"));
-    // A patch whose title names a bug: not offered.
+    // A patch whose title names a bug: not offered, unless the comment
+    // says the word bug, as it is typed.
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
     choose(&mut app, "Comment on this patch…");
-    assert!(!written_permissions(&mut app, "File a bug for this.").contains(&"file a bug"));
+    assert!(!written_permissions(&mut app, "Debug it, then shout louder.").contains(&"file a bug"));
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(written_permissions(&mut app, "Needs a follow-up BUG.").last(), Some(&"file a bug"));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn file_a_bug_is_offered_on_a_patch_naming_a_bug_once_a_turn_of_the_comment_says_bug() {
+    // Patch 1's title names bug 1; the comment on its line says no bug:
+    // not offered.
+    let (_tmp, db, _src) = setup();
+    let mut app = asking_about_a_line(&db);
+    keys(&mut app, &[KeyCode::Esc]);
+    // A reviewer's turn says it: offered, the last of the permissions,
+    // and the comment may be sent so.
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        d.set_note(Note { text: append_turn(&n.text, Role::Reviewer, "Agreed, but in a follow-up Bug, please.", Some("ann")), ..n })
+    })
+    .unwrap();
+    app.refresh();
+    choose(&mut app, "Ask agent…");
+    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack", "file a bug"]);
+    let d = dialog(&app).clone();
+    let said = app.ask_lines(&AskDialog { permission: Some(3), ..d })[1].clone();
+    assert!(said.starts_with("The agent drafts another bug for this patch, as the comment asks, its title naming bug 1 already"), "{said}");
+    let d = Db::load(&db).unwrap();
+    assert!(stacked::ask::can_bug(&d, d.note(&n.change, &n.id).unwrap()));
+    // The word in another word says none.
+    drop(d);
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        d.set_note(Note { text: n.text.replace("follow-up Bug", "debugging session"), ..n })
+    })
+    .unwrap();
+    let d = Db::load(&db).unwrap();
+    assert!(!stacked::ask::can_bug(&d, d.note(&n.change, &n.id).unwrap()));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_bug_drafted_for_a_patch_naming_one_opens_its_form_and_leaves_the_title_as_it_is() {
+    let (_tmp, db, here) = with_message(|here| format!("Bug {} - shout two\n\nBecause.", number_of(here)));
+    let n = number_of(&here);
+    let mut app = open_set(&db, |c| c.reviews.bugzilla = "https://bugzilla.example.com/".into());
+    let summary = format!("Two is still shouted in {here}");
+    answer_with(
+        &db,
+        &serde_json::json!({
+            "replies": {"c1": "Drafted: Core :: General."},
+            "bug": {"product": "Core", "component": "General", "bug_type": "defect", "short_desc": summary, "comment": "Shouted.", "see_also": n.to_string()}
+        }),
+    );
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
+    choose(&mut app, "Comment on this patch…");
+    typed(&mut app, "File a follow-up bug for the rest.");
+    keys(&mut app, &[KeyCode::Esc]);
+    ask_now(&mut app, "Ask agent…", "file a bug");
+    until(&mut app, |app| landed_in(&app.db, Some(1)).then_some(()), |app| format!("never landed\n{}", draw(app)));
+    // Its prompt: another bug, which may point at the title's.
+    let d = Db::load(&db).unwrap();
+    let r = d.runs().into_iter().rev().find(|r| r.what == "bug").cloned().expect("a bug's ask");
+    let prompt = stacked::ask::info(&r).unwrap().prompt;
+    for said in [
+        format!("the patch's title names bug {n} already, and the bug you draft is another one, a follow-up, as the comments ask"),
+        format!("Where it fits, set `see_also`, `blocked` or `dependson` to bug {n}."),
+        format!("files it under their own name: the patch's title keeps bug {n}. Draft it so."),
+    ] {
+        assert!(prompt.contains(&said), "{said:?} in {prompt}");
+    }
+    assert!(!prompt.contains("names no bug"), "{prompt}");
+    drop(d);
+    // Closed: the form opens, and no dialog; the title as it was.
+    let was = patch_in(&db, 0);
+    keys(&mut app, &[KeyCode::Esc]);
+    keys(&mut app, &[KeyCode::Enter]);
+    let screen = draw(&mut app);
+    assert_eq!(app.screen, Screen::Review, "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    if matches!(app.mode, Mode::Menu(_)) {
+        choose(&mut app, "Accept");
+    }
+    let screen = draw(&mut app);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}\n{screen}", app.mode);
+    let draft = stacked::bug::Draft {
+        product: "Core".into(),
+        component: "General".into(),
+        bug_type: "defect".into(),
+        short_desc: summary.clone(),
+        comment: "Shouted.".into(),
+        more: vec![("see_also".into(), n.to_string())],
+    };
+    app.settle();
+    assert!(opened(&stacked::bug::form_url("https://bugzilla.example.com", &draft)), "the form not opened");
+    assert_eq!(
+        app.status,
+        format!("The form to file the bug is open in your browser: Core :: General, “{summary}”. Patch 1's title keeps bug {n}.")
+    );
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    let now = patch_in(&db, 0);
+    assert_eq!((now.id, now.message), (was.id, was.message));
 }
 
 #[cfg(feature = "moz-phab")]

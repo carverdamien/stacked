@@ -213,7 +213,8 @@ The ask dialog sets two things every time. The permission is one of:
 - **try push**, with the `try-push` feature: it selects tasks of Firefox's
   CI for a try push (below).
 - **file a bug**, with the `moz-phab` feature, on a patch whose title
-  names no bug: it drafts the bug (Filing a bug, below).
+  names no bug, or on a comment that says the word bug: it drafts the bug
+  (Filing a bug, below).
 
 The dialog offers only those that fit where the comment is. The model is
 claude's `--model`, by its full id: claude-haiku-5-5, claude-sonnet-5-5,
@@ -472,6 +473,14 @@ have submitted the form: type it, or paste the link to the bug, and `Put it
 in the title` makes the patch's title `Bug N - title`, a new version of the
 patch. The next submit to Phabricator sends the bug. `Cancel` changes
 nothing.
+
+A comment that says the word bug, in any case (`bug`, `Bug:`, `follow-up
+bug`, `bugs`, but not `debug` or `bugzilla`), can be asked so too, on any
+patch: in any turn of its thread, a reviewer's included, or in what you
+are typing. When the patch's title names a bug already, the agent drafts
+another one, a follow-up, which may point at the title's bug. Closing the
+review opens the form as above, and nothing more: no dialog, and the
+patch's title keeps its bug.
 
 ## Linting
 

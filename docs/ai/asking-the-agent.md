@@ -196,9 +196,19 @@ and Ask Now and Ask Later are grayed while none can be.
   push, below).
 - `file a bug`, built with the `moz-phab` feature, on a patch's comments
   (as a whole or on a line) when the patch's title names no bug as
-  moz-phab reads one (`links::bug_in`), never on the stack's comments, the
-  history, nor in the tour; absent from the list otherwise. It drafts the
-  bug the patch is for as Firefox's own bug-filing skill does, its rules
+  moz-phab reads one (`links::bug_in`), or when the comment says the word
+  bug (`bug::mentioned`): in any case, as a word of its own or its plural
+  (`bug`, `Bug:`, `BUG`, `follow-up bug`, `bug 123`, `bug123`, `bugs`),
+  not inside another word (`debug`, `bugzilla`, `humbug`), in any turn of
+  its thread that stands, yours, the agent's or a reviewer's, and for a
+  comment being written, in what is typed so far (`ask::can_bug`, and
+  `written_bug` in `tui/ask_dialog.rs` for one being written). Never on
+  the stack's comments, the history, nor in the tour; absent from the list
+  otherwise. The title naming no bug, it drafts the bug the patch is for;
+  naming one, it drafts another one, a follow-up, as the comment asks, the
+  prompt saying the title's bug and that `see_also`, `blocked` or
+  `dependson` may name it where that fits. It drafts as Firefox's own
+  bug-filing skill does, its rules
   in the prompt in stacked's words: the product and the component from
   `./mach file-info bugzilla-component FILE` (the closest sensible one for
   `UNKNOWN`); the type, `defect`, `enhancement` or `task`; the summary
@@ -233,7 +243,10 @@ and Ask Now and Ask Later are grayed while none can be.
   changed, written at once as any change of the stack, refused while the
   agent changes the stack or once the title names a bug, and asked about
   first by the dialog for patches that should not change (`Db::guard`).
-  The next submit sends the bug. `stacked review` lists the draft (`bug`)
+  The next submit sends the bug. The title naming a bug already, there is
+  no dialog and nothing changes: the form alone opens, and the bottom line
+  says `The form to file the bug is open in your browser: Core ::
+  General, “…”. Patch 3's title keeps bug 1234567.` (`file_bug`). `stacked review` lists the draft (`bug`)
   but opens no form; only the editor's review does.
 
 The model the agent works on an ask with is the dialog's second line, by

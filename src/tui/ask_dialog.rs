@@ -43,8 +43,8 @@ pub enum Permission {
     Test,
     #[cfg(feature = "try-push")]
     Try,
-    /// A bug drafted for the patch, whose title names none, built with the
-    /// `moz-phab` feature (`bug`).
+    /// A bug drafted for the patch, whose title names none, or as a comment
+    /// that says bug asks, built with the `moz-phab` feature (`bug`).
     #[cfg(feature = "moz-phab")]
     Bug,
 }
@@ -510,7 +510,8 @@ impl App {
     /// whole, to build and test, and, built with the `try-push` feature, to
     /// select the CI tasks of a try push (not in the tour, whose game has
     /// no CI to push to); a patch's comment, the patch's title naming no
-    /// bug, built with the `moz-phab` feature, to draft one (not in the tour
+    /// bug or the comment saying the word bug, built with the `moz-phab`
+    /// feature, to draft one (not in the tour
     /// either); a question on the history, to answer alone. None if what it
     /// asks about is gone.
     fn asking_of(&self, about: &AskOf) -> Option<Opened> {
@@ -566,7 +567,7 @@ impl App {
                 #[cfg_attr(not(feature = "moz-phab"), allow(unused_mut))]
                 let mut all = ways(patch, test);
                 #[cfg(feature = "moz-phab")]
-                if patch && self.written_bug(&e.target) {
+                if patch && self.written_bug(e) {
                     all.push((Permission::Bug, None));
                 }
                 Some((title, !patch, all))
@@ -668,17 +669,56 @@ impl App {
         (patch, test)
     }
 
-    /// Of a comment written for `t`, on a patch: whether it may be asked to
-    /// draft a bug, as the patch's title names none (`ask::can_bug`); not
-    /// in the tour, whose game has no bug to file.
+    /// Of comment `e`, being written on a patch: whether it may be asked to
+    /// draft a bug, as it may once saved (`ask::can_bug`): the patch's title
+    /// names none, or the comment says the word bug (`bug::mentioned`), in
+    /// what is typed so far, or in a turn of its thread that stands and
+    /// that the editor does not write again. Not in the tour, whose game has
+    /// no bug to file.
     #[cfg(feature = "moz-phab")]
-    fn written_bug(&self, t: &Target) -> bool {
-        let change = match t {
-            Target::Patch(change) | Target::Line { change, .. } => change,
-            Target::Reply { change, .. } | Target::Edit { change, .. } | Target::Turn { change, .. } | Target::Rewind { change, .. } => change,
+    fn written_bug(&self, e: &Edit) -> bool {
+        let t = &e.target;
+        let (change, id) = match t {
+            Target::Patch(change) | Target::Line { change, .. } => (change, None),
+            Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } | Target::Rewind { change, id, .. } => {
+                (change, Some(id))
+            }
             _ => return false,
         };
-        !self.in_memory() && self.db.latest_version(change).is_some_and(|p| crate::bug::names_none(p.title()))
+        if self.in_memory() {
+            return false;
+        }
+        let Some(p) = self.db.latest_version(change) else { return false };
+        if crate::bug::names_none(p.title()) {
+            return true;
+        }
+        let note = id.and_then(|id| self.db.note(change, id));
+        let mut typed = e.ed.text();
+        if let (Target::Rewind { from, .. }, Some(n)) = (t, note) {
+            typed = without_written(&typed, &rewind_written(&n.text, *from));
+        }
+        let again = self.turns_written_again(t).unwrap_or((usize::MAX, usize::MAX));
+        crate::bug::mentioned(&typed)
+            || note.is_some_and(|n| {
+                all_turns(&n.text).iter().enumerate().any(|(k, turn)| !turn.deleted && !(again.0..again.1).contains(&k) && crate::bug::mentioned(&turn.body))
+            })
+    }
+
+    /// The bug the title of the patch that comment `about` is on names,
+    /// the comment being asked to draft another one: its number. None for
+    /// a patch whose title names none, and for what is on no one patch.
+    #[cfg(feature = "moz-phab")]
+    fn bug_titled(&self, about: &AskOf) -> Option<String> {
+        let change = match about {
+            AskOf::Comment(change, _) => change.clone(),
+            AskOf::Written { .. } => match &self.pending.as_ref()?.target {
+                Target::Patch(change) | Target::Line { change, .. } => change.clone(),
+                Target::Reply { change, .. } | Target::Edit { change, .. } | Target::Turn { change, .. } | Target::Rewind { change, .. } => change.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        crate::bug::named_in(self.db.latest_version(&change)?.title())
     }
 
     /// What the dialog says on its top of a comment written for `t`: saved
@@ -821,6 +861,15 @@ impl App {
     /// about; unset, what ← → set and what Enter opens.
     fn permission_said(&self, d: &AskDialog) -> String {
         let listed = matches!(d.about, AskOf::Listed { .. });
+        // A bug drafted for a patch whose title names one: another one.
+        #[cfg(feature = "moz-phab")]
+        if matches!(d.permission(), Some(Permission::Bug))
+            && let Some(n) = self.bug_titled(&d.about)
+        {
+            return format!(
+                "The agent drafts another bug for this patch, as the comment asks, its title naming bug {n} already: it files nothing and changes nothing, and the draft waits for your review. Closing the review opens Bugzilla's form, filled in, in your browser, and the patch's title keeps bug {n}."
+            );
+        }
         match (d.permission(), d.count()) {
             (None, _) => format!("Not set yet: {}.", unset_keys(&d.permission_labels())),
             // Sending work back: what that does with the work, and how many

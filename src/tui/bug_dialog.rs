@@ -15,7 +15,9 @@
 //! when it would change one. Open the form again opens it once more, the
 //! dialog staying. Esc, Cancel, or a click out of the dialog closes it:
 //! nothing changes, and the form stays open in the browser, to file the bug
-//! all the same.
+//! all the same. A bug drafted for a patch whose title names one already,
+//! another one, as a comment that says bug asks: no dialog, the form alone
+//! opening, and the title keeping its bug.
 
 use super::*;
 use crate::bug::Draft;
@@ -67,21 +69,54 @@ impl App {
     /// opened in your browser, filled in, on the settings' Bugzilla
     /// (`reviews.bugzilla`), as a link is opened (`open_link`: in the tests,
     /// by their stand-in); then the dialog that takes the bug's number,
-    /// nothing typed, the cursor in its field. The bottom line says what
-    /// closing the review did until the form is open.
+    /// nothing typed, the cursor in its field. The patch's title naming a
+    /// bug already, the bug drafted being another one, no dialog: the title
+    /// keeps its bug, and the bottom line says so once the form is open.
+    /// The bottom line says what closing the review did until the form is
+    /// open.
     pub(super) fn file_bug(&mut self, draft: Draft, change: String) {
         let reviewed = self.status.clone();
-        self.open_form(&draft);
+        let kept = self.bug_kept(&change);
+        self.open_form_then(&draft, kept.as_deref());
         if !reviewed.is_empty() {
             self.status = reviewed;
         }
-        self.mode = Mode::Bug(Box::new(BugDialog { draft, change, typed: String::new(), line: FIELD_LINE, button: CANCEL, at: None }));
+        if kept.is_none() {
+            self.mode = Mode::Bug(Box::new(BugDialog { draft, change, typed: String::new(), line: FIELD_LINE, button: CANCEL, at: None }));
+        }
+    }
+
+    /// Of the patch of `change`, its title naming a bug already, what the
+    /// bottom line says once the form is open: that the title keeps it
+    /// (`Patch 3's title keeps bug 1234567.`). None when it names none.
+    fn bug_kept(&self, change: &str) -> Option<String> {
+        #[cfg(feature = "moz-phab")]
+        {
+            let n = crate::bug::named_in(self.db.latest_version(change)?.title())?;
+            let at = self.current().and_then(|s| s.patches.iter().position(|p| self.db.patch(p).change == change));
+            Some(match at {
+                Some(at) => format!("Patch {}'s title keeps bug {n}.", at + 1),
+                None => format!("The patch's title keeps bug {n}."),
+            })
+        }
+        #[cfg(not(feature = "moz-phab"))]
+        {
+            let _ = change;
+            None
+        }
     }
 
     /// The form to file `draft` opened in your browser, away from the
     /// screen, the bottom line saying it is, or why it could not be: its
     /// link is long, and is never shown.
     fn open_form(&mut self, draft: &Draft) {
+        self.open_form_then(draft, None);
+    }
+
+    /// The form to file `draft` opened, as `open_form` opens it, the bottom
+    /// line saying `then` after it once it is open.
+    fn open_form_then(&mut self, draft: &Draft, then: Option<&str>) {
+        let then = then.map_or(String::new(), |t| format!(" {t}"));
         let url = crate::bug::form_url(&self.cfg.reviews.bugzilla, draft);
         if self.bg.doing.contains(&OPENING) {
             self.status = "a link is being opened already: wait for it, then open the form again".into();
@@ -92,7 +127,7 @@ impl App {
         self.status = format!("The form to file the bug is opening in your browser: {said}.");
         self.spawn(move || {
             let done = match crate::refs::open_url(&url) {
-                Ok(_) => format!("The form to file the bug is open in your browser: {said}."),
+                Ok(_) => format!("The form to file the bug is open in your browser: {said}.{then}"),
                 Err(why) => why.replace("the link could not be opened", "the form to file the bug could not be opened"),
             };
             Done::Said(OPENING, done)
