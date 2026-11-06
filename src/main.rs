@@ -414,6 +414,13 @@ enum Cmd {
         /// --batch, the effort each comment was batched at.
         #[arg(long, value_name = "LEVEL", value_parser = effort_arg())]
         effort: Option<stacked::db::Effort>,
+        /// The model the agent works on them with, by its full id, as
+        /// claude's --model takes it: claude-fable-5-1, claude-opus-5-5,
+        /// claude-sonnet-5-5 or claude-haiku-5-5. Unless given, none of
+        /// their own (the settings' agent.model, else claude's own); with
+        /// --batch, the model each comment was batched with.
+        #[arg(long, value_name = "ID", value_parser = model_arg())]
+        model: Option<stacked::db::Model>,
         /// Wait for them to be answered, and print the threads.
         #[arg(long)]
         wait: bool,
@@ -460,6 +467,12 @@ enum Cmd {
         /// the effort the work was asked at.
         #[arg(long, value_name = "LEVEL", value_parser = effort_arg())]
         effort: Option<stacked::db::Effort>,
+        /// With --send-back, the model the agent works on it with, by its
+        /// full id, as claude's --model takes it: claude-fable-5-1,
+        /// claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5. Unless
+        /// given, the model the work was asked with.
+        #[arg(long, value_name = "ID", value_parser = model_arg())]
+        model: Option<stacked::db::Model>,
         /// Close the comments the agent was asked about too, done with,
         /// once their replies are in their threads.
         #[arg(long)]
@@ -733,6 +746,14 @@ fn setup_lines(s: &mut stacked::setup::Setup, dir: &Path, to: &Path, tools: usiz
 fn effort_arg() -> impl clap::builder::TypedValueParser<Value = stacked::db::Effort> {
     use clap::builder::TypedValueParser;
     clap::builder::PossibleValuesParser::new(stacked::db::Effort::NAMES).map(|s: String| stacked::db::Effort::parse(&s).unwrap_or_default())
+}
+
+/// What `--model` takes: one of the ask dialog's models, by its full id;
+/// any other is refused, with the ids it takes said.
+fn model_arg() -> impl clap::builder::TypedValueParser<Value = stacked::db::Model> {
+    use clap::builder::TypedValueParser;
+    clap::builder::PossibleValuesParser::new(stacked::db::Model::IDS)
+        .map(|s: String| stacked::db::Model::parse(&s).unwrap_or(stacked::db::Model::ALL[0]))
 }
 
 /// Whether the process `pid` is gone: exited (waited for now, if it is
@@ -1496,7 +1517,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 println!("{short}\t{}", stacked::refs::detached_said(&detached));
             }
         }
-        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, later, batch, fan_out, effort, wait, accept } => {
+        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, later, batch, fan_out, effort, model, wait, accept } => {
             let way = match (answer_only, build_and_test) {
                 (_, true) => Way::Test,
                 (true, _) => Way::Answer,
@@ -1528,7 +1549,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             let ats: Vec<(String, String)> = picked.iter().map(|n| (n.change.clone(), n.id.clone())).collect();
             if later {
-                ask::batch(path, &name, &ats, way, whole_stack, at)?;
+                ask::batch(path, &name, &ats, way, whole_stack, model, at)?;
                 let said = if whole_stack { stacked::db::WHOLE } else { way.said() };
                 for (c, i) in &ats {
                     println!("{}\tbatched ({said})", short_id(c, i));
@@ -1550,7 +1571,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 ];
                 for way in ways {
                     let sent = ask::batched(&db, &name, way);
-                    let (n, refused) = ask::release_batch(path, &name, way, fan_out, effort)?;
+                    let (n, refused) = ask::release_batch(path, &name, way, fan_out, model, effort)?;
                     // Those it refused, said: each stays a comment, its ask
                     // failed.
                     for ((c, i), why) in &refused {
@@ -1592,7 +1613,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             let said = if whole_stack { stacked::db::WHOLE } else { way.said() };
             for (_, these) in batches.iter().filter(|_| !batch) {
-                let waits = ask::send(path, &name, these, way, whole_stack, at)?;
+                let waits = ask::send(path, &name, these, way, whole_stack, model, at)?;
                 for (c, i) in these {
                     match &waits {
                         None => println!("{}\tsent ({said})", short_id(c, i)),
@@ -1682,8 +1703,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 let review = db.review(&r.id).cloned().unwrap_or_default();
                 // Gone on from the work before it, guessing: reviewed after it.
                 let after = ask::guessing(&db, r).map_or(String::new(), |on| format!("\tgoes on from {on}, which waits for your review"));
-                // The agent's: the effort it was asked at.
-                let at = ask::effort_said(r).map_or(String::new(), |e| format!("\tasked at {e}"));
+                // The agent's: the effort and the model it was asked with.
+                let at = match stacked::thread::asked_at(&ask::at_of(r)) {
+                    at if at.is_empty() => at,
+                    at => format!("\tasked{at}"),
+                };
                 println!("{}\t{}\t{}{at}{after}", r.id, time(h.at), stacked::held::left(&db, r));
                 // A pull's comments are not marked: each is filed as its
                 // review closes. Its change's operations are, as any.
@@ -1784,19 +1808,22 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Review { name, run, send_back: true, effort, .. } => {
+        Cmd::Review { name, run, send_back: true, effort, model, .. } => {
             let db = Db::load(path)?;
             let id = match work_of(&db, &name, run.as_deref())? {
                 Some(id) => id,
                 None => stacked::held::queue(&db, &name).first().map(|r| r.id.clone()).ok_or_else(|| Error(format!("nothing on {name} waits for your review")))?,
             };
             let marks = db.review(&id).map(|v| v.marks.clone()).unwrap_or_default();
-            let said = ask::send_back(path, &name, &id, &marks, effort, None)?;
+            let said = ask::send_back(path, &name, &id, &marks, model, effort, None)?;
             ask::launch(path)?;
             println!("{id}\t{said}");
         }
         Cmd::Review { effort: Some(_), .. } => {
             return err("--effort goes with --send-back: accepting or rejecting the work asks the agent nothing");
+        }
+        Cmd::Review { model: Some(_), .. } => {
+            return err("--model goes with --send-back: accepting or rejecting the work asks the agent nothing");
         }
         Cmd::Review { name, run, accept_all, close_asking, .. } => {
             let queued = |db: &Db| -> Result<String> {

@@ -60,13 +60,14 @@ pub fn way_said(tag: &str) -> &'static str {
 }
 
 /// What a comment whose last word is the agent's says of it: `agent
-/// replied (answer only)`, and the effort its run was asked at, if its
-/// turn says one: `agent replied (answer only, at max)`.
+/// replied (answer only)`, and the effort and the model its run was asked
+/// with, as far as its turn says them: `agent replied (answer only, at max
+/// with claude-opus-5-5)`.
 pub fn replied_said(text: &str) -> String {
     let way = way_said(&last_reply_way(text).unwrap_or_default());
-    match crate::thread::last_reply_effort(text) {
-        Some(e) => format!("agent replied ({way}, at {e})"),
-        None => format!("agent replied ({way})"),
+    match crate::thread::asked_at(&crate::thread::last_reply_at(text)) {
+        at if at.is_empty() => format!("agent replied ({way})"),
+        at => format!("agent replied ({way},{at})"),
     }
 }
 
@@ -395,14 +396,14 @@ pub fn what_changed(db: &Db, rev: usize) -> Vec<Diffed> {
 }
 
 /// What a comment's record was, next to the one before it. The agent's
-/// turns, their run asked at an effort, are said with it: `opened by the
-/// agent at max`, `agent replied (answer only, at max)`, `you edited the
-/// agent's reply (max)`.
+/// turns, their run asked at an effort and with a model, are said with
+/// them: `opened by the agent at max with claude-opus-5-5`, `agent replied
+/// (answer only, at max)`, `you edited the agent's reply (max)`.
 pub fn note_change(before: Option<&Note>, n: &Note) -> String {
     let Some(b) = before else {
         return match n.by.as_deref() {
             None => "written".into(),
-            Some("agent" | "claude") => format!("opened by the agent{}", crate::thread::asked_at(crate::thread::opened_effort(&n.text).as_deref())),
+            Some("agent" | "claude") => format!("opened by the agent{}", crate::thread::asked_at(&crate::thread::opened_at(&n.text))),
             Some(who) => format!("pulled: {who}'s comment"),
         };
     };

@@ -719,7 +719,7 @@ fn an_edit_asked_while_the_linter_runs_waits_for_it_then_goes_on_from_what_it_ma
         ..Default::default()
     };
     Db::edit(&db, |d| d.set_note(note.clone())).unwrap();
-    let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
+    let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, None, stacked::db::Effort::High).unwrap();
     assert_eq!(waits.as_deref(), Some("once the linter's work on the stack lands"));
     assert!(!Db::load(&db).unwrap().runs().iter().any(|r| r.ask.is_some()), "not started");
     // What changes the stack meanwhile, as it says.
@@ -733,7 +733,7 @@ fn an_edit_asked_while_the_linter_runs_waits_for_it_then_goes_on_from_what_it_ma
     };
     Db::edit(&db, |d| d.set_note(question.clone())).unwrap();
     let answer = (question.change.clone(), question.id.clone());
-    assert_eq!(stacked::ask::send(&db, "s", &[answer], stacked::db::Way::Answer, false, stacked::db::Effort::High).unwrap(), None);
+    assert_eq!(stacked::ask::send(&db, "s", &[answer], stacked::db::Way::Answer, false, None, stacked::db::Effort::High).unwrap(), None);
     eventually(|| Db::load(&db).unwrap().runs().iter().any(|r| r.what == "answer" && r.state != RunState::Started).then_some(()), || "never answered".into());
     let d = Db::load(&db).unwrap();
     assert!(d.runs().iter().any(|r| r.what == "answer" && r.state == RunState::Done), "answered while the linter ran");
@@ -849,7 +849,7 @@ fn a_linter_that_hangs_is_stopped_from_the_banner_nothing_landing_and_the_edit_t
         ..Default::default()
     };
     Db::edit(&db, |d| d.set_note(note.clone())).unwrap();
-    let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
+    let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, None, stacked::db::Effort::High).unwrap();
     assert_eq!(waits.as_deref(), Some("once the linter's work on the stack lands"));
     // The banner's menu stops it; so does Delete on its line, asking first.
     on_lint_line(&mut app, &r.id);
@@ -973,7 +973,7 @@ fn a_waiting_lint_job_is_dropped_once_asked_by_delete_on_its_line_or_from_the_st
         ..Default::default()
     };
     Db::edit(&db, |d| d.set_note(note.clone())).unwrap();
-    let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
+    let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, None, stacked::db::Effort::High).unwrap();
     assert_eq!(waits.as_deref(), Some("once the linter's work on the stack lands"));
     let title = "drop the lint job that waits its turn? Nothing was linted yet".to_string();
     let said = "It is taken off the queue: nothing is linted, and nothing changes in the stack.\nThe edit asked after it no longer waits for it.".to_string();

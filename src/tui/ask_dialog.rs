@@ -2,7 +2,10 @@
 //! the menu: a comment's, a question's on the history, the comments listed
 //! (`Ask agent about all…`), and the comment being written, from the menu
 //! Esc opens. On its first line, what the agent may do, its permission; on
-//! the second, how hard it works, its effort. Both are unset as it opens.
+//! the second, the model it works with, by its full id (`Model`); on the
+//! third, how hard it works, its effort. Each is unset as it opens, but the
+//! model and the effort the settings name for it to open with
+//! (`agent.ask_model`, `agent.ask_effort`), set already and changed as any.
 //! On a line, ← or → sets its first option, whichever the arrow, so that a
 //! stray key never sets the most permissive or the most expensive; then →
 //! the next and ← the one before, never round past either end, as the
@@ -13,15 +16,15 @@
 //! leaves the line as it was, and either closes the list alone. While it is
 //! open, nothing else in the dialog takes keys. Under the lines, its
 //! buttons: Ask Now, Ask Later (in the stack's batch) and Cancel, which Esc
-//! is too. Ask Now and Ask Later are grayed until both lines are set, and
+//! is too. Ask Now and Ask Later are grayed until the three lines are set, and
 //! Ask Now while the agent cannot be reached (`reach`): its program not
 //! found, or the network not reaching the host claude talks to, checked
 //! away from the screen as the dialog opens, unless it was a moment ago.
 //! The dialog says what keeps each one grayed. Nothing set in it is kept:
-//! each dialog opens unset.
+//! each dialog opens as the settings say, unset without them.
 //!
 //! The review's `Send it back to the agent…` opens it too, on the work it
-//! sends back, with the same two lines and keys, its buttons Send Now and
+//! sends back, with the same three lines and keys, its buttons Send Now and
 //! Cancel. A permission that changes the stack sends the work back, a
 //! round of its own asked as the dialog sets it; one that only reads asks a
 //! follow-up, the work staying waiting for your review, and what the
@@ -215,11 +218,15 @@ impl Button {
 /// `Now`, and Cancel.
 const SENDING: [Button; 2] = [Button::Now, Button::Cancel];
 
-/// The dialog's lines, from the top: the permission's, the effort's, the
-/// buttons'.
+/// The dialog's lines, from the top: the permission's, the model's, the
+/// effort's, the buttons'.
 pub const PERMISSION_LINE: usize = 0;
-pub const EFFORT_LINE: usize = 1;
-pub const BUTTONS_LINE: usize = 2;
+pub const MODEL_LINE: usize = 1;
+pub const EFFORT_LINE: usize = 2;
+pub const BUTTONS_LINE: usize = 3;
+
+/// How many lines the dialog has, the buttons' among them.
+const LINES: usize = 4;
 
 /// The dialog that asks the agent, open.
 #[derive(Debug, Clone, PartialEq)]
@@ -237,10 +244,14 @@ pub struct AskDialog {
     /// The permission set, by its place among those: none until ← →, or
     /// the list Enter opens, sets one.
     pub permission: Option<usize>,
-    /// The effort set: none until ← →, or the list Enter opens, sets one.
+    /// The model set: the one the settings name for the dialog to open
+    /// with, else none until ← →, or the list Enter opens, sets one.
+    pub model: Option<Model>,
+    /// The effort set: the one the settings name for the dialog to open
+    /// with, else none until ← →, or the list Enter opens, sets one.
     pub effort: Option<Effort>,
-    /// The line the cursor is on: `PERMISSION_LINE`, `EFFORT_LINE` or
-    /// `BUTTONS_LINE`.
+    /// The line the cursor is on: `PERMISSION_LINE`, `MODEL_LINE`,
+    /// `EFFORT_LINE` or `BUTTONS_LINE`.
     pub line: usize,
     /// The list of the options of the line the cursor is on, open under
     /// that line: the place in it of the option its cursor is on. None
@@ -269,9 +280,16 @@ impl AskDialog {
         self.permissions.iter().map(|(p, _)| p.label()).collect()
     }
 
-    /// Whether both lines are set.
+    /// Whether the three lines are set.
     pub fn set(&self) -> bool {
-        self.permission.is_some() && self.effort.is_some()
+        self.permission.is_some() && self.model.is_some() && self.effort.is_some()
+    }
+
+    /// What is not set yet, as the dialog says it, in the lines' order:
+    /// `the permission`, `the model`, `the effort`.
+    fn unset(&self) -> Vec<&'static str> {
+        let lines = [(self.permission.is_none(), "the permission"), (self.model.is_none(), "the model"), (self.effort.is_none(), "the effort")];
+        lines.into_iter().filter(|(unset, _)| *unset).map(|(_, said)| said).collect()
     }
 
     /// Whether it sends work back, from the review of that work.
@@ -310,10 +328,12 @@ impl AskDialog {
     }
 
     /// The options of line `line`, as drawn, in order: the permissions that
-    /// apply here, or the efforts, low to max; none on the buttons' line.
+    /// apply here, the models by their full ids, in the list's order, or
+    /// the efforts, low to max; none on the buttons' line.
     pub fn options(&self, line: usize) -> Vec<&'static str> {
         match line {
             PERMISSION_LINE => self.permission_labels(),
+            MODEL_LINE => Model::IDS.to_vec(),
             EFFORT_LINE => Effort::NAMES.to_vec(),
             _ => vec![],
         }
@@ -323,6 +343,7 @@ impl AskDialog {
     pub fn set_at(&self, line: usize) -> Option<usize> {
         match line {
             PERMISSION_LINE => self.permission,
+            MODEL_LINE => self.model.map(|m| m as usize),
             EFFORT_LINE => self.effort.map(|e| e as usize),
             _ => None,
         }
@@ -332,6 +353,7 @@ impl AskDialog {
     fn set_to(&mut self, line: usize, k: usize) {
         match line {
             PERMISSION_LINE if k < self.permissions.len() => self.permission = Some(k),
+            MODEL_LINE if k < Model::ALL.len() => self.model = Some(Model::ALL[k]),
             EFFORT_LINE if k < Effort::ALL.len() => self.effort = Some(Effort::ALL[k]),
             _ => {}
         }
@@ -446,7 +468,8 @@ enum Reach {
 
 impl App {
     /// The dialog that asks the agent about `about`, opened with nothing
-    /// set: the agent's program looked for, and the network checked away
+    /// set but the model and the effort the settings name for it to open
+    /// with: the agent's program looked for, and the network checked away
     /// from the screen, unless it was a moment ago.
     pub(super) fn open_ask(&mut self, about: AskOf) {
         let Some((title, on_stack, permissions)) = self.asking_of(&about) else {
@@ -469,7 +492,8 @@ impl App {
             on_stack,
             permissions,
             permission: None,
-            effort: None,
+            model: self.cfg.agent.ask_model,
+            effort: self.cfg.agent.ask_effort,
             line: PERMISSION_LINE,
             list: None,
             button: Button::Now,
@@ -616,7 +640,7 @@ impl App {
     /// that it sends it back, whose work, what it holds, and what was asked.
     fn send_back_title(&self, run: &str) -> String {
         let Some(r) = self.db.run(run) else { return "send back the agent's work".into() };
-        let whose = crate::thread::named_at("the agent's work", ask::effort_said(r));
+        let whose = crate::thread::named_at("the agent's work", &ask::at_of(r));
         let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", short(&r.request, 40)) };
         format!("send back {whose}: {}{asked}", crate::held::left(&self.db, r))
     }
@@ -748,8 +772,8 @@ impl App {
     }
 
     /// Which of dialog `d`'s buttons can be pressed, by their places among
-    /// every button (`Button::at`): Ask Now and Ask Later once both lines are
-    /// set (and, of the comments listed, one is asked about), Ask Now while
+    /// every button (`Button::at`): Ask Now and Ask Later once the three lines
+    /// are set (and, of the comments listed, one is asked about), Ask Now while
     /// the agent can be reached; Cancel always. Sending work back, Send Now
     /// as Ask Now; it has no Ask Later.
     pub fn ask_buttons(&self, d: &AskDialog) -> [bool; 3] {
@@ -766,14 +790,16 @@ impl App {
             true => ("Send Now", "Send Now is"),
             false => ("Ask Now", "Ask Now and Ask Later are"),
         };
-        match (d.permission(), d.effort) {
-            (None, None) => out.push(format!("{both} grayed until the permission and the effort are set.")),
-            (None, Some(_)) => out.push(format!("{both} grayed until the permission is set.")),
-            (Some(_), None) => out.push(format!("{both} grayed until the effort is set.")),
-            (Some(p), Some(_)) if d.count() == Some(0) => {
+        // What is not set, said as one: `until the permission, the model
+        // and the effort are set`, `until the model is set`.
+        let unset = d.unset();
+        match (unset.len(), d.permission()) {
+            (0, Some(p)) if d.count() == Some(0) => {
                 out.push(format!("{both} grayed: no comment listed can be asked {}.", p.asked()));
             }
-            _ => {}
+            (0, _) => {}
+            (1, _) => out.push(format!("{both} grayed until {} is set.", unset[0])),
+            _ => out.push(format!("{both} grayed until {} are set.", and_list(&unset))),
         }
         match self.reach_of(d) {
             Reach::Yes => {}
@@ -813,6 +839,14 @@ impl App {
         }
     }
 
+    /// What the line under dialog `d`'s model says.
+    fn model_said(d: &AskDialog) -> String {
+        match d.model {
+            None => format!("Not set yet: {}.", unset_keys(&Model::IDS)),
+            Some(m) => format!("claude is given --model {}.", m.id()),
+        }
+    }
+
     /// What the line under dialog `d`'s effort says.
     fn effort_said(d: &AskDialog) -> String {
         match d.effort {
@@ -822,19 +856,22 @@ impl App {
     }
 
     /// What dialog `d`'s lines say, from the top, as drawn: the
-    /// permission's, the line under it, the effort's, the line under it.
-    pub fn ask_lines(&self, d: &AskDialog) -> [String; 4] {
+    /// permission's, the line under it, the model's, the line under it, the
+    /// effort's, the line under it.
+    pub fn ask_lines(&self, d: &AskDialog) -> [String; 6] {
         let value = |v: Option<&str>| v.map_or("[ — ]".to_string(), |v| format!("[{v}]"));
         [
             format!("Permission: {}", value(d.permission().map(Permission::label))),
             self.permission_said(d),
+            format!("Model: {}", value(d.model.map(Model::id))),
+            App::model_said(d),
             format!("Effort: {}", value(d.effort.map(Effort::name))),
             App::effort_said(d),
         ]
     }
 
     /// A key in the ask dialog `d`: ↑↓ from line to line and to the
-    /// buttons; on the two lines, ← → step the option set, the first from
+    /// buttons; on the three lines, ← → step the option set, the first from
     /// unset, and Enter opens the list of the line's options; on the
     /// buttons, ← → from button to button, past those grayed, and Enter
     /// presses the one the cursor is on; Esc cancels. The list open, its own
@@ -846,8 +883,8 @@ impl App {
             return Effect::None;
         }
         match k.code {
-            KeyCode::Down => d.line = (d.line + 1) % 3,
-            KeyCode::Up => d.line = (d.line + 2) % 3,
+            KeyCode::Down => d.line = (d.line + 1) % LINES,
+            KeyCode::Up => d.line = (d.line + LINES - 1) % LINES,
             KeyCode::Home => d.line = PERMISSION_LINE,
             KeyCode::End => d.line = BUTTONS_LINE,
             KeyCode::Left | KeyCode::Right if d.line == BUTTONS_LINE => {
@@ -862,11 +899,11 @@ impl App {
                     d.button = list[n];
                 }
             }
-            // On the two lines, the option set stepped: the first from
+            // On the three lines, the option set stepped: the first from
             // unset, whichever the arrow, then none past either end.
             KeyCode::Left | KeyCode::Right => d.step(d.line, k.code == KeyCode::Right),
             KeyCode::Enter => match d.line {
-                PERMISSION_LINE | EFFORT_LINE => d.open_list(),
+                PERMISSION_LINE | MODEL_LINE | EFFORT_LINE => d.open_list(),
                 _ => return self.press_ask(d),
             },
             KeyCode::Esc => return self.cancel_ask(d),
@@ -909,29 +946,29 @@ impl App {
     /// What dialog `d` asks, asked as its lines set it: now, or `later`, in
     /// the stack's batch.
     fn ask_from(&mut self, d: AskDialog, later: bool) {
-        let (Some(p), Some(effort)) = (d.permission(), d.effort) else { return };
+        let (Some(p), Some(model), Some(effort)) = (d.permission(), d.model, d.effort) else { return };
         let (way, whole) = (p.way(), d.whole(p));
         self.mode = Mode::Normal;
         match d.about {
-            AskOf::Comment(change, id) => self.now_or_later(vec![(change, id)], way, whole, effort, later),
+            AskOf::Comment(change, id) => self.now_or_later(vec![(change, id)], way, whole, model, effort, later),
             AskOf::Listed { .. } => {
                 let notes = self.listed_sendable(way);
-                self.now_or_later(notes, way, false, effort, later);
+                self.now_or_later(notes, way, false, model, effort, later);
             }
-            AskOf::Written { .. } => self.ask_written(way, whole, effort, later),
+            AskOf::Written { .. } => self.ask_written(way, whole, model, effort, later),
             // Sent back: a round of its own, the work rejected; or a
             // follow-up, the work staying for your review.
-            AskOf::SendBack(_) if p.changes() => self.review_send_back(way, whole, effort),
-            AskOf::SendBack(_) => self.review_follow_up(way, effort),
+            AskOf::SendBack(_) if p.changes() => self.review_send_back(way, whole, model, effort),
+            AskOf::SendBack(_) => self.review_follow_up(way, model, effort),
         }
     }
 
     /// `notes` asked about now, on the agent's queue, or `later`, in the
     /// stack's batch.
-    fn now_or_later(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort, later: bool) {
+    fn now_or_later(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, model: Model, effort: Effort, later: bool) {
         match later {
-            true => self.batch(notes, way, whole, effort),
-            false => self.send(notes, way, whole, effort),
+            true => self.batch(notes, way, whole, Some(model), effort),
+            false => self.send(notes, way, whole, Some(model), effort),
         }
     }
 
@@ -939,7 +976,7 @@ impl App {
     /// about, now or `later`: taken by the agent meanwhile, it stays in the
     /// editor; not saved, nothing is asked, and the comment goes back on
     /// the queue as it was, if it was on it.
-    fn ask_written(&mut self, way: Way, whole: bool, effort: Effort, later: bool) {
+    fn ask_written(&mut self, way: Way, whole: bool, model: Model, effort: Effort, later: bool) {
         let Some(e) = self.pending.take() else { return };
         if let Some(why) = self.locked_target(&e.target) {
             self.status = why;
@@ -948,7 +985,7 @@ impl App {
         }
         let text = e.ed.text();
         match self.save_attached(&e.target, &text, &e.attached) {
-            Some(saved) => self.now_or_later(vec![saved], way, whole, effort, later),
+            Some(saved) => self.now_or_later(vec![saved], way, whole, model, effort, later),
             None => self.settle_edit(&e, false),
         }
         self.say_detached();
@@ -958,10 +995,15 @@ impl App {
     /// where the arrows go, and that nothing is kept. The list open, what
     /// Enter sets there, and how to go through the list or leave it.
     pub(super) fn ask_help(&self, d: &AskDialog) -> Vec<String> {
-        let kept = "Nothing is set as the dialog opens, and nothing set in it is kept: each dialog opens unset.".to_string();
+        let kept = match (self.cfg.agent.ask_model, self.cfg.agent.ask_effort) {
+            (None, None) => "Nothing is set as the dialog opens, and nothing set in it is kept: each dialog opens unset.",
+            _ => "Nothing set in the dialog is kept: each dialog opens with nothing set but what the settings name for it to open with (agent.ask_model, agent.ask_effort).",
+        }
+        .to_string();
         if let Some(at) = d.list {
             let (what, said) = match d.line {
                 PERMISSION_LINE => ("permission", self.permission_said(&AskDialog { permission: Some(at), ..d.clone() })),
+                MODEL_LINE => ("model", App::model_said(&AskDialog { model: Model::ALL.get(at).copied(), ..d.clone() })),
                 _ => ("effort", App::effort_said(&AskDialog { effort: Effort::ALL.get(at).copied(), ..d.clone() })),
             };
             let option = d.options(d.line).get(at).copied().unwrap_or_default();
@@ -985,6 +1027,10 @@ impl App {
                 "Press Enter to open the list of what the agent may do here, to pick one: {}. The line under the permission says what the one set lets the agent do.",
                 one_of(&d.permission_labels())
             ),
+            (MODEL_LINE, _) => format!(
+                "Press Enter to open the list of the models the agent may work with, by their full ids as claude's --model takes them, to pick one: {}.",
+                one_of(&Model::IDS)
+            ),
             (EFFORT_LINE, _) => format!(
                 "Press Enter to open the list of how hard the agent works, as claude's --effort takes it, to pick one: {}.",
                 one_of(&Effort::NAMES)
@@ -992,13 +1038,13 @@ impl App {
             (_, b) if !on[b.at()] => self.ask_note(d).into_iter().find(|l| l.contains(d.label(b))).unwrap_or_else(|| format!("{} is grayed.", d.label(b))),
             (_, Button::Now) if d.sends_back() => match d.permission() {
                 Some(p) if p.changes() => {
-                    "Press Enter to send the work back now, as the two lines say: this work is rejected, and the agent is asked again, going on from it.".into()
+                    "Press Enter to send the work back now, as the three lines say: this work is rejected, and the agent is asked again, going on from it.".into()
                 }
-                _ => "Press Enter to ask the follow-up now, as the two lines say: this work stays waiting for your review, and what the agent brings back comes into it.".into(),
+                _ => "Press Enter to ask the follow-up now, as the three lines say: this work stays waiting for your review, and what the agent brings back comes into it.".into(),
             },
-            (_, Button::Now) => format!("Press Enter to {written}ask the agent now, as the two lines say: the ask starts at once, or waits its turn."),
+            (_, Button::Now) => format!("Press Enter to {written}ask the agent now, as the three lines say: the ask starts at once, or waits its turn."),
             (_, Button::Later) => {
-                format!("Press Enter to {written}put the ask in the stack's batch, as the two lines say: it waits there until the banner sends the batch.")
+                format!("Press Enter to {written}put the ask in the stack's batch, as the three lines say: it waits there until the banner sends the batch.")
             }
             (_, Button::Cancel) => match d.about {
                 AskOf::Written { .. } => "Press Enter to close the dialog and go back to writing the comment: nothing is saved, and nothing is asked.".into(),
@@ -1007,16 +1053,17 @@ impl App {
             },
         };
         let arrows = match d.line {
-            PERMISSION_LINE | EFFORT_LINE => {
+            PERMISSION_LINE | MODEL_LINE | EFFORT_LINE => {
                 let (what, from_unset) = match d.line {
                     PERMISSION_LINE => ("permission", d.permission_labels().first().copied().unwrap_or_default()),
+                    MODEL_LINE => ("model", Model::IDS[0]),
                     _ => ("effort", Effort::NAMES[0]),
                 };
                 format!(
                     "Press ← or → to set the {what} without the list: from unset, either sets {from_unset}; then → steps to the next and ← to the one before, and neither goes round past either end. Press ↑↓ to go from line to line and to the buttons. Esc closes the dialog, as Cancel does."
                 )
             }
-            _ => "Press ↑↓ to go from line to line and to the buttons. On the buttons, ← → go from one to the next, past those grayed; on the two lines, they set the permission and the effort. Esc closes the dialog, as Cancel does."
+            _ => "Press ↑↓ to go from line to line and to the buttons. On the buttons, ← → go from one to the next, past those grayed; on the three lines, they set the permission, the model and the effort. Esc closes the dialog, as Cancel does."
                 .into(),
         };
         vec![first, arrows, kept]
@@ -1026,8 +1073,10 @@ impl App {
     pub(super) fn ask_hint(d: &AskDialog) -> String {
         match (d.line, d.list) {
             (PERMISSION_LINE, Some(_)) => "↑↓ choose · enter: set the permission · esc: close the list · ?: what it does".into(),
+            (MODEL_LINE, Some(_)) => "↑↓ choose · enter: set the model · esc: close the list · ?: what it does".into(),
             (EFFORT_LINE, Some(_)) => "↑↓ choose · enter: set the effort · esc: close the list · ?: what it does".into(),
             (PERMISSION_LINE, None) => "↑↓ choose · ←→: set the permission · enter: open the list · esc: cancel · ?: what it does".into(),
+            (MODEL_LINE, None) => "↑↓ choose · ←→: set the model · enter: open the list · esc: cancel · ?: what it does".into(),
             (EFFORT_LINE, None) => "↑↓ choose · ←→: set the effort · enter: open the list · esc: cancel · ?: what it does".into(),
             _ => "↑↓ choose · ←→: another button · enter: press it · esc: cancel · ?: what it does".into(),
         }
@@ -1041,7 +1090,7 @@ impl App {
         let d = (**d).clone();
         let on = self.ask_buttons(&d);
         let note = self.ask_note(&d);
-        let [permission, permission_said, effort, effort_said] = self.ask_lines(&d);
+        let [permission, permission_said, model, model_said, effort, effort_said] = self.ask_lines(&d);
         let screen = buf.area;
         let area = match d.at {
             Some(_) => Rect::new(screen.x, screen.y + 1, screen.width, screen.height.saturating_sub(2)),
@@ -1049,7 +1098,7 @@ impl App {
         };
         let (w, h) = (area.width as usize, area.height as usize);
         let bw = (d.title.chars().count() + 6).clamp(64, 78).min(w.saturating_sub(2));
-        // The lines under the two, indented, as many as the longest of
+        // The lines under the three, indented, as many as the longest of
         // what they may say takes, so that the box keeps its size as they
         // are set.
         let said_w = bw.saturating_sub(6).max(1);
@@ -1064,6 +1113,9 @@ impl App {
             .unwrap_or(1);
         let mut under_permission = wrap(&permission_said, said_w);
         under_permission.resize(tallest, String::new());
+        let unset = wrap(&App::model_said(&AskDialog { model: None, ..d.clone() }), said_w).len();
+        let mut under_model = wrap(&model_said, said_w);
+        under_model.resize(unset.max(under_model.len()), String::new());
         let unset = wrap(&App::effort_said(&AskDialog { effort: None, ..d.clone() }), said_w).len();
         let mut under_effort = wrap(&effort_said, said_w);
         under_effort.resize(unset.max(under_effort.len()), String::new());
@@ -1071,7 +1123,7 @@ impl App {
         // Where each line's value starts, `[ — ]`: the list of its options
         // opens under it.
         let value_at = |line: &str| line.chars().take_while(|c| *c != '[').count();
-        let (permission_col, effort_col) = (value_at(&permission), value_at(&effort));
+        let (permission_col, model_col, effort_col) = (value_at(&permission), value_at(&model), value_at(&effort));
         // Each line from the top: what it says, in its style, and what a
         // click there is on; none for the buttons' line.
         let line_st = |k: usize| if d.line == k { on_cursor(Style::new()) } else { Style::new() };
@@ -1079,6 +1131,8 @@ impl App {
         let plain = |text: String| -> Drawn { Some((text, Style::new(), None)) };
         let mut rows: Vec<Drawn> = vec![Some((permission, line_st(PERMISSION_LINE), Some(Spot::AskLine(PERMISSION_LINE))))];
         rows.extend(under_permission.iter().map(|l| plain(format!("  {l}"))));
+        rows.push(Some((model, line_st(MODEL_LINE), Some(Spot::AskLine(MODEL_LINE)))));
+        rows.extend(under_model.iter().map(|l| plain(format!("  {l}"))));
         rows.push(Some((effort, line_st(EFFORT_LINE), Some(Spot::AskLine(EFFORT_LINE)))));
         rows.extend(under_effort.iter().map(|l| plain(format!("  {l}"))));
         rows.push(plain(String::new()));
@@ -1118,7 +1172,8 @@ impl App {
         let Some(at) = d.list else { return };
         let (k, col) = match d.line {
             PERMISSION_LINE => (0, permission_col),
-            EFFORT_LINE => (1 + under_permission.len(), effort_col),
+            MODEL_LINE => (1 + under_permission.len(), model_col),
+            EFFORT_LINE => (2 + under_permission.len() + under_model.len(), effort_col),
             _ => return,
         };
         // The line itself not drawn, the box too small for it: no list.
@@ -1207,6 +1262,29 @@ mod tests {
         assert_eq!(one_of(&["answer only"]), "answer only, the only one here");
         assert_eq!(one_of(&["answer only", "change stack"]), "answer only or change stack");
         assert_eq!(one_of(&Effort::NAMES), Effort::listed());
+        // The models by their full ids, in the list's order.
+        assert_eq!(
+            unset_keys(&Model::IDS),
+            "← or → sets claude-fable-5-1, then steps to claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5. Enter opens the list of them"
+        );
+        assert_eq!(one_of(&Model::IDS), Model::listed());
+    }
+
+    #[test]
+    fn what_keeps_the_buttons_grayed_names_every_line_not_set_in_the_lines_order() {
+        let mut d = listed();
+        let said = |d: &AskDialog| d.unset();
+        assert_eq!(said(&d), ["the permission", "the model", "the effort"]);
+        d.model = Some(Model::Opus55);
+        assert_eq!(said(&d), ["the permission", "the effort"]);
+        d.permission = Some(0);
+        assert_eq!(said(&d), ["the effort"]);
+        d.model = None;
+        d.effort = Some(Effort::Max);
+        assert_eq!((said(&d), d.set()), (vec!["the model"], false));
+        d.model = Some(Model::Haiku55);
+        assert!(said(&d).is_empty() && d.set());
+        assert_eq!(and_list(&["the permission", "the model", "the effort"]), "the permission, the model and the effort");
     }
 
     /// A dialog of the comments listed, nothing set, the cursor on its
@@ -1218,6 +1296,7 @@ mod tests {
             on_stack: false,
             permissions: vec![(Permission::Answer, None), (Permission::ChangePatch, None), (Permission::ChangeStack, None)],
             permission: None,
+            model: None,
             effort: None,
             line: PERMISSION_LINE,
             list: None,
@@ -1234,8 +1313,10 @@ mod tests {
         for forward in [false, true] {
             let mut d = listed();
             d.step(PERMISSION_LINE, forward);
+            d.step(MODEL_LINE, forward);
             d.step(EFFORT_LINE, forward);
-            assert_eq!((d.permission().map(Permission::label), d.effort.map(Effort::name)), (Some("answer only"), Some("low")), "{forward}");
+            let set = (d.permission().map(Permission::label), d.model.map(Model::id), d.effort.map(Effort::name));
+            assert_eq!(set, (Some("answer only"), Some("claude-fable-5-1"), Some("low")), "{forward}");
         }
         // Then → steps on, and stops on the last; ← back, and stops on the
         // first.
@@ -1252,6 +1333,13 @@ mod tests {
             seen.push(d.effort.map(Effort::name).unwrap_or_default());
         }
         assert_eq!(seen, ["low", "medium", "high", "xhigh", "max", "max", "xhigh", "high", "medium", "low", "low", "low"]);
+        let mut seen = Vec::new();
+        for forward in [true; 5].into_iter().chain([false; 5]) {
+            d.step(MODEL_LINE, forward);
+            seen.push(d.model.map(Model::id).unwrap_or_default());
+        }
+        let (fable, opus, sonnet, haiku) = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5");
+        assert_eq!(seen, [fable, opus, sonnet, haiku, haiku, sonnet, opus, fable, fable, fable]);
         // The buttons' line has no options: nothing set there.
         let before = d.clone();
         d.step(BUTTONS_LINE, true);
@@ -1295,6 +1383,16 @@ mod tests {
         d.list_key(KeyCode::Up);
         d.list_key(KeyCode::Esc);
         assert_eq!((d.list, d.permission().map(Permission::label)), (None, Some("change stack")));
+        // The model's: the full ids, in the list's order, on the one set.
+        d.line = MODEL_LINE;
+        d.open_list();
+        assert_eq!((d.list, d.options(MODEL_LINE)), (Some(0), Model::IDS.to_vec()));
+        d.list_key(KeyCode::Down);
+        d.list_key(KeyCode::Enter);
+        assert_eq!(d.model, Some(Model::Opus55));
+        d.open_list();
+        assert_eq!(d.list, Some(1));
+        d.list_key(KeyCode::Esc);
         // The effort's: low to max, on the level set.
         d.line = EFFORT_LINE;
         d.open_list();

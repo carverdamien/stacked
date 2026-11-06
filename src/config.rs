@@ -347,6 +347,12 @@ pub struct Agent {
     /// claude talks to before it offers Ask Now (`reach`): off for a setup
     /// where that check is wrong though claude works.
     pub reach_check: bool,
+    /// The model the ask dialog opens with, already picked: unless set,
+    /// none, the dialog's model to pick.
+    pub ask_model: Option<crate::db::Model>,
+    /// The effort the ask dialog opens with, already picked: unless set,
+    /// none, the dialog's effort to pick.
+    pub ask_effort: Option<crate::db::Effort>,
 }
 
 impl Agent {
@@ -405,6 +411,8 @@ impl Default for Agent {
             chain: true,
             schema: true,
             reach_check: true,
+            ask_model: None,
+            ask_effort: None,
         }
     }
 }
@@ -780,6 +788,8 @@ struct WrittenAgent {
     chain: Option<bool>,
     schema: Option<bool>,
     reach_check: Option<bool>,
+    ask_model: Option<String>,
+    ask_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -922,6 +932,20 @@ impl Config {
         c.agent.chain = a.chain.unwrap_or(c.agent.chain);
         c.agent.schema = a.schema.unwrap_or(c.agent.schema);
         c.agent.reach_check = a.reach_check.unwrap_or(c.agent.reach_check);
+        // The dialog's own values alone: a model by its full id, an effort
+        // by its name.
+        if let Some(m) = a.ask_model {
+            match crate::db::Model::parse(&m) {
+                Some(m) => c.agent.ask_model = Some(m),
+                None => wrong.push(format!("agent.ask_model: {m:?} is not {}", crate::db::Model::listed())),
+            }
+        }
+        if let Some(e) = a.ask_effort {
+            match crate::db::Effort::parse(&e) {
+                Some(e) => c.agent.ask_effort = Some(e),
+                None => wrong.push(format!("agent.ask_effort: {e:?} is not {}", crate::db::Effort::listed())),
+            }
+        }
         for (key, written, at) in [
             ("agent.worktree", &a.worktree, &mut c.agent.worktree),
             ("agent.answer_only_worktree", &a.answer_only_worktree, &mut c.agent.answer_only_worktree),
@@ -1266,6 +1290,21 @@ impl Config {
              # not: false turns the check off, where it is wrong though claude works.\n",
         );
         out.push_str(&format!("reach_check = {}\n", self.agent.reach_check));
+        out.push_str(&format!(
+            "# The model the dialog that asks the agent opens with, already picked, by its full\n\
+             # id as claude's --model takes it:\n\
+             # {}.\n\
+             # Unless this is set, the dialog opens with none, and the model is picked there.\n",
+            crate::db::Model::listed()
+        ));
+        out.push_str(&opt("ask_model", &self.agent.ask_model.map(|m| m.id().to_string()), "none: picked in the dialog"));
+        out.push_str(&format!(
+            "# The effort that dialog opens with, already picked, as claude's --effort takes it:\n\
+             # {}. Unless this is set, the dialog opens with none,\n\
+             # and the effort is picked there.\n",
+            crate::db::Effort::listed()
+        ));
+        out.push_str(&opt("ask_effort", &self.agent.ask_effort.map(|e| e.name().to_string()), "none: picked in the dialog"));
         // Phabricator's, built with it (the moz-phab feature).
         if cfg!(feature = "moz-phab") {
             out.push_str("\n[reviews]\n# Where `moz-phab pull` reads reviews from, and `moz-phab import` revisions: \"phabricator\", or \"none\".\n");
@@ -1477,6 +1516,10 @@ enum Kind {
     PortNumber,
     /// Where `stacked web` runs a terminal editor: page or terminal.
     WebEditor,
+    /// A model of the ask dialog's, by its full id.
+    Model,
+    /// An effort of the ask dialog's, by its name.
+    Effort,
 }
 
 /// Every setting there is, as the file names it, and what it holds; the
@@ -1503,6 +1546,8 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("agent.chain", Kind::Flag),
     ("agent.schema", Kind::Flag),
     ("agent.reach_check", Kind::Flag),
+    ("agent.ask_model", Kind::Model),
+    ("agent.ask_effort", Kind::Effort),
     ("reviews.source", Kind::Text),
     ("reviews.url", Kind::Text),
     ("reviews.arcrc", Kind::Text),
@@ -1607,6 +1652,14 @@ fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
             Some(e) => toml::Value::String(e.name().into()).to_string(),
             None => return Err(format!("{key} is {NOT_A_WEB_EDITOR}, not {:?}", values[0])),
         },
+        Kind::Model => match crate::db::Model::parse(one()?) {
+            Some(m) => toml::Value::String(m.id().into()).to_string(),
+            None => return Err(format!("{key} is {}, not {:?}", crate::db::Model::listed(), values[0])),
+        },
+        Kind::Effort => match crate::db::Effort::parse(one()?) {
+            Some(e) => toml::Value::String(e.name().into()).to_string(),
+            None => return Err(format!("{key} is {}, not {:?}", crate::db::Effort::listed(), values[0])),
+        },
         Kind::Color => {
             let v = one()?;
             parse_color(v).map_err(|e| format!("{key}: {e}"))?;
@@ -1643,6 +1696,8 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.chain" => vec![c.agent.chain.to_string()],
         "agent.schema" => vec![c.agent.schema.to_string()],
         "agent.reach_check" => vec![c.agent.reach_check.to_string()],
+        "agent.ask_model" => c.agent.ask_model.iter().map(|m| m.id().to_string()).collect(),
+        "agent.ask_effort" => c.agent.ask_effort.iter().map(|e| e.name().to_string()).collect(),
         "reviews.source" => vec![match c.reviews.source {
             Source::Phabricator => "phabricator".into(),
             Source::None => "none".into(),
@@ -2615,6 +2670,45 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[agent]\nreach_check = false\n");
         assert!(!Config::load(&path).0.agent.reach_check);
         assert!(set(&path, "agent.reach_check", &["no".to_string()]).unwrap_err().contains("true or false"));
+    }
+
+    #[test]
+    fn the_ask_dialog_opens_with_no_model_nor_effort_unless_set_to_one_of_its_own() {
+        use crate::db::{Effort, Model};
+        // Unless set, none: the dialog's to pick.
+        let c = Config::default();
+        assert_eq!((c.agent.ask_model, c.agent.ask_effort), (None, None));
+        let text = c.render();
+        assert!(text.contains("\n# ask_model = ...   (none: picked in the dialog)\n"), "{text}");
+        assert!(text.contains("\n# ask_effort = ...   (none: picked in the dialog)\n"), "{text}");
+        assert!(text.contains("# claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5.\n"), "{text}");
+        // Set to one of the dialog's own: that one.
+        let (c, wrong) = Config::parse("[agent]\nask_model = \"claude-opus-5-5\"\nask_effort = \"max\"\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!((c.agent.ask_model, c.agent.ask_effort), (Some(Model::Opus55), Some(Effort::Max)));
+        assert_eq!((value_of(&c, "agent.ask_model"), value_of(&c, "agent.ask_effort")), (Ok(vec!["claude-opus-5-5".to_string()]), Ok(vec!["max".to_string()])));
+        assert!(c.render().contains("\nask_model = \"claude-opus-5-5\"\n") && c.render().contains("\nask_effort = \"max\"\n"));
+        // Anything else, a short name too, refused, saying the setting and
+        // the values it takes; it stays unset.
+        let (c, wrong) = Config::parse("[agent]\nask_model = \"opus\"\nask_effort = \"huge\"\n").unwrap();
+        assert_eq!((c.agent.ask_model, c.agent.ask_effort), (None, None));
+        assert_eq!(
+            wrong,
+            [
+                "agent.ask_model: \"opus\" is not claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5",
+                "agent.ask_effort: \"huge\" is not low, medium, high, xhigh or max",
+            ]
+        );
+        // `stacked config` writes the dialog's own alone.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        set(&path, "agent.ask_model", &["claude-haiku-5-5".to_string()]).unwrap();
+        set(&path, "agent.ask_effort", &["low".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[agent]\nask_model = \"claude-haiku-5-5\"\nask_effort = \"low\"\n");
+        assert_eq!((Config::load(&path).0.agent.ask_model, Config::load(&path).0.agent.ask_effort), (Some(Model::Haiku55), Some(Effort::Low)));
+        let e = set(&path, "agent.ask_model", &["claude-opus-4".to_string()]).unwrap_err();
+        assert!(e.contains("agent.ask_model is claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5, not \"claude-opus-4\""), "{e}");
+        assert!(set(&path, "agent.ask_effort", &["huge".to_string()]).unwrap_err().contains("low, medium, high, xhigh or max"));
     }
 
     #[test]

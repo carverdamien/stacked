@@ -26,6 +26,7 @@ stacked send bug123 --all --answer-only   # every comment that can be sent
 stacked send bug123 4f1c2a --later   # in the stack's batch, to go with the rest
 stacked send bug123 --batch --fan-out   # the batch: edits to one agent, answers an agent each
 stacked send bug123 4f1c2a --effort max   # at claude's --effort max, rather than high
+stacked send bug123 4f1c2a --model claude-opus-5-5   # with claude's --model claude-opus-5-5, rather than none of its own
 stacked stop 1761650000000-4242    # the agent of that run (stacked runs lists them) stopped: its ask lands as failed at once
 stacked reply bug123 4f1c2a and keep the title
 stacked moz-phab pull bug123       # the stack's revisions, new versions, parents, those on top, comments: for your review (moz-phab)

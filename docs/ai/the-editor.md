@@ -661,14 +661,14 @@ the help then names those:
   kept for the stack in the database. Every `Ask agent…` item opens the
   ask dialog rather than asking from the menu (Asking the agent, below),
   and so does a review's `Send it back to the agent…`. An item that
-  sends again what was asked before ends with a dropdown of the effort it
-  goes at, `Effort [high]`: `Send it now` and the batch's items. On an
-  item with more than one
-  dropdown, ← → pick in the one underlined, which is the first until Tab
-  goes to the next one; shift-Tab goes back, as the bottom bar says
-  (`←→: to whom · tab: effort`). A click picks in the dropdown it is on:
-  the choice clicked, or, on `Effort [high]`, the next level, round from
-  `max` to `low`.
+  sends again what was asked before ends with a dropdown of the model it
+  goes with and one of the effort it goes at, `Model [claude-opus-5-5]
+  Effort [high]`: `Send it now` and the batch's items. On an item with
+  more than one dropdown, ← → pick in the one underlined, which is the
+  first until Tab goes to the next one; shift-Tab goes back, as the bottom
+  bar says (`←→: model · tab: effort`). A click picks in the dropdown it is
+  on: the choice clicked, or, on `Model […]` or `Effort […]`, the next,
+  round from the last to the first.
 - `?` says what can be done where the cursor is, as `Press Enter to create a
   comment on this line.`, and where the arrows go. The next key closes it
   and does what it does, so the key it names can be pressed straight away.

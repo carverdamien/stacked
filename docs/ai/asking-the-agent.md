@@ -20,7 +20,7 @@ stack's comments) or on the comments pane's header (each comment the list
 shows), the comment editor's `Ask agent…` (above), and, in the review of
 the agent's work, `Send it back to the agent…`, whose dialog has Send Now
 and Cancel for its buttons (What the agent brings back waits for your
-review, below). Its title says what is asked about; under it are two
+review, below). Its title says what is asked about; under it are three
 lines, then three buttons:
 
 ```
@@ -29,25 +29,32 @@ lines, then three buttons:
 │   Not set yet: ← or → sets answer only, then steps to change │
 │   patch and change stack. Enter opens the list of them.      │
 │                                                              │
+│ Model: [ — ]                                                 │
+│   Not set yet: ← or → sets claude-fable-5-1, then steps to   │
+│   claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5.   │
+│   Enter opens the list of them.                              │
 │ Effort: [ — ]                                                │
 │   Not set yet: ← or → sets low, then steps to medium, high,  │
 │   xhigh and max. Enter opens the list of them.               │
 │                                                              │
 │ < Ask Now >   < Ask Later >   < Cancel >                     │
 │                                                              │
-│ Ask Now and Ask Later are grayed until the permission and    │
-│ the effort are set.                                          │
+│ Ask Now and Ask Later are grayed until the permission, the   │
+│ model and the effort are set.                                │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Both lines are unset as the dialog opens, every time: nothing set in a
-dialog is kept for the next one, for the stack or between runs, so that no
-ask goes as the one before it went by mistake. On a line, ← or → sets its
-first option, `answer only` or `low`, whichever the arrow, so that a stray
-key never sets the most permissive or the most expensive one; then → steps
-to the next option and ← to the one before, and neither goes round past
-either end, as the menus' dropdowns do: ← held ends on the first, and →
-held on the last.
+The three lines are unset as the dialog opens, every time, but for the
+model and the effort the settings name for it to open with
+(`agent.ask_model`, `agent.ask_effort`: Settings, below), which are set
+as it opens and changed there as any: nothing set in a dialog is kept for
+the next one, for the stack or between runs, so that no ask goes as the
+one before it went by mistake. On a line, ← or → sets its first option,
+`answer only`, `claude-fable-5-1` or `low`, whichever the arrow, so that
+a stray key never sets the most permissive permission or the most
+expensive effort; then → steps to the next option and ← to the one
+before, and neither goes round past either end, as the menus' dropdowns
+do: ← held ends on the first, and → held on the last.
 
 Enter on a line opens the list of its options, every one the line offers
 here, in their order, just under the line and over the dialog, framed as
@@ -60,14 +67,18 @@ unset:
 │   Not set ye┌──────────────┐nswer only, then steps to change │
 │   patch and │ answer only  │ter opens the list of them.      │
 │             │ change patch │                                 │
-│ Effort: [ — │ change stack │                                 │
-│   Not set ye└──────────────┘ow, then steps to medium, high,  │
+│ Model: [ — │ change stack │                                 │
+│   Not set ye└──────────────┘claude-fable-5-1, then steps to  │
+│   claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5.   │
+│   Enter opens the list of them.                              │
+│ Effort: [ — ]                                                │
+│   Not set yet: ← or → sets low, then steps to medium, high,  │
 │   xhigh and max. Enter opens the list of them.               │
 │                                                              │
 │ < Ask Now >   < Ask Later >   < Cancel >                     │
 │                                                              │
-│ Ask Now and Ask Later are grayed until the permission and    │
-│ the effort are set.                                          │
+│ Ask Now and Ask Later are grayed until the permission, the   │
+│ model and the effort are set.                                │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,8 +95,9 @@ sets the line to it; while the list is open, a click anywhere else closes
 the list alone, as Esc does there, and the dialog stays open. A click on
 a button presses it, and a click out of the dialog cancels it, as Esc and
 Cancel do: nothing is asked, and from the comment editor you are back to
-writing the comment. Ask Now and Ask Later are grayed until both lines
-are set, and the dialog says which one is missing. Ask Later puts the ask
+writing the comment. Ask Now and Ask Later are grayed until the three
+lines are set, and the dialog says which ones are missing, in the lines'
+order (`grayed until the model and the effort are set`). Ask Later puts the ask
 in the stack's batch (below). Ask Now is grayed as well while the agent
 cannot be reached, and the dialog says why:
 
@@ -224,67 +236,90 @@ and Ask Now and Ask Later are grayed while none can be.
   The next submit sends the bug. `stacked review` lists the draft (`bug`)
   but opens no form; only the editor's review does.
 
-How hard the agent works on an ask is its effort, as claude's `--effort`
-takes it: `low`, `medium`, `high`, `xhigh` or `max`, the dialog's second
-line. What sends again what was asked before ends with the effort it goes
-at, `Effort [high]`: `Send it now` and the batch's items (below), each at
-the effort it was asked at unless another is picked there. On an item
-with choices of its own, Tab goes to
-the effort, shift-Tab goes back, and ← → pick in the one the menu is on.
-Neither goes round past its end: ← held ends on `low`, and → held on
-`max`. A click on `Effort [high]` picks the next level, round from `max`
-to `low`. What is picked there is that item's alone: no other ask starts
-at it, and nothing is kept between runs. The items that open something to
-write first, `Ask agent about this, answer only…` on the history and `Ask
-the agent to make a stack…`, pick no effort: the dialog of what you write
-there does.
+The model the agent works on an ask with is the dialog's second line, by
+its full id, as claude's `--model` takes it, in this order:
+`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-haiku-5-5`; the list is `Model::ALL`, in one place. There is no
+default: it is picked in the dialog, or set already as it opens by the
+settings' `agent.ask_model`. How hard the agent works on an ask is its
+effort, as claude's `--effort` takes it: `low`, `medium`, `high`, `xhigh`
+or `max`, the dialog's third line, picked there too, or set already as it
+opens by the settings' `agent.ask_effort`. What sends again what was
+asked before ends with the model it goes with and the effort it goes at,
+`Model [claude-opus-5-5]    Effort [high]`: `Send it now` and the batch's
+items (below), each with the model and at the effort it was asked with
+unless others are picked there; one asked before models were picked, with
+the settings' `agent.ask_model`, else the first of the list, there. On an
+item with choices of its own, Tab goes to the next dropdown, shift-Tab
+goes back, and ← → pick in the one the menu is on. Neither goes round
+past its end: ← held ends on the first, and → held on the last. A click
+on `Model […]` or `Effort […]` picks the next, round from the last to
+the first. What is picked there is that item's alone: no other ask starts
+with it, and nothing is kept between runs. The items that open something
+to write first, `Ask agent about this, answer only…` on the history and
+`Ask the agent to make a stack…`, pick neither: the dialog of what you
+write there does.
 
-An ask goes at the effort set for it, whenever its turn comes: the
-comment keeps that effort while it waits, ready or in the batch, and the
-ask keeps it once it starts. claude is given `--effort LEVEL` after the
-settings' `agent.args`, in place of an `--effort` they give, and the
-stream's first lines say so (`starting: claude -p … --permission-mode
-acceptEdits --effort high, in …`). A comment in the batch keeps the effort
-it was asked at: its `Send it now` starts at that effort, and each of the
-batch's items at the highest effort of the comments it sends. An ask asked
-again goes at the effort it had: a change dropped because the work it went
-on from was rejected, an answer restarted as a change is accepted, a
-comment put back on the queue as it was. Work sent back from its review
-goes at the effort its dialog sets, unset as the dialog opens, as every
-ask's is, whatever the work was asked at; from the command line, it goes
-at the effort it was asked at, unless `--effort` says otherwise (below).
-An ask queued by an older stacked has no effort of its own: it goes at
-the agent's default, or at the settings' `--effort`.
+An ask goes with the model and at the effort set for it, whenever its
+turn comes: the comment keeps them while it waits, ready or in the batch,
+and the ask keeps them once it starts. A record keeps the model by its
+id, not as one of the list, so that one of a model since taken out of the
+list still loads and goes as it was asked. claude is given `--model ID`
+then `--effort LEVEL` after the settings' `agent.args` (and `agent.model`),
+each in place of one they give, and the stream's first lines say so
+(`starting: claude -p … --permission-mode acceptEdits --model
+claude-opus-5-5 --effort high, in …`). A comment in the batch keeps the
+model and the effort it was asked with: its `Send it now` starts with
+them, and each of the batch's items at the highest effort of the comments
+it sends, with the first in the list of their models. An ask asked again
+goes with the model and at the effort it had: a change dropped because
+the work it went on from was rejected, an answer restarted as a change is
+accepted, a comment put back on the queue as it was. Work sent back from
+its review goes with the model and at the effort its dialog sets, as
+every ask's are, whatever the work was asked with; from the command line,
+it goes with the model and at the effort it was asked with, unless
+`--model` or `--effort` says otherwise (below). An ask queued by an older
+stacked has no model nor effort of its own: claude is given no `--model`
+nor `--effort` of the ask's, and it goes as the agent's default, or the
+settings', say.
 
-What the agent brings back says the effort it was asked at wherever the
-agent or its work is named, so that work done at `max` is told from work
-done at `low`. Each turn of the agent's in a thread is headed with it,
-`agent(max):`, in the middle, in the previews of the comments pane, in a
-review, in the browser and in StackED; the comments pane says `agent(max)`
-as who opened a comment the agent opened, and before the agent's last word
-(`agent(max): It is a shout.`), and the comment's head says `agent's
-comment (max)`. A turn is named with it (`Edit the agent's reply (max)`,
-`the agent's reply (max): edit it`, `you edited the agent's reply (max)`
-in the comment's history), and a comment's state says it after how it was
-asked (`with the agent (answer only, at max)`, `agent replied (answer
-only, at max)`, `the agent's reply (max) waits for your review`). The
-banner says it of what landed, before what was asked (`⟳ Review 1 reply,
-asked at max: "why so loud?"`), the review's title after whose work it is
-(`the agent's work (max): 1 reply · asked "why so loud?"`), as the menu of
-a comment its reply waits on names it (`Review the agent's work (max)…`),
-`Runs…` and `stacked runs` after what each run is (`answer(max) s "why so
-loud?"`), `stacked landed` after what is left of the work to review, a
-column of its own (`asked at max`), and `stacked comments`, the search and
-the history's comments as the editor heads the turns (`agent(max): It is a
-shout.`); the transcript's first lines give it as claude was given it
-(`--effort max`). The effort goes with each turn, on its fence (One file,
-only appended to, below): a reply or a comment the agent opened says it
-however long its work waits for review, and once accepted; so does a reply
-that moves a comment to the stack's comments, and a try push's replies, at
-the effort its tasks were selected at. A turn written before efforts were
-picked, or by an ask that went at the agent's own, says nothing of it, and
-shows as it always did. What the agent is told of the earlier turns of a
-thread says none of it either.
+What the agent brings back says the model and the effort it was asked
+with wherever the agent or its work is named, so that work done at `max`
+is told from work done at `low`, and work done by one model from another's.
+Each turn of the agent's in a thread is headed with them, the model first,
+`agent(claude-opus-5-5, max):`, in the middle, in the previews of the
+comments pane, in a review, in the browser and in StackED; the comments
+pane says `agent(claude-opus-5-5, max)` as who opened a comment the agent
+opened, and before the agent's last word (`agent(claude-opus-5-5, max): It
+is a shout.`), and the comment's head says `agent's comment
+(claude-opus-5-5, max)`. A turn is named with them (`Edit the agent's
+reply (claude-opus-5-5, max)`, `the agent's reply (claude-opus-5-5, max):
+edit it`, `you edited the agent's reply (claude-opus-5-5, max)` in the
+comment's history), and a comment's state says them after how it was
+asked, the effort first (`with the agent (answer only, at max with
+claude-opus-5-5)`, `agent replied (answer only, at max with
+claude-opus-5-5)`, `the agent's reply (claude-opus-5-5, max) waits for
+your review`). The banner says them of what landed, before what was asked
+(`⟳ Review 1 reply, asked at max with claude-opus-5-5: "why so loud?"`),
+the review's title after whose work it is (`the agent's work
+(claude-opus-5-5, max): 1 reply · asked "why so loud?"`), as the menu of
+a comment its reply waits on names it (`Review the agent's work
+(claude-opus-5-5, max)…`), `Runs…` and `stacked runs` after what each run
+is (`answer(claude-opus-5-5, max) s "why so loud?"`), `stacked landed`
+after what is left of the work to review, a column of its own (`asked at
+max with claude-opus-5-5`), and `stacked comments`, the search and the
+history's comments as the editor heads the turns (`agent(claude-opus-5-5,
+max): It is a shout.`); the transcript's first lines give them as claude
+was given them (`--model claude-opus-5-5 --effort max`). Either alone is
+said alone: `agent(max)`, `asked at max`, for an ask of before models were
+picked. The model and the effort go with each turn, on its fence (One
+file, only appended to, below): a reply or a comment the agent opened says
+them however long its work waits for review, and once accepted; so does a
+reply that moves a comment to the stack's comments, and a try push's
+replies, with the model and at the effort its tasks were selected with. A
+turn written before efforts were picked, or by an ask that went at the
+agent's own, says nothing of them, and shows as it always did. What the
+agent is told of the earlier turns of a thread says none of it either.
 
 The heading of each turn an answer-only ask brought back, its reply or a
 comment it opened, also says how old the stack it was asked on is, while
@@ -305,13 +340,18 @@ ask it again on the stack as it is if need be. The stack an answer was
 asked on goes with its turns, on their fence (One file, only appended to,
 below).
 
-On the command line, `stacked send` takes `--effort LEVEL`. Without it, an
-ask goes at `high`, and
-`--batch` sends each comment at the effort it was batched at, an ask of
-several at the highest of theirs. `stacked review --send-back` takes
-`--effort` too; without it, the work goes back at the effort it was asked
-at. A level claude does not take is refused, with the levels it takes
-said, and nothing is sent.
+On the command line, `stacked send` takes `--effort LEVEL` and `--model
+ID`. Without `--effort`, an ask goes at `high`; without `--model`, it
+goes with no model of its own (the settings' `agent.model`, else claude's
+own); the dialog's settings, `agent.ask_model` and `agent.ask_effort`,
+are the dialog's alone. `--batch` sends each comment with the model and
+at the effort it was batched with, an ask of several at the highest
+effort of theirs and with the first in the list of their models.
+`stacked review --send-back` takes `--effort` and `--model` too; without
+them, the work goes back with the model and at the effort it was asked
+with. A level claude does not take, or an id that is not one of the
+dialog's models, is refused, with those it takes said, and nothing is
+sent.
 
 What each kind of ask may use is stacked's to give and yours to add to.
 stacked always gives each what it needs: a change, git's history commands,
@@ -395,7 +435,7 @@ listed in $EDITOR, not told the agent), and its mentions name nothing.
 
 An ask goes now, or later, as in self-review's batch: the dialog's Ask
 Now, or its Ask Later, each time, as nothing of it is kept. Asked later, a
-comment waits in the stack's batch, at the permission and the effort its
+comment waits in the stack's batch, at the permission, the model and the effort its
 dialog set, marked `◇` and said `batched (may change the code)`; nothing
 is started. Its menu has `Send it now (…)`, alone, as it was batched, and
 `Remove it from the batch`; written again, it stays in the batch, to go as
@@ -404,8 +444,10 @@ single agent, in one ask, of the whole stack when they are on more than one
 patch or one was batched so; its answers to a single agent too, in one ask
 with the whole stack in view, or fanned out, an agent each, all at once;
 each build and test on its own, and each try push on its own too (Try push,
-below). Each of these items ends with the effort it sends at, the highest
-its comments were batched at unless another is picked. On the command
+below). Each of these items ends with the model it sends with, the first
+in the list of those its comments were batched with, and the effort it
+sends at, the highest its comments were batched at, unless others are
+picked. On the command
 line, `stacked send NAME ID --later` batches (how, as `send` says it:
 `--answer-only` and the rest), and `stacked send NAME --batch` sends the
 batch, the answers an agent each with `--fan-out`, and the try pushes the
@@ -687,15 +729,16 @@ stream under the comment's turns, over its references: what it says and
 runs, and while it thinks, one line
 counting it, `✻ thinking · ~688 tokens`, with the words of it when claude
 gives them), agent replied (changed, answered, tested), each with how it
-was asked and at what effort (`with the agent (answer only, at max)`,
-`agent replied (change, at max)`), failed (and why), moved. Until the
+was asked, at what effort and with what model (`with the agent (answer
+only, at max with claude-opus-5-5)`, `agent replied (change, at max with
+claude-opus-5-5)`), failed (and why), moved. Until the
 agent writes its first line, one line says what is being run to start
 it, as it runs: `starting: git worktree add --detach … BASE` (the
 stack's own worktree, made the first time, which takes a while in a big
 repository) or `starting: git switch --detach BASE, in WORKTREE` (taken
 again), then `starting: git am --keep-non-patch, 3 patches` (the stack, up
 to what it is asked about); then `starting: claude -p … --permission-mode
-… --effort LEVEL, in WORKTREE`, the ask's own worktree, whatever its kind:
+… --model ID --effort LEVEL, in WORKTREE`, the ask's own worktree, whatever its kind:
 never your checkout. A try push's selection's wrapper then lists the tasks
 mach can push before claude starts, its line saying so in stacked's own
 words, no `starting:` before them (`stacked lists the tasks mach can push
@@ -761,7 +804,8 @@ lists the asks still running, each as `stacked runs` says it and where its
 agent works: its worktree. A worktree with work the agent did not commit, or
 that could not be filed, is left in place, and the run's summary says
 where; others are kept for the next ask. `Runs…` lists every ask and pull,
-each ask with the effort it was asked at (`answer(max) s "why so loud?"`),
+each ask with the model and the effort it was asked with
+(`answer(claude-opus-5-5, max) s "why so loud?"`),
 as `stacked runs` does, and shows what the agent wrote. In the browser and
 in StackED, the mouse over a run marks it, underlined, and picks nothing:
 a click picks the run, and a second click on it is Enter. The wheel over

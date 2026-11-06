@@ -20,10 +20,12 @@ bytes long, padded with spaces.
   are its history. The agent's turns are fenced ```` ```agent ````
   (```` ```claude ````, as the first files have them, reads the same) and
   the way they were asked (```` ```agent answer ````), then, when their run
-  was asked at an effort, `effort` and its name (```` ```agent answer
-  effort max ````), a turn of before having none; then, an answer-only
-  ask's, `stack` and the rev of the stack it was asked on (```` ```agent
-  answer effort max stack 12 ````), which its heading counts the edits
+  was asked with a model, `model` and its id, and when it was asked at an
+  effort, `effort` and its name (```` ```agent answer model
+  claude-opus-5-5 effort max ````), a turn of before having neither or
+  the effort alone; then, an answer-only ask's, `stack` and the rev of the
+  stack it was asked on (```` ```agent answer model claude-opus-5-5 effort
+  max stack 12 ````), which its heading counts the edits
   since, by the stacks' index alone, no record read; and
   a reviewer's ```` ```reviewer ```` and their name; a reviewer's turn an
   edit of it replaces has `redacted` after the name (```` ```reviewer ann

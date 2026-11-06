@@ -34,7 +34,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::ask::{self, Scope};
-use crate::db::{Db, Effort, Note, Patch, Result, RunState, Stack, Way, err, local_time, short_id, stack_change};
+use crate::db::{Db, Effort, Model, Note, Patch, Result, RunState, Stack, Way, err, local_time, short_id, stack_change};
 use crate::editor::{Editor, Op};
 use crate::ops::{self, edit_text, strip_comments};
 use crate::paint::{color, fit, on_cursor, put, put_parts, window, wrap};
@@ -1286,6 +1286,10 @@ pub struct Choices {
 /// of: `Effort [high]`.
 pub const EFFORT: &str = "effort";
 
+/// What the dropdown of the model an item asks the agent with is a choice
+/// of: `Model [claude-opus-5-5]`.
+pub const MODEL: &str = "model";
+
 /// One of an item's choices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
@@ -2102,6 +2106,12 @@ impl Item {
     pub fn effort(&self) -> Option<Effort> {
         self.choices.iter().find(|c| c.of == EFFORT).and_then(|c| Effort::parse(c.pick()))
     }
+
+    /// The model it asks the agent with, as its dropdown picks it, if it
+    /// asks.
+    pub fn model(&self) -> Option<Model> {
+        self.choices.iter().find(|c| c.of == MODEL).and_then(|c| Model::parse(c.pick()))
+    }
 }
 
 impl Menu {
@@ -2334,6 +2344,9 @@ pub struct App {
     /// While an item of a menu is done, the effort its dropdown picks, for
     /// the ask it makes.
     at_effort: Option<Effort>,
+    /// While an item of a menu is done, the model its dropdown picks, for
+    /// the ask it makes.
+    at_model: Option<Model>,
     /// What the last check of whether the network reaches the agent found,
     /// for the ask dialog: where it was checked to reach, whether it did,
     /// and when it was checked (`reach::KEPT`).
@@ -3002,6 +3015,7 @@ impl App {
             searches: Vec::new(),
             finds: Vec::new(),
             at_effort: None,
+            at_model: None,
             reached: None,
             focus: Focus::List,
             list: cfg.view.patches,
@@ -5101,7 +5115,7 @@ impl App {
                     (true, RunState::Failed) if !stopped => format!("the linter could not lint the stack {}: {}", r.stack, r.summary),
                     (true, _) => format!("{}: {}", r.request, r.summary),
                     (false, state) => {
-                        let at = crate::thread::asked_at(ask::effort_said(r));
+                        let at = crate::thread::asked_at(&ask::at_of(r));
                         format!("the agent's {}{at} {}: {}", r.what, format!("{state:?}").to_lowercase(), r.summary)
                     }
                 };
@@ -6669,6 +6683,10 @@ impl App {
                                 "{keys} to pick the effort the agent is asked at, as claude's --effort takes it: {}. The effort picked is this item's alone, and kept for no other ask.",
                                 Effort::listed()
                             ),
+                            MODEL => format!(
+                                "{keys} to pick the model the agent is asked with, by its full id as claude's --model takes it: {}. The model picked is this item's alone, and kept for no other ask.",
+                                Model::listed()
+                            ),
                             _ => {
                                 let each: Vec<String> = c.list.iter().map(|ch| format!("{}, {}", ch.shown, ch.said)).collect();
                                 format!("{keys} to pick {}: {}. What is picked is kept for this stack.", c.what, each.join("; "))
@@ -7316,10 +7334,11 @@ impl App {
             KeyCode::Enter => {
                 return match m.chosen() {
                     Some(item) => {
-                        // An ask goes at the effort its dropdown picks.
-                        self.at_effort = item.effort();
+                        // An ask goes with the model and at the effort its
+                        // dropdowns pick.
+                        (self.at_model, self.at_effort) = (item.model(), item.effort());
                         let e = self.perform(item.doing());
-                        self.at_effort = None;
+                        (self.at_model, self.at_effort) = (None, None);
                         // The same menu built again, a box checked in it: it
                         // stays where it was drawn.
                         if let Mode::Menu(again) = &mut self.mode
@@ -7821,13 +7840,29 @@ impl App {
 
     /// The effort an ask goes at, as a dropdown drawn as one, `Effort
     /// [high]`: the effort `at`, that of what was asked before, if given;
+    /// else the one the ask dialog opens with (`agent.ask_effort`), if set;
     /// else high. What is picked in it is the item's alone: no other ask
     /// starts at it.
     fn effort_choices(&self, at: Option<Effort>) -> Choices {
         let list = Effort::ALL.iter().map(|e| Choice::new(e.name(), e.name(), format!("claude's --effort {}", e.name()), None)).collect();
+        let at = at.or(self.cfg.agent.ask_effort).unwrap_or_default();
         Choices {
             named: Some("Effort"),
-            ..Choices::new(EFFORT, "effort", list, Some(at.unwrap_or_default().name()))
+            ..Choices::new(EFFORT, "effort", list, Some(at.name()))
+        }
+    }
+
+    /// The model an ask goes with, as a dropdown drawn as one, `Model
+    /// [claude-opus-5-5]`: the model of id `at`, that of what was asked
+    /// before, if given and in the list; else the one the ask dialog opens
+    /// with (`agent.ask_model`), if set; else the first. What is picked in
+    /// it is the item's alone: no other ask starts with it.
+    fn model_choices(&self, at: Option<&str>) -> Choices {
+        let list = Model::ALL.iter().map(|m| Choice::new(m.id(), m.id(), format!("claude's --model {}", m.id()), None)).collect();
+        let at = at.and_then(Model::parse).or(self.cfg.agent.ask_model).unwrap_or(Model::ALL[0]);
+        Choices {
+            named: Some("Model"),
+            ..Choices::new(MODEL, "model", list, Some(at.id()))
         }
     }
 
@@ -7855,12 +7890,12 @@ impl App {
     /// A choice picked in a menu: kept for the stack; but the review's own
     /// rows, not kept for the stack: the comments that asked marked so in
     /// the review, and whether HEAD follows the stack kept for the review;
-    /// and the effort, kept nowhere, the item's alone.
+    /// and the model and the effort, kept nowhere, the item's alone.
     fn picked_choice(&mut self, of: &str, pick: &str) {
         match of {
             "asking" => self.mark_all_asking(pick == "close"),
             "head" => self.head_stays(pick == "stay"),
-            EFFORT => {}
+            EFFORT | MODEL => {}
             _ => self.pick_choice(of, pick),
         }
     }
@@ -8016,7 +8051,7 @@ impl App {
                 if let Some(c) = self.picked() {
                     title = match by_of(&c) {
                         By::You => "your comment".into(),
-                        By::Agent => crate::thread::named_at("agent's comment", crate::thread::opened_effort(&c.text).as_deref()),
+                        By::Agent => crate::thread::named_at("agent's comment", &crate::thread::opened_at(&c.text)),
                         By::Reviewer => format!("{}'s comment", c.by.clone().unwrap_or_default()),
                     };
                     if self.is_closed(&c) {
@@ -8261,15 +8296,17 @@ impl App {
                 }
                 let review = match r {
                     Some(r) if crate::held::pulled(r) => "Review the comments pulled…".to_string(),
-                    _ => format!("Review {}…", crate::thread::named_at("the agent's work", r.and_then(ask::effort_said))),
+                    _ => format!("Review {}…", crate::thread::named_at("the agent's work", &r.map(ask::at_of).unwrap_or_default())),
                 };
                 items.push(Item::new(review, Action::Review(run, Some(crate::held::Part::Reply(k)))));
             }
-            // In the batch: sent now, on its own, at the effort it was
-            // batched at unless another is picked, or taken out.
+            // In the batch: sent now, on its own, with the model and at the
+            // effort it was batched with unless others are picked, or taken
+            // out.
             None if c.queued.as_ref().is_some_and(|q| q.batched()) => {
-                let (said, at) = c.queued.as_ref().map_or(("", None), |q| (q.said(), q.effort));
-                items.push(Item::new(format!("Send it now ({said})"), Action::SendNow).when(w).with(self.effort_choices(at)));
+                let (said, model, at) = c.queued.as_ref().map_or(("", None, None), |q| (q.said(), q.model.as_deref(), q.effort));
+                let item = Item::new(format!("Send it now ({said})"), Action::SendNow).when(w);
+                items.push(item.with(self.model_choices(model)).with(self.effort_choices(at)));
                 items.push(Item::new("Remove it from the batch", Action::Unbatch));
             }
             // Waiting its turn: taken back, once asked, the comment open.
@@ -8746,7 +8783,8 @@ impl App {
                     && let Some(q) = c.queued.clone()
                 {
                     let effort = self.at_effort.or(q.effort).unwrap_or_default();
-                    self.send(vec![(c.change, c.id)], q.way, q.stack, effort);
+                    let model = self.at_model.or(q.model.as_deref().and_then(Model::parse));
+                    self.send(vec![(c.change, c.id)], q.way, q.stack, model, effort);
                 }
             }
             Action::Unbatch => {
@@ -8758,7 +8796,7 @@ impl App {
                     self.reload();
                 }
             }
-            Action::SendBatch(way, fan) => self.send_batch(way, fan, self.at_effort),
+            Action::SendBatch(way, fan) => self.send_batch(way, fan, self.at_model, self.at_effort),
             Action::Toggle(change, id) => self.toggle_batched(&change, &id),
             Action::AskUnsend(change, id) => match self.unsend_ask(&change, &id) {
                 Some(m) => self.mode = Mode::Menu(m),
@@ -10020,10 +10058,11 @@ impl App {
         };
     }
 
-    /// Puts `notes` in the stack's batch, to the whole stack if `whole`, at
-    /// `effort`: they wait there until the banner sends the batch.
-    fn batch(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort) {
-        let done = ask::batch(&self.path, &self.stack, &notes, way, whole, effort);
+    /// Puts `notes` in the stack's batch, to the whole stack if `whole`,
+    /// with `model` if one is given and at `effort`: they wait there until
+    /// the banner sends the batch.
+    fn batch(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, model: Option<Model>, effort: Effort) {
+        let done = ask::batch(&self.path, &self.stack, &notes, way, whole, model, effort);
         self.reload();
         if let Err(e) = done {
             self.status = e.0;
@@ -10035,11 +10074,12 @@ impl App {
     }
 
     /// Sends the batch of what is asked in `way`: together, or with `fan`
-    /// each on its own; at `effort`, else each at the effort it was batched
+    /// each on its own; with `model`, else each with the model it was
+    /// batched with; at `effort`, else each at the effort it was batched
     /// at. They are started away from the screen.
-    fn send_batch(&mut self, way: Way, fan: bool, effort: Option<Effort>) {
+    fn send_batch(&mut self, way: Way, fan: bool, model: Option<Model>, effort: Option<Effort>) {
         let sent = ask::batched(&self.db, &self.stack, way);
-        let done = ask::release_batch(&self.path, &self.stack, way, fan, effort);
+        let done = ask::release_batch(&self.path, &self.stack, way, fan, model, effort);
         self.reload();
         let (n, refused) = match done {
             Ok(done) => done,
@@ -10079,8 +10119,10 @@ impl App {
     }
 
     /// From the banner's menu: comment (change, id) put in the batch, as it
-    /// was last asked (`way_for`), at the effort it was last asked at, else
-    /// high; or taken out. The menu open again on it.
+    /// was last asked (`way_for`), with the model and at the effort it was
+    /// last asked with, else those the ask dialog opens with
+    /// (`agent.ask_model`, `agent.ask_effort`) and, for the effort, high;
+    /// or taken out. The menu open again on it.
     fn toggle_batched(&mut self, change: &str, id: &str) {
         let Some(n) = self.db.note(change, id).cloned() else { return };
         let at = [(change.to_string(), id.to_string())];
@@ -10088,8 +10130,10 @@ impl App {
             Some(q) if q.batched() => ask::unsend(&self.path, &at),
             _ => {
                 let (way, whole) = self.way_for(&n);
-                let effort = self.db.last_queued(change, id).and_then(|q| q.effort).unwrap_or_default();
-                ask::batch(&self.path, &self.stack, &at, way, whole, effort)
+                let last = self.db.last_queued(change, id);
+                let effort = last.and_then(|q| q.effort).or(self.cfg.agent.ask_effort).unwrap_or_default();
+                let model = last.and_then(|q| q.model.as_deref().and_then(Model::parse)).or(self.cfg.agent.ask_model);
+                ask::batch(&self.path, &self.stack, &at, way, whole, model, effort)
             }
         };
         self.reload();
@@ -10128,12 +10172,13 @@ impl App {
         (Way::Change, false)
     }
 
-    /// Puts `notes` on the agent's queue, to the whole stack if `whole`, at
-    /// `effort`; they are started away from the screen, the first ask as any
-    /// other, with no setup before it.
-    fn send(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort) {
+    /// Puts `notes` on the agent's queue, to the whole stack if `whole`,
+    /// with `model` if one is given and at `effort`; they are started away
+    /// from the screen, the first ask as any other, with no setup before
+    /// it.
+    fn send(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, model: Option<Model>, effort: Effort) {
         let n = notes.len();
-        if let Err(e) = ask::queue(&self.path, &self.stack, &notes, way, whole, effort) {
+        if let Err(e) = ask::queue(&self.path, &self.stack, &notes, way, whole, model, effort) {
             self.status = e.0;
             self.reload();
             return;
@@ -11335,13 +11380,14 @@ impl App {
     /// What the comments pane says of comment `n`: its mark (with the agent,
     /// waiting its turn, its reply waiting for review, failed, moved,
     /// answered), who opened it and where it is; then the first line of
-    /// what was said last. The agent, its run asked at an effort, is said
-    /// with it, `agent(max)`: as the one who opened it, and before what it
-    /// said last.
+    /// what was said last. The agent, its run asked with a model and at an
+    /// effort, is said with them, `agent(claude-opus-5-5, max)`: as the one
+    /// who opened it, and before what it said last.
     fn note_said(&self, n: &Note, busy: &Busy, held: &Held) -> (String, String) {
         let mark = self.note_mark(n, busy, held);
-        let who = match (by_of(n), crate::thread::opened_effort(&n.text)) {
-            (By::Agent, Some(e)) => crate::thread::agent_at(Some(&e)),
+        let opened = crate::thread::opened_at(&n.text);
+        let who = match by_of(n) {
+            By::Agent if !opened.is_empty() => crate::thread::agent_at(&opened),
             _ => n.by.clone().unwrap_or_else(|| "you".into()),
         };
         let at = match n.about {
@@ -11351,9 +11397,9 @@ impl App {
         };
         let last = thread_turns(&n.text).pop().map_or(String::new(), |t| {
             let first = crate::markdown::first_line(&t.body);
-            match t.agent_effort() {
-                Some(e) => format!("{}: {first}", crate::thread::agent_at(Some(e))),
-                None => first,
+            match t.agent_asked() {
+                at if at.is_empty() => first,
+                at => format!("{}: {first}", crate::thread::agent_at(&at)),
             }
         });
         (format!("{mark} {who} · {at}"), format!("   {last}"))
@@ -13070,7 +13116,7 @@ impl App {
                     .map(|t| {
                         let who = match t.role {
                             Role::You => "you".to_string(),
-                            Role::Agent => crate::thread::agent_at(t.agent_effort()),
+                            Role::Agent => crate::thread::agent_at(&t.agent_asked()),
                             Role::Reviewer => "reviewer".to_string(),
                         };
                         format!("{who}: {}", crate::markdown::first_line(&t.body))
@@ -13386,7 +13432,7 @@ fn said_turns<'a>(turns: impl IntoIterator<Item = &'a Turn>) -> Vec<String> {
 fn who_said(t: &Turn) -> String {
     match t.role {
         Role::You => "you".into(),
-        Role::Agent => crate::thread::agent_at(t.agent_effort()),
+        Role::Agent => crate::thread::agent_at(&t.agent_asked()),
         Role::Reviewer => t.tag.as_deref().filter(|w| !w.is_empty()).unwrap_or("reviewer").into(),
     }
 }
@@ -13473,15 +13519,19 @@ pub fn where_on(db: &Db, name: &str, n: &Note) -> String {
 
 /// What a comment's first line says of where it stands: with claude,
 /// ready, failed, replied, moved, and what its answer opened. With the
-/// agent, or replied to, it says the effort the agent's run was asked at
-/// after how it was asked: `with the agent (answer only, at max)`.
+/// agent, or replied to, it says the effort and the model the agent's run
+/// was asked with after how it was asked: `with the agent (answer only, at
+/// max with claude-opus-5-5)`.
 pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
     let mut parts = Vec::new();
     if let Some((way, run)) = busy.get(&(n.change.clone(), n.id.clone())) {
         // A patch's comment, asked of the whole stack.
         let whole = *way == Way::Change && !n.on_stack() && ask::run_scope(db, run) == Some(Scope::Stack);
         let how = if whole { crate::db::WHOLE } else { way.said() };
-        let at = db.run(run).and_then(ask::effort_said).map_or(String::new(), |e| format!(", at {e}"));
+        let at = match db.run(run).map_or(String::new(), |r| crate::thread::asked_at(&ask::at_of(r))) {
+            at if at.is_empty() => at,
+            at => format!(",{at}"),
+        };
         parts.push(push_state(db, run).unwrap_or_else(|| format!("with the agent ({how}{at})")));
     } else if let Some(q) = n.queued.as_ref().filter(|q| q.batched()) {
         parts.push(format!("batched ({})", q.said()));

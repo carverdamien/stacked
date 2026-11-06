@@ -54,8 +54,9 @@ brought nothing back (The tools the agent could not use, below).
 
 In the editor, a banner under the top bar says what waits on you on the
 stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
-your review · the next: a change of patch 2, 1 reply, asked at max: "…"`,
-the effort the agent was asked at before what it was asked; edits by
+your review · the next: a change of patch 2, 1 reply, asked at max with
+claude-opus-5-5: "…"`, the effort and the model the agent was asked with
+before what it was asked; edits by
 hand, lints and reconciles with HEAD counted apart), a reconcile with HEAD
 waiting its turn (`Reconcile with HEAD waits its turn`), the stack's
 pull from Phabricator, as it reads Phabricator, read by this editor, the
@@ -89,7 +90,8 @@ batch… 2 edits, 1 answer only`; then every comment open on the stack, the
 most recently updated first, marked as the comments pane marks it (`●` with the agent,
 `◇` batched, `◌` waiting its turn, `◆` its reply waiting for review, `✓`
 answered…), with where it is, how it starts, and where it stands (with the
-agent, and at what effort, `with the agent (answer only, at max)`, the last
+agent, at what effort and with what model, `with the agent (answer only,
+at max with claude-opus-5-5)`, the last
 line it wrote). ↑↓ pick one, and Enter reviews what
 landed, or goes to the comment; on the batch, it opens the banner's menu,
 all of it, which Space opens from any line: what landed, to review; the
@@ -502,7 +504,7 @@ it is told what it changed in the round sent back (a stack diff from the
 stack that round went on from) and the comments it opened then, and
 `stacked export --work` prints the stack it made for it; its replies are
 in their threads already. Its session is not the one before: claude
-starts afresh each round. The round goes at the effort the dialog set.
+starts afresh each round. The round goes with the model and at the effort the dialog set.
 That round's work lands for review in place of the one sent back. A
 comment it is asked about on a patch the work sent back added stays
 there, open; should the stack never take that patch, the round's work
@@ -594,8 +596,8 @@ work leaves it.
 On the command line, `stacked landed NAME` lists the queue: each landed ask
 by its run, what is left of it to review (with no part left, the comments
 the agent was asked about: `1 asking comment to close or keep, nothing
-brought back`), the effort it was asked at, if it was asked at one (`asked
-at max`), and each part of it, the change's line saying `accepted` or
+brought back`), the effort and the model it was asked with, as far as it
+was asked with them (`asked at max with claude-opus-5-5`), and each part of it, the change's line saying `accepted` or
 `rejected` once every one of its operations is, and else how many are
 marked each way, once one is (`operations: 1 rejected, 3 to review`); then
 what a build and test asked as a
@@ -623,8 +625,8 @@ are. In the review of landed work RUN,
 `stacked comment NAME --patch N --line … --work RUN TEXT` writes a comment
 on the patch as that work leaves it, and `stacked reply NAME ID --answer
 TEXT` answers the agent's reply to comment ID; then `stacked review NAME
---send-back` sends the work back to the agent with them, at the effort it
-was asked at unless `--effort LEVEL` says otherwise (`--accept-all`
+--send-back` sends the work back to the agent with them, with the model and at the effort it
+was asked with unless `--model ID` or `--effort LEVEL` says otherwise (`--accept-all`
 refuses while you wrote in it). It goes back as a round of the work's own
 kind, the work rejected, whatever its kind: the editor's dialog is where
 another permission is picked, and a follow-up asked. A follow-up asked

@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 
 use stacked::db::{Db, Note, stack_change};
 use stacked::thread::{Role, append_turn};
+use stacked::tui::ask_dialog;
 use stacked::tui::views_dialog::{BUTTONS_LINE, CANCEL, COMPARE_LINE, DONE, LINES_LINE, VIEW_LINE};
 use stacked::tui::{App, AskDialog, Button, Effect, Focus, InterLayout, InterLines, Layout, Mode, Pane, PatchesPane, Screen, Show, Spot, Turned, ViewsDialog};
 
@@ -3053,10 +3054,14 @@ fn dialog(app: &App) -> &AskDialog {
     }
 }
 
-/// In the ask dialog open, ↑↓ to its line `line`: 0 the permission's, 1
-/// the effort's, 2 the buttons'.
+/// The model the tests' asks pick in the ask dialog, unless one says
+/// another.
+const MODEL: &str = "claude-opus-5-5";
+
+/// In the ask dialog open, ↑↓ to its line `line`: `PERMISSION_LINE`,
+/// `MODEL_LINE`, `EFFORT_LINE` or `BUTTONS_LINE`.
 fn dialog_line(app: &mut App, line: usize) {
-    for _ in 0..3 {
+    for _ in 0..4 {
         if dialog(app).line == line {
             return;
         }
@@ -3076,13 +3081,36 @@ fn option_at(screen: &str, option: &str) -> (u16, u16) {
 /// In the ask dialog open, the permission drawn as `permission` set with
 /// ← → on its line, from wherever it is: → from unset, which sets the
 /// first, then towards it, as neither goes round past its end. Then the
-/// effort `effort` picked in the list Enter opens on its line, ↓ to it;
-/// then `button` (`Ask Now`, `Ask Later`, `Cancel`) pressed, gone to with
-/// ← →: what pressing it did.
+/// model `MODEL` and the effort `effort` picked in the list Enter opens on
+/// each one's line, ↓ to it; then `button` (`Ask Now`, `Ask Later`,
+/// `Cancel`) pressed, gone to with ← →: what pressing it did.
 fn in_dialog(app: &mut App, permission: &str, effort: &str, button: &str) -> Effect {
+    in_dialog_with(app, permission, MODEL, effort, button)
+}
+
+/// In the ask dialog open, option `option` picked on line `line` in the
+/// list Enter opens there, ↓ to it.
+fn pick_in_dialog(app: &mut App, line: usize, option: &str) {
+    dialog_line(app, line);
+    key(app, KeyCode::Enter);
+    assert!(dialog(app).list.is_some(), "Enter opened no list on line {line}");
+    for _ in 0..6 {
+        let on = dialog(app).list.and_then(|at| dialog(app).options(line).get(at).copied());
+        if on == Some(option) {
+            break;
+        }
+        key(app, KeyCode::Down);
+    }
+    key(app, KeyCode::Enter);
+    let d = dialog(app);
+    assert_eq!((d.set_at(line).and_then(|k| d.options(line).get(k).copied()), d.list), (Some(option), None));
+}
+
+/// As `in_dialog`, the model `model` picked.
+fn in_dialog_with(app: &mut App, permission: &str, model: &str, effort: &str, button: &str) -> Effect {
     let labels = dialog(app).permission_labels();
     let to = labels.iter().position(|l| *l == permission).unwrap_or_else(|| panic!("no {permission:?} among {labels:?}"));
-    dialog_line(app, 0);
+    dialog_line(app, ask_dialog::PERMISSION_LINE);
     for _ in 0..labels.len() + 1 {
         let arrow = match dialog(app).permission {
             Some(at) if at == to => break,
@@ -3092,19 +3120,9 @@ fn in_dialog(app: &mut App, permission: &str, effort: &str, button: &str) -> Eff
         key(app, arrow);
     }
     assert_eq!(dialog(app).permission().map(|p| p.label()), Some(permission));
-    dialog_line(app, 1);
-    key(app, KeyCode::Enter);
-    assert!(dialog(app).list.is_some(), "Enter opened no list on the effort's line");
-    for _ in 0..6 {
-        let on = dialog(app).list.and_then(|at| dialog(app).options(1).get(at).copied());
-        if on == Some(effort) {
-            break;
-        }
-        key(app, KeyCode::Down);
-    }
-    key(app, KeyCode::Enter);
-    assert_eq!((dialog(app).effort.map(|e| e.name()), dialog(app).list), (Some(effort), None));
-    dialog_line(app, 2);
+    pick_in_dialog(app, ask_dialog::MODEL_LINE, model);
+    pick_in_dialog(app, ask_dialog::EFFORT_LINE, effort);
+    dialog_line(app, ask_dialog::BUTTONS_LINE);
     let buttons = dialog(app).buttons();
     let want = buttons.iter().position(|b| dialog(app).label(*b) == button).unwrap_or_else(|| panic!("no button {button:?}"));
     for _ in 0..3 {
@@ -6318,7 +6336,7 @@ fn a_web_link_is_attached_named_shown_whole_and_opened_by_a_stand_in() {
     let n = notes_of(&db, "s", 0).remove(0);
     assert_eq!(n.attached, [Attached { n: 1, to: To::Link(url.clone()) }]);
     accept_landed(&mut app, &db);
-    wait_for(&mut app, "agent replied (answer only, at high)");
+    wait_for(&mut app, "agent replied (answer only, at high with");
     // Under the comment, a line each: yours cut to the middle, its start
     // kept; the agent's whole.
     let under = references_under(&mut app);
@@ -6617,8 +6635,10 @@ fn the_comments_pane_previews_without_moving_the_patch() {
 /// the machine is: it answers once there is no file `hold` beside the
 /// repository it works in, where `setup` puts the test's database too. It
 /// answers `Seen.`, or what the file `answer` there holds (`answer_with`).
-/// As it starts, it adds to the file `efforts` there the effort it was
-/// given, a line for each ask (`efforts`); and to the file `tools` there
+/// As it starts, it adds to the file `models` there the model it was
+/// given, a line for each ask (`models`); to the file `efforts` there the
+/// effort it was given, a line for each ask (`efforts`); and to the file
+/// `tools` there
 /// the tools it was let use (`--allowedTools`), a line for each ask
 /// (`given`).
 fn fake_claude() -> PathBuf {
@@ -6628,7 +6648,8 @@ fn fake_claude() -> PathBuf {
         let script = format!(
             "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\necho '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reading the patch.\"}}]}}}}'\n\
              git=$(git rev-parse --path-format=absolute --git-common-dir)\n\
-             e=; prev=; for a in \"$@\"; do if test \"$prev\" = --effort; then e=\"$e${{e:+ }}$a\"; fi; if test \"$prev\" = --allowedTools; then printf '%s\\n' \"$a\" >> \"$git/../../tools\"; fi; prev=$a; done\n\
+             e=; m=; prev=; for a in \"$@\"; do if test \"$prev\" = --effort; then e=\"$e${{e:+ }}$a\"; fi; if test \"$prev\" = --model; then m=\"$m${{m:+ }}$a\"; fi; if test \"$prev\" = --allowedTools; then printf '%s\\n' \"$a\" >> \"$git/../../tools\"; fi; prev=$a; done\n\
+             echo \"${{m:-none}}\" >> \"$git/../../models\"\n\
              echo \"${{e:-none}}\" >> \"$git/../../efforts\"\n\
              while test -e \"$git/../../hold\"; do sleep 0.1; done\n\
              if test -e \"$git/../../answer\"; then cat \"$git/../../answer\"; else cat <<'EOF'\n{result}\nEOF\nfi\n"
@@ -6679,6 +6700,17 @@ fn efforts(app: &mut App, n: usize) -> Vec<String> {
         let runs: Vec<String> = app.db.runs().iter().map(|r| format!("{} {:?}: {}", r.id, r.state, r.summary)).collect();
         format!("not {n} asks started: {:?}\n{}", read(), runs.join("\n"))
     })
+}
+
+/// The models the stand-in (`fake_claude`) was started with for the asks
+/// of `app`'s database, once `n` were, in the order they started: for
+/// each, what followed each `--model` it was given, or `none`; as
+/// `efforts` reads the efforts. The models file is written before the
+/// efforts file: once `efforts` has read `n`, so may this.
+fn models(app: &mut App, n: usize) -> Vec<String> {
+    efforts(app, n);
+    let at = app.path.with_file_name("models");
+    std::fs::read_to_string(&at).unwrap_or_default().lines().map(String::from).collect()
 }
 
 /// Has the stand-in answer the asks on `db` (`fake_claude`) with
@@ -7370,6 +7402,7 @@ fn what_you_said_last_may_be_written_again() {
                     on: None,
                     was: None,
                     effort: None,
+                    model: None,
                     follow: false,
                 }),
                 ..n
@@ -7523,7 +7556,7 @@ fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     let said: Vec<String> = stacked::thread::thread_turns(&notes_of(&db, "s", 0).remove(0).text).into_iter().map(|t| t.body).collect();
     assert_eq!(said, ["why so loud?", "It is a shout.", "louder"]);
     accept_landed(&mut app, &db);
-    wait_for(&mut app, "agent replied (answer only, at high)");
+    wait_for(&mut app, "agent replied (answer only, at high with");
 }
 
 /// The agent changing `scope` of stack `s`, asked by comment (change, id):
@@ -10029,7 +10062,7 @@ fn rejected_a_reconcile_changes_nothing_and_its_comment_says_what_to_run_from_th
     // An edit asked while it waits for review waits too, until it is
     // reviewed, accepted or rejected.
     let edit = stack_note(&db, "s-c2", "Make it shorter.");
-    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
+    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), stacked::db::Way::Change, false, None, stacked::db::Effort::High).unwrap();
     assert_eq!(waits.as_deref(), Some("once you have reviewed the reconcile with HEAD"));
     let asked = |db: &Path, id: &str| Db::load(db).unwrap().runs().iter().any(|r| stacked::ask::info(r).is_some_and(|i| i.notes.iter().any(|n| n.id == id)));
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
@@ -10095,10 +10128,10 @@ fn reconcile_with_head_waits_its_turn_as_an_edit_and_the_edits_after_it_wait_for
     // An edit asked after it waits until it is reviewed; an answer goes at
     // once.
     let edit = stack_note(&db, "s-c2", "Make it shorter.");
-    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), Way::Change, false, Effort::High).unwrap();
+    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), Way::Change, false, None, Effort::High).unwrap();
     assert_eq!(waits.as_deref(), Some("once the reconcile with HEAD before it is made and you have reviewed it"));
     let answer = stack_note(&db, "s-c3", "What does it do?");
-    assert_eq!(stacked::ask::send(&db, "s", &[answer], Way::Answer, false, Effort::High).unwrap(), None);
+    assert_eq!(stacked::ask::send(&db, "s", &[answer], Way::Answer, false, None, Effort::High).unwrap(), None);
     let asked = |db: &Path, id: &str| Db::load(db).unwrap().runs().iter().any(|r| stacked::ask::info(r).is_some_and(|i| i.notes.iter().any(|n| n.id == id)));
     assert!(asked(&db, "s-c3"), "the answer went");
     // The agent's change lands: the reconcile is made, going on from it,
@@ -10186,7 +10219,7 @@ fn a_reconcile_waiting_its_turn_is_dropped_once_asked_from_its_banner_line_head_
     choose(&mut app, "Reconcile with HEAD");
     app.settle();
     let edit = stack_note(&db, "s-c2", "Make it shorter.");
-    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), Way::Change, false, Effort::High).unwrap();
+    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), Way::Change, false, None, Effort::High).unwrap();
     assert_eq!(waits.as_deref(), Some("once the reconcile with HEAD before it is made and you have reviewed it"));
     app.refresh();
     let run = stacked::reconcile::pending(&Db::load(&db).unwrap(), "s").map(|r| r.id.clone()).unwrap();
@@ -12012,7 +12045,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     ask_now(&mut app, "Ask agent…", "change stack");
     assert!(app.status.contains("asked the agent about 1 comment (may change the whole stack)"), "{}", app.status);
     let screen = wait_for(&mut app, "⋯ Reading the patch.");
-    assert!(screen.contains("with the agent (may change the whole stack, at high)"), "{screen}");
+    assert!(screen.contains("with the agent (may change the whole stack, at high"), "{screen}");
     // The ask has the whole stack; its answer lands in the thread, on its
     // line.
     let d = Db::load(&db).unwrap();
@@ -12021,7 +12054,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     drop(d);
     drop(held);
     accept_landed(&mut app, &db);
-    let screen = wait_for(&mut app, "agent replied (change, at high)");
+    let screen = wait_for(&mut app, "agent replied (change, at high with");
     assert!(screen.contains("Seen.") && screen.contains("you · a.txt: TWO"), "{screen}");
     // A comment on the stack has the whole stack already.
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
@@ -12053,7 +12086,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     // While claude works, its stream shows under the comment, and the top
     // bar and the comments pane say so.
     let screen = wait_for(&mut app, "⋯ Reading the patch.");
-    assert!(screen.contains("with the agent (answer only, at high)"), "{screen}");
+    assert!(screen.contains("with the agent (answer only, at high with"), "{screen}");
     assert!(screen.contains("agent ●1"), "{screen}");
     assert!(screen.contains("● you · a.txt: TWO") && screen.contains("1 with the agent"), "{screen}");
     // Enter on it opens the stream in place; esc folds it.
@@ -12068,11 +12101,11 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     // nothing else changes, not even the bottom line.
     drop(held);
     let screen = wait_for(&mut app, "⟳ 1 landed ask waits for your review");
-    assert!(screen.contains("the next: 1 reply, asked at high: \"why so loud?\"") && !screen.contains("Seen."), "{screen}");
+    assert!(screen.contains("the next: 1 reply, asked at high with claude-opus-5-5: \"why so loud?\"") && !screen.contains("Seen."), "{screen}");
     assert!(!app.status.contains("answer done"), "{}", app.status);
     // Accepted, it is a turn of the thread.
     accept_landed(&mut app, &db);
-    let screen = wait_for(&mut app, "agent replied (answer only, at high)");
+    let screen = wait_for(&mut app, "agent replied (answer only, at high with");
     assert!(screen.contains("Seen.") && screen.contains("✓ you · a.txt: TWO"), "{screen}");
     assert!(screen.contains("1 to read") && !screen.contains("⟳"), "{screen}");
 
@@ -12400,7 +12433,7 @@ fn the_first_ask_goes_at_once_with_stacked_s_defaults_and_no_setup() {
     assert_eq!(efforts(&mut app, 1), ["xhigh"]);
     // With what stacked gives an answer, curl and jq its list unless set.
     accept_landed(&mut app, &db);
-    wait_for(&mut app, "agent replied (answer only, at xhigh)");
+    wait_for(&mut app, "agent replied (answer only, at xhigh with");
     let d = Db::load(&db).unwrap();
     let given = d.runs().iter().find_map(|r| stacked::ask::info(r)).unwrap().given;
     assert!(given.contains("Bash(git show *)") && given.ends_with(",StructuredOutput,Bash(curl *),Bash(jq *)"), "{given}");
@@ -12441,7 +12474,7 @@ fn the_screen_never_waits_on_the_agent() {
     keys(&mut app, &[KeyCode::Down, KeyCode::Up]);
     app.settle();
     assert!(!app.working());
-    let screen = wait_for(&mut app, "with the agent (may change the code, at high)");
+    let screen = wait_for(&mut app, "with the agent (may change the code, at high with");
     assert!(screen.contains("agent ●1"), "{screen}");
     // A stack made by someone else is checked away from the screen too.
     Db::edit(&db, |d| stacked::ops::drop_patches(d, "s", &[1]).map(|_| ())).unwrap();
@@ -14361,8 +14394,8 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     drop(d);
     // Its answer shows under the record.
     accept_landed(&mut app, &db);
-    let screen = wait_for(&mut app, "└ agent(high): Seen.");
-    assert!(screen.contains(" │    └ agent(high): Seen. · agent replied"), "under the record, the lanes beside it:\n{screen}");
+    let screen = wait_for(&mut app, "└ agent(claude-opus-5-5, high): Seen.");
+    assert!(screen.contains(" │    └ agent(claude-opus-5-5, high): Seen."), "under the record, the lanes beside it:\n{screen}");
     // Among the stack's comments it says what it is about, and is asked
     // about only to answer.
     choose(&mut app, "Go to its comments");
@@ -14422,7 +14455,7 @@ fn a_comment_moved_to_the_stack_takes_the_cursor_with_it() {
     // The agent moves it to the stack, as it does what needs more than the
     // patch: the cursor goes with it, and says what to do there.
     let n = notes_of(&db, "s", 0).remove(0);
-    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too", None)).unwrap();
+    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too", &Default::default())).unwrap();
     app.refresh();
     let screen = draw(&mut app);
     assert!(app.on_stack && app.rows[app.cursor].head, "on it:\n{screen}");
@@ -14444,7 +14477,7 @@ fn a_comment_moved_to_the_stack_shows_where_it_came_from() {
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "rename two everywhere");
     let n = notes_of(&db, "s", 0).remove(0);
-    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too", None)).unwrap();
+    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too", &Default::default())).unwrap();
     app.refresh();
     assert!(notes_of(&db, "s", 0).is_empty());
     keys(&mut app, &[KeyCode::Left, KeyCode::Home, KeyCode::Right]);
@@ -14876,23 +14909,29 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
     choose(&mut app, "Ask agent…");
     let d = dialog(&app).clone();
     assert_eq!(d.title, "save the comment on patch 1 · a.txt: TWO, then ask the agent about it");
-    assert_eq!((d.permission, d.effort, d.line, d.list, d.button), (None, None, 0, None, Button::Now));
+    assert_eq!((d.permission, d.model, d.effort, d.line, d.list, d.button), (None, None, None, 0, None, Button::Now));
     assert_eq!(app.ask_buttons(&d), [false, false, true]);
-    assert_eq!(app.ask_note(&d), ["Ask Now and Ask Later are grayed until the permission and the effort are set."]);
+    assert_eq!(app.ask_note(&d), ["Ask Now and Ask Later are grayed until the permission, the model and the effort are set."]);
     assert_eq!(
         app.ask_lines(&d),
         [
             "Permission: [ — ]",
             "Not set yet: ← or → sets answer only, then steps to change patch and change stack. Enter opens the list of them.",
+            "Model: [ — ]",
+            "Not set yet: ← or → sets claude-fable-5-1, then steps to claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5. Enter opens the list of them.",
             "Effort: [ — ]",
             "Not set yet: ← or → sets low, then steps to medium, high, xhigh and max. Enter opens the list of them.",
         ]
     );
-    let screen = draw(&mut app);
+    // Drawn 40 rows high, the comment in sight beside the dialog's three
+    // lines.
+    let screen = text_of(&drawn(&mut app, 40));
     for said in [
         "save the comment on patch 1 · a.txt: TWO, then ask the agent about it",
         " Permission: [ — ] ",
         "   Not set yet: ← or → sets answer only, then steps to change",
+        " Model: [ — ] ",
+        "   Not set yet: ← or → sets claude-fable-5-1, then steps to",
         " Effort: [ — ] ",
         "   Not set yet: ← or → sets low, then steps to medium",
         "< Ask Now >   < Ask Later >   < Cancel >",
@@ -14914,6 +14953,23 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
     assert_eq!((dialog(&app).line, dialog(&app).list), (0, None));
     let screen = draw(&mut app);
     assert!(screen.contains(" Permission: [answer only] ") && screen.contains("The agent answers, and changes nothing."), "{screen}");
+    assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the model and the effort are set."]);
+    // ↓ to the model: the same, ← from unset setting the first too; then
+    // → held ends on the last, and ← held on the first. Under it, what
+    // claude is given.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(app.hint(), "↑↓ choose · ←→: set the model · enter: open the list · esc: cancel · ?: what it does");
+    assert_eq!(dialog(&app).model, None);
+    let mut seen = Vec::new();
+    for code in [KeyCode::Left].into_iter().chain([KeyCode::Right; 4]).chain([KeyCode::Left; 4]) {
+        keys(&mut app, &[code]);
+        seen.push(dialog(&app).model.map(|m| m.id()).unwrap_or_default());
+    }
+    let (fable, opus, sonnet, haiku) = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5");
+    assert_eq!(seen, [fable, opus, sonnet, haiku, haiku, sonnet, opus, fable, fable]);
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(draw(&mut app).contains(" Model: [claude-opus-5-5] "), "{}", draw(&mut app));
+    assert!(draw(&mut app).contains("claude is given --model claude-opus-5-5."), "{}", draw(&mut app));
     assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the effort is set."]);
     // ↓ to the effort: the same, ← from unset setting low too; then →
     // held ends on max, and ← held on low.
@@ -14928,7 +14984,8 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
     assert_eq!(seen, ["low", "medium", "high", "xhigh", "max", "max", "xhigh", "high", "medium", "low", "low"]);
     assert!(draw(&mut app).contains(" Effort: [low] "), "{}", draw(&mut app));
     assert!(draw(&mut app).contains("claude is given --effort low."), "{}", draw(&mut app));
-    // Both set: Ask Now and Ask Later can be pressed, and nothing is said.
+    // All three set: Ask Now and Ask Later can be pressed, and nothing is
+    // said.
     assert_eq!(app.ask_buttons(dialog(&app)), [true, true, true]);
     assert!(app.ask_note(dialog(&app)).is_empty());
     // Cancel: nothing asked, back to writing the comment, as it was.
@@ -14940,7 +14997,7 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
     // A second dialog opens with nothing set again; Esc cancels too.
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Ask agent…");
-    assert_eq!((dialog(&app).permission, dialog(&app).effort, dialog(&app).button), (None, None, Button::Now));
+    assert_eq!((dialog(&app).permission, dialog(&app).model, dialog(&app).effort, dialog(&app).button), (None, None, None, Button::Now));
     keys(&mut app, &[KeyCode::Esc]);
     assert!(matches!(&app.mode, Mode::Edit(_)), "{:?}", app.mode);
     // Saved without asking; on the comment, the dialog opens unset too.
@@ -14950,7 +15007,7 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
     assert!(app.rows[app.cursor].head);
     choose(&mut app, "Ask agent…");
     assert_eq!(dialog(&app).title, "ask the agent about the comment on patch 1 · a.txt: TWO");
-    assert_eq!((dialog(&app).permission, dialog(&app).effort), (None, None));
+    assert_eq!((dialog(&app).permission, dialog(&app).model, dialog(&app).effort), (None, None, None));
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
     // Nothing of it was kept, for the stack or for the next runs.
@@ -15053,15 +15110,18 @@ fn the_arrows_set_each_line_of_the_ask_dialog_to_its_first_option_from_unset_the
     let mut app = asking_about_a_line(&db);
     // From unset, ← and → alike set a line's first option, on each line:
     // answer only, and low; never the most permissive, nor the most
-    // expensive. Ask Now and Ask Later stay grayed until both lines are
-    // set, and the dialog says which one is missing.
+    // expensive. Ask Now and Ask Later stay grayed until the three lines
+    // are set, and the dialog says which ones are missing.
     for arrow in [KeyCode::Left, KeyCode::Right] {
         if !matches!(app.mode, Mode::Ask(_)) {
             choose(&mut app, "Ask agent…");
         }
-        keys(&mut app, &[KeyCode::Down, arrow]);
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down, arrow]);
         assert_eq!(dialog_set(&app), (None, Some("low")), "{arrow:?}");
         assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true], "{arrow:?}");
+        assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the permission and the model are set."], "{arrow:?}");
+        keys(&mut app, &[KeyCode::Up, arrow]);
+        assert_eq!(dialog(&app).model.map(|m| m.id()), Some("claude-fable-5-1"), "{arrow:?}");
         assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the permission is set."], "{arrow:?}");
         keys(&mut app, &[KeyCode::Up, arrow]);
         assert_eq!(dialog_set(&app), (Some("answer only"), Some("low")), "{arrow:?}");
@@ -15087,12 +15147,19 @@ fn the_arrows_set_each_line_of_the_ask_dialog_to_its_first_option_from_unset_the
     assert_eq!(held(&mut app, KeyCode::Left, 5), ["change patch", "answer only", "answer only", "answer only", "answer only"]);
     assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
     keys(&mut app, &[KeyCode::Down]);
+    let (fable, opus, sonnet, haiku) = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5");
+    assert_eq!(held(&mut app, KeyCode::Right, 6), [fable, opus, sonnet, haiku, haiku, haiku]);
+    assert_eq!(held(&mut app, KeyCode::Left, 5), [sonnet, opus, fable, fable, fable]);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Down]);
     assert_eq!(held(&mut app, KeyCode::Right, 7), ["low", "medium", "high", "xhigh", "max", "max", "max"]);
     assert_eq!(held(&mut app, KeyCode::Left, 7), ["xhigh", "high", "medium", "low", "low", "low", "low"]);
-    assert_eq!((dialog(&app).line, dialog(&app).list), (1, None));
-    // The lines say what is set, and what the effort set does.
+    assert_eq!((dialog(&app).line, dialog(&app).list), (ask_dialog::EFFORT_LINE, None));
+    // The lines say what is set, and what the model and the effort set do.
     let lines = app.ask_lines(dialog(&app));
-    assert_eq!([&lines[0], &lines[2], &lines[3]], ["Permission: [answer only]", "Effort: [low]", "claude is given --effort low."]);
+    assert_eq!(
+        [&lines[0], &lines[2], &lines[3], &lines[4], &lines[5]],
+        ["Permission: [answer only]", "Model: [claude-opus-5-5]", "claude is given --model claude-opus-5-5.", "Effort: [low]", "claude is given --effort low."]
+    );
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
     assert!(Db::load(&db).unwrap().runs().is_empty(), "nothing asked");
@@ -15149,13 +15216,13 @@ fn enter_on_a_line_of_the_ask_dialog_opens_the_list_of_its_options_under_it_wher
     assert_eq!((dialog(&app).list, dialog(&app).permission, dialog(&app).line), (Some(1), None, 0));
     // Enter picks the option under the cursor and closes the list: the
     // dialog still open, its cursor still on the line. Ask Now and Ask
-    // Later stay grayed, the effort unset.
+    // Later stay grayed, the model and the effort unset.
     keys(&mut app, &[KeyCode::Enter]);
     let d = dialog(&app).clone();
     assert_eq!((d.list, d.line), (None, 0));
     assert_eq!(dialog_set(&app), (Some("change patch"), None));
     assert_eq!(app.ask_buttons(&d), [false, false, true]);
-    assert_eq!(app.ask_note(&d), ["Ask Now and Ask Later are grayed until the effort is set."]);
+    assert_eq!(app.ask_note(&d), ["Ask Now and Ask Later are grayed until the model and the effort are set."]);
     let screen = draw(&mut app);
     assert!(screen.contains(" Permission: [change patch] ") && !screen.contains("│ change stack │"), "the list closed:\n{screen}");
     // Opened again, the list is on the one set; Esc closes it and leaves
@@ -15165,10 +15232,27 @@ fn enter_on_a_line_of_the_ask_dialog_opens_the_list_of_its_options_under_it_wher
     keys(&mut app, &[KeyCode::Down, KeyCode::Esc]);
     assert_eq!((dialog(&app).list, dialog(&app).line), (None, 0));
     assert_eq!(dialog_set(&app), (Some("change patch"), None));
+    // The model's list: the full ids, on the first while unset, under the
+    // line; Enter sets the one the cursor is on.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+    assert_eq!((dialog(&app).line, dialog(&app).list, dialog(&app).model), (ask_dialog::MODEL_LINE, Some(0), None));
+    assert_eq!(dialog(&app).options(ask_dialog::MODEL_LINE), ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+    let screen = draw(&mut app);
+    let (mx, my) = at(&screen, "Model: [ — ]");
+    let list = ["┌───────────────────┐", "│ claude-fable-5-1  │", "│ claude-opus-5-5   │", "│ claude-sonnet-5-5 │", "│ claude-haiku-5-5  │", "└───────────────────┘"];
+    for (k, model) in list.into_iter().enumerate() {
+        assert_eq!(at_from(&screen, model, mx as usize + 7), (mx + 7, my + 1 + k as u16), "{model:?} under the line\n{screen}");
+    }
+    assert_eq!(app.hint(), "↑↓ choose · enter: set the model · esc: close the list · ?: what it does");
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(app.help()[0], "Press Enter to set the model to claude-opus-5-5 and close the list. claude is given --model claude-opus-5-5.");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!((dialog(&app).list, dialog(&app).model.map(|m| m.id())), (None, Some("claude-opus-5-5")));
+    assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the effort is set."]);
     // The effort's list: low to max, on low while unset.
     keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
-    assert_eq!((dialog(&app).line, dialog(&app).list, dialog(&app).effort), (1, Some(0), None));
-    assert_eq!(dialog(&app).options(1), ["low", "medium", "high", "xhigh", "max"]);
+    assert_eq!((dialog(&app).line, dialog(&app).list, dialog(&app).effort), (ask_dialog::EFFORT_LINE, Some(0), None));
+    assert_eq!(dialog(&app).options(ask_dialog::EFFORT_LINE), ["low", "medium", "high", "xhigh", "max"]);
     let screen = draw(&mut app);
     let (ex, ey) = at(&screen, "Effort: [ — ]");
     let list = ["┌────────┐", "│ low    │", "│ medium │", "│ high   │", "│ xhigh  │", "│ max    │", "└────────┘"];
@@ -15177,12 +15261,12 @@ fn enter_on_a_line_of_the_ask_dialog_opens_the_list_of_its_options_under_it_wher
     }
     assert_eq!(app.hint(), "↑↓ choose · enter: set the effort · esc: close the list · ?: what it does");
     assert_eq!(app.help()[0], "Press Enter to set the effort to low and close the list. claude is given --effort low.");
-    // ↑ round to max, and Enter sets it: both lines set, Ask Now and Ask
-    // Later can be pressed.
+    // ↑ round to max, and Enter sets it: the three lines set, Ask Now and
+    // Ask Later can be pressed.
     keys(&mut app, &[KeyCode::Up]);
     assert_eq!(app.help()[0], "Press Enter to set the effort to max and close the list. claude is given --effort max.");
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!((dialog(&app).list, dialog(&app).line), (None, 1));
+    assert_eq!((dialog(&app).list, dialog(&app).line), (None, ask_dialog::EFFORT_LINE));
     assert_eq!(dialog_set(&app), (Some("change patch"), Some("max")));
     assert_eq!(app.ask_buttons(dialog(&app)), [true, true, true]);
     // Opened again on max; Esc there leaves max set.
@@ -15220,7 +15304,7 @@ fn a_click_on_a_line_of_the_ask_dialog_opens_its_list_one_on_an_option_picks_it_
     assert_eq!((dialog(&app).list, dialog(&app).line), (None, 0));
     assert_eq!(dialog_set(&app), (Some("change patch"), None));
     // Where the dialog draws its lines now: its note, saying that the
-    // effort alone is missing, is shorter, and so may the box be.
+    // model and the effort are missing, is shorter, and so may the box be.
     let screen = draw(&mut app);
     let (px, py) = at(&screen, "Permission: [change patch]");
     let (ex, ey) = at(&screen, "Effort: [ — ]");
@@ -15251,11 +15335,20 @@ fn a_click_on_a_line_of_the_ask_dialog_opens_its_list_one_on_an_option_picks_it_
     // a click on high sets it. Ask Now and Ask Later were grayed until then.
     assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
     app.click(ex, ey, false);
-    assert_eq!((dialog(&app).list, dialog(&app).line), (Some(0), 1));
+    assert_eq!((dialog(&app).list, dialog(&app).line), (Some(0), ask_dialog::EFFORT_LINE));
     let (ox, oy) = option_at(&draw(&mut app), "high");
     app.click(ox, oy, false);
-    assert_eq!((dialog(&app).list, dialog(&app).line), (None, 1));
+    assert_eq!((dialog(&app).list, dialog(&app).line), (None, ask_dialog::EFFORT_LINE));
     assert_eq!(dialog_set(&app), (Some("change patch"), Some("high")));
+    assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
+    // And the model: a click on its line opens its list, and a click on
+    // one of the ids sets it.
+    let (mx, my) = at(&draw(&mut app), "Model: [ — ]");
+    app.click(mx, my, false);
+    assert_eq!((dialog(&app).list, dialog(&app).line), (Some(0), ask_dialog::MODEL_LINE));
+    let (ox, oy) = option_at(&draw(&mut app), "claude-sonnet-5-5");
+    app.click(ox, oy, false);
+    assert_eq!((dialog(&app).list, dialog(&app).model.map(|m| m.id())), (None, Some("claude-sonnet-5-5")));
     assert_eq!(app.ask_buttons(dialog(&app)), [true, true, true]);
     // No list open, a click out of the box cancels: nothing asked.
     draw(&mut app);
@@ -15288,11 +15381,11 @@ fn ask_now_saves_what_changed_first_and_asks_at_the_permission_and_effort_set() 
     assert_eq!(app.help()[2], "Nothing is set as the dialog opens, and nothing set in it is kept: each dialog opens unset.");
     // On a button grayed, Enter does nothing, and says why.
     keys(&mut app, &[KeyCode::Up]);
-    assert_eq!(dialog(&app).line, 2, "↑ from the first line goes round to the buttons");
+    assert_eq!(dialog(&app).line, ask_dialog::BUTTONS_LINE, "↑ from the first line goes round to the buttons");
     assert_eq!(app.hint(), "↑↓ choose · ←→: another button · enter: press it · esc: cancel · ?: what it does");
-    assert_eq!(app.help()[0], "Ask Now and Ask Later are grayed until the permission and the effort are set.");
+    assert_eq!(app.help()[0], "Ask Now and Ask Later are grayed until the permission, the model and the effort are set.");
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(app.status, "Ask Now and Ask Later are grayed until the permission and the effort are set.");
+    assert_eq!(app.status, "Ask Now and Ask Later are grayed until the permission, the model and the effort are set.");
     assert!(matches!(app.mode, Mode::Ask(_)) && notes_of(&db, "s", 0).is_empty(), "nothing done");
     // → past Ask Later, grayed, to Cancel; ← back, none further.
     keys(&mut app, &[KeyCode::Right]);
@@ -15305,7 +15398,7 @@ fn ask_now_saves_what_changed_first_and_asks_at_the_permission_and_effort_set() 
     assert_eq!(app.mode, Mode::Normal);
     assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
     assert!(notes_of(&db, "s", 0).iter().any(|n| n.text == "why so loud?"));
-    assert_eq!(efforts(&mut app, 1), ["max"]);
+    assert_eq!((efforts(&mut app, 1), models(&mut app, 1)), (vec!["max".to_string()], vec![MODEL.to_string()]));
     let tools = given(&mut app, 1);
     assert!(tools[0].contains("Bash(git show *)") && tools[0].ends_with(",Bash(curl *),Bash(jq *)"), "{}", tools[0]);
     assert!(!tools[0].contains("Bash(git commit *)"), "{}", tools[0]);
@@ -15322,20 +15415,22 @@ fn ask_now_saves_what_changed_first_and_asks_at_the_permission_and_effort_set() 
     assert_eq!(all, ["Ask agent…", "Attach a reference…", "", "Leave it as it is", "Keep writing"]);
     choose(&mut app, "Ask agent…");
     assert_eq!(dialog(&app).title, "ask the agent about the comment on patch 1 · a.txt: LINE 39, as it is");
-    in_dialog(&mut app, "change patch", "low", "Ask Now");
+    in_dialog_with(&mut app, "change patch", "claude-haiku-5-5", "low", "Ask Now");
     assert!(app.status.contains("asked the agent about 1 comment (may change the code)"), "{}", app.status);
     assert_eq!(efforts(&mut app, 2), ["max", "low"]);
+    assert_eq!(models(&mut app, 2), [MODEL, "claude-haiku-5-5"]);
     let tools = given(&mut app, 2);
     assert!(tools[1].contains("Bash(git commit *)") && !tools[1].contains("Bash(curl *)"), "{}", tools[1]);
 }
 
 #[test]
-fn the_agent_is_started_at_the_ask_s_effort_in_place_of_the_settings_own() {
+fn the_agent_is_started_with_the_ask_s_model_and_at_its_effort_in_place_of_the_settings_own() {
     let (_tmp, db, src) = setup();
     fake_claude();
-    // The checkout's settings give claude an effort of their own.
+    // The checkout's settings give claude an effort and a model of their
+    // own.
     std::fs::create_dir_all(src.join(".stacked")).unwrap();
-    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nargs = [\"--effort\", \"low\", \"--verbose\"]\n").unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nargs = [\"--effort\", \"low\", \"--verbose\"]\nmodel = \"opus\"\n").unwrap();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
@@ -15343,13 +15438,55 @@ fn the_agent_is_started_at_the_ask_s_effort_in_place_of_the_settings_own() {
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
     ask_via(&mut app, "Ask agent…", "answer only", "high", "Ask Now");
-    // At high, the settings' own taken out, the rest of them kept: its
-    // stream says so.
-    assert_eq!(efforts(&mut app, 1), ["high"]);
+    // At high and with the dialog's model, the settings' own taken out,
+    // the rest of them kept: its stream says so.
+    assert_eq!((efforts(&mut app, 1), models(&mut app, 1)), (vec!["high".to_string()], vec![MODEL.to_string()]));
     let d = Db::load(&db).unwrap();
     let run = d.runs().last().unwrap().id.clone();
     let started = stacked::ask::tail(&d, &run, usize::MAX);
-    assert!(started.iter().any(|l| l.contains(" -p … --permission-mode default --verbose --effort high, in ")), "{started:?}");
+    assert!(started.iter().any(|l| l.contains(" -p … --permission-mode default --verbose --model claude-opus-5-5 --effort high, in ")), "{started:?}");
+}
+
+#[test]
+fn the_ask_dialog_opens_with_the_model_and_the_effort_the_settings_name_set_and_asks_with_them() {
+    let (_tmp, db, _src) = setup();
+    // The editor's settings name a model and an effort for the dialog to
+    // open with, as `open` opens it otherwise.
+    stacked::config::init(settings());
+    fake_claude();
+    fake_opener();
+    let (cfg, wrong) = settings().over("[agent]\nask_model = \"claude-sonnet-5-5\"\nask_effort = \"xhigh\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    let mut app = Editor(App::with_config(&db, cfg).unwrap());
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Ask agent…");
+    // Both set as it opens, the permission alone to pick; and `?` says so.
+    let d = dialog(&app).clone();
+    assert_eq!((d.permission, d.model.map(|m| m.id()), d.effort.map(|e| e.name())), (None, Some("claude-sonnet-5-5"), Some("xhigh")));
+    assert_eq!(app.ask_note(&d), ["Ask Now and Ask Later are grayed until the permission is set."]);
+    let lines = app.ask_lines(&d);
+    assert_eq!([&lines[2], &lines[3], &lines[4]], ["Model: [claude-sonnet-5-5]", "claude is given --model claude-sonnet-5-5.", "Effort: [xhigh]"]);
+    assert_eq!(
+        app.help()[2],
+        "Nothing set in the dialog is kept: each dialog opens with nothing set but what the settings name for it to open with (agent.ask_model, agent.ask_effort)."
+    );
+    // Still changed as any: ← on the model's line steps to the one before.
+    dialog_line(&mut app, ask_dialog::MODEL_LINE);
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(dialog(&app).model.map(|m| m.id()), Some("claude-opus-5-5"));
+    keys(&mut app, &[KeyCode::Right]);
+    // The permission set, Ask Now: claude given the settings' model and
+    // effort.
+    dialog_line(&mut app, ask_dialog::PERMISSION_LINE);
+    keys(&mut app, &[KeyCode::Right]);
+    dialog_line(&mut app, ask_dialog::BUTTONS_LINE);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
+    assert_eq!((efforts(&mut app, 1), models(&mut app, 1)), (vec!["xhigh".to_string()], vec!["claude-sonnet-5-5".to_string()]));
 }
 
 /// The texts of the rows the middle has, drawn or not.
@@ -15358,7 +15495,7 @@ fn row_texts(app: &App) -> Vec<String> {
 }
 
 #[test]
-fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
+fn the_model_and_the_effort_the_agent_was_asked_with_are_shown_wherever_its_work_is_named() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
@@ -15379,26 +15516,26 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
     keys(&mut app, &[KeyCode::Esc]);
     let held = hold(&db);
     ask_via(&mut app, "Ask agent…", "answer only", "max", "Ask Now");
-    assert_eq!(efforts(&mut app, 1), ["max"]);
+    assert_eq!((efforts(&mut app, 1), models(&mut app, 1)), (vec!["max".to_string()], vec![MODEL.to_string()]));
     let ours = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
     // With the agent: the comment says at what effort, in the middle and on
     // its line of the banner.
-    wait_for(&mut app, "with the agent (answer only, at max)");
+    wait_for(&mut app, "with the agent (answer only, at max with");
     keys(&mut app, &[KeyCode::Esc]);
     assert!(app.on_banner);
     let screen = draw(&mut app);
-    assert!(screen.contains("   ● patch 1 · a.txt: TWO · \"why so loud?\" · with the agent (answer only, at max)"), "{screen}");
+    assert!(screen.contains("   ● patch 1 · a.txt: TWO · \"why so loud?\" · with the agent (answer only, at max with claude-opus-5-5)"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     // Landed: the banner says it of what waits for your review, before what
     // was asked; Runs… after what the run is, and its transcript as claude
     // was started.
     drop(held);
     let screen = wait_for(&mut app, "⟳ 1 landed ask waits for your review");
-    assert!(screen.contains(" · the next: 1 reply, 1 opened comment, asked at max: \"why so loud?\""), "{screen}");
+    assert!(screen.contains(" · the next: 1 reply, 1 opened comment, asked at max with claude-opus-5-5: \"why so "), "{screen}");
     choose(&mut app, "Runs…");
     assert_eq!(app.screen, Screen::Runs);
     let screen = draw(&mut app);
-    assert!(screen.contains(" answer(max) s \"why so loud?\" · its work waits for your review: 1 reply, 1 opened comment"), "{screen}");
+    assert!(screen.contains(" answer(claude-opus-5-5, max) s \"why so loud?\" · its work waits for your review: 1 reply"), "{screen}");
     keys(&mut app, &[KeyCode::Enter, KeyCode::Home]);
     assert_eq!(app.screen, Screen::Transcript);
     // The line claude was started with begins with the stand-in's path, as
@@ -15407,7 +15544,7 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
     // column, cut where the screen ends.
     let d = Db::load(&db).unwrap();
     let started = stacked::ask::tail(&d, &d.runs().last().unwrap().id, usize::MAX);
-    let line = started.iter().find(|l| l.contains(" -p … --permission-mode default --effort max, in ")).unwrap_or_else(|| panic!("{started:?}"));
+    let line = started.iter().find(|l| l.contains(" -p … --permission-mode default --model claude-opus-5-5 --effort max, in ")).unwrap_or_else(|| panic!("{started:?}"));
     let screen = draw(&mut app);
     assert!(screen.contains(&line.chars().take(119).collect::<String>()), "{line:?} in:\n{screen}");
     keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
@@ -15422,20 +15559,20 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
         draw(&mut app);
     }
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(items(&app).contains(&("Review the agent's work (max)…".to_string(), true)), "{:?}", items(&app));
+    assert!(items(&app).contains(&("Review the agent's work (claude-opus-5-5, max)…".to_string(), true)), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);
     // Its review, from the banner: its title says whose work at what effort;
     // the comment it opened, and its reply, headed with it.
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
     let screen = draw(&mut app);
-    assert!(screen.contains(" the agent's work (max): 1 reply, 1 opened"), "{screen}");
+    assert!(screen.contains(" the agent's work (claude-opus-5-5, max): 1 repl"), "{screen}");
     down_to_review(&mut app, "Softly?");
     let screen = draw(&mut app);
-    assert!(screen.contains("   └ agent's comment (max):") && screen.contains("     ▎ agent(max):"), "{screen}");
+    assert!(screen.contains("   └ agent's comment (claude-opus-5-5, max):") && screen.contains("     ▎ agent(claude-opus-5-5, max):"), "{screen}");
     down_to_review(&mut app, "A shout.");
     let screen = draw(&mut app);
-    assert!(screen.contains("     ▎ agent(max):") && screen.contains("     ▎   A shout."), "{screen}");
+    assert!(screen.contains("     ▎ agent(claude-opus-5-5, max):") && screen.contains("     ▎   A shout."), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
     choose(&mut app, "Accept them and close");
@@ -15444,19 +15581,19 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
     // Accepted. In the middle, its reply headed with it, and the comment it
     // opened its comment at max; the turn of before as ever.
     let texts = row_texts(&app);
-    for said in ["     ▎ agent(max):", "     ▎   A shout.", "     ▎ agent:", "     ▎   It is old."] {
+    for said in ["     ▎ agent(claude-opus-5-5, max):", "     ▎   A shout.", "     ▎ agent:", "     ▎   It is old."] {
         assert!(texts.iter().any(|t| t == said), "{said:?} in {texts:#?}");
     }
-    assert!(texts.iter().any(|t| t.starts_with("   └ agent's comment (max)")), "{texts:#?}");
-    for said in ["agent replied (answer only, at max)", "agent replied (answer only)"] {
+    assert!(texts.iter().any(|t| t.starts_with("   └ agent's comment (claude-opus-5-5, max)")), "{texts:#?}");
+    for said in ["agent replied (answer only, at max with claude-opus-5-5)", "agent replied (answer only)"] {
         assert!(texts.iter().any(|t| t.contains(said)), "{said:?} in {texts:#?}");
     }
-    // In the comments pane: who opened the agent's comment, and before what
-    // the agent said last; the comment of before as ever, in the pane, from
-    // column 90 (the line before it the middle's scroll bar's, as the
-    // middle does not fit).
+    // In the comments pane, as far as its width shows: who opened the
+    // agent's comment, and before what the agent said last; the comment of
+    // before as ever, in the pane, from column 90 (the line before it the
+    // middle's scroll bar's, as the middle does not fit).
     let screen = draw(&mut app);
-    for said in ["✓ you · a.txt: TWO", "   agent(max): A shout.", "✓ agent(max) · a.txt: TWO", "   agent(max): Softly?", "✓ you · a.txt: LINE 39"] {
+    for said in ["✓ you · a.txt: TWO", "   agent(claude-opus-5-5, max)", "✓ agent(claude-opus-5-5, max)", "✓ you · a.txt: LINE 39"] {
         assert!(screen.contains(said), "{said:?} in:\n{screen}");
     }
     assert!(screen.lines().any(|l| l.chars().skip(90).collect::<String>().starts_with("   It is old.")), "{screen}");
@@ -15465,7 +15602,7 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
     app.focus = Focus::Notes;
     choose(&mut app, "Search…");
     typed(&mut app, "shout");
-    assert_eq!(searched(&mut app), ["patch 1 · agent(max) · A shout."]);
+    assert_eq!(searched(&mut app), ["patch 1 · agent(claude-opus-5-5, max) · A shout."]);
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Search…");
     typed(&mut app, "old");
@@ -15483,11 +15620,11 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
         key(&mut app, KeyCode::Down);
         draw(&mut app);
     }
-    assert_eq!(app.rows[app.cursor].text, "     ▎ agent(max):");
+    assert_eq!(app.rows[app.cursor].text, "     ▎ agent(claude-opus-5-5, max):");
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(items(&app).contains(&("Edit the agent's reply (max)".to_string(), true)), "{:?}", items(&app));
-    choose_as(&mut app, "Edit the agent's reply (max)", "here");
-    assert!(draw(&mut app).contains("the agent's reply (max): edit it"), "{}", draw(&mut app));
+    assert!(items(&app).contains(&("Edit the agent's reply (claude-opus-5-5, max)".to_string(), true)), "{:?}", items(&app));
+    choose_as(&mut app, "Edit the agent's reply (claude-opus-5-5, max)", "here");
+    assert!(draw(&mut app).contains("the agent's reply (claude-opus-5-5, max): edit it"), "{}", draw(&mut app));
     typed(&mut app, " Loud.");
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Save it");
@@ -15498,15 +15635,15 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
         said.push(stacked::history::note_change(before, x));
         before = Some(x);
     }
-    assert!(said.contains(&"agent replied (answer only, at max)".to_string()), "{said:?}");
-    assert_eq!(said.last().map(String::as_str), Some("you edited the agent's reply (max)"), "{said:?}");
+    assert!(said.contains(&"agent replied (answer only, at max with claude-opus-5-5)".to_string()), "{said:?}");
+    assert_eq!(said.last().map(String::as_str), Some("you edited the agent's reply (claude-opus-5-5, max)"), "{said:?}");
     let opened = d.notes(&ours.change).into_iter().find(|n| n.by.as_deref() == Some("agent")).cloned().unwrap();
     let first = d.note_history(&opened.change, &opened.id).first().map(|(_, n)| stacked::history::note_change(None, n));
-    assert_eq!(first.as_deref(), Some("opened by the agent at max"));
+    assert_eq!(first.as_deref(), Some("opened by the agent at max with claude-opus-5-5"));
     drop(d);
     choose(&mut app, "History of this comment…");
     let screen = draw(&mut app);
-    assert!(screen.contains("agent replied (answer only, at max)") && screen.contains("    ```agent answer effort max"), "{screen}");
+    assert!(screen.contains("agent replied (answer only, at max with claude-opus-5-5)") && screen.contains("    ```agent answer model claude-opus-5-5 effort max"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     // A reply added, the thread written again: each turn keeps its own.
     choose_as(&mut app, "Reply", "here");
@@ -15515,7 +15652,7 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
     // The answer's fence names the stack it was asked on too, after the
     // effort: the stack as it is, edited since by none.
     let rev = Db::load(&db).unwrap().head("s").unwrap().0;
-    assert!(text.contains(&format!("\n```agent answer effort max stack {rev}\n")) && text.ends_with("\nlouder?"), "{text}");
+    assert!(text.contains(&format!("\n```agent answer model claude-opus-5-5 effort max stack {rev}\n")) && text.ends_with("\nlouder?"), "{text}");
     let turns = stacked::thread::thread_turns(&text);
     assert_eq!(turns.iter().map(|t| t.effort.as_deref()).collect::<Vec<_>>(), [None, Some("max"), None]);
     let old = notes_of(&db, "s", 0).into_iter().find(|n| n.id == old.id).unwrap().text;
@@ -15671,9 +15808,9 @@ fn ask_now_is_grayed_while_the_network_is_checked_and_while_it_does_not_reach_th
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
     // Checked as the dialog opens: Ask Now grayed meanwhile, the dialog
-    // saying so, though both lines are set; Ask Later not.
+    // saying so, though the three lines are set; Ask Later not.
     choose(&mut app, "Ask agent…");
-    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right]);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right, KeyCode::Down, KeyCode::Right]);
     let said = dialog(&app).target.clone().expect("checked").said;
     assert_eq!(app.ask_buttons(dialog(&app)), [false, true, true]);
     let checking = format!("Ask Now is grayed while stacked checks that the network reaches {said}.");
@@ -15753,7 +15890,7 @@ fn reached_ask_now_asks_and_the_settings_can_turn_the_network_s_check_off() {
     assert_eq!(dialog(&app).target, None);
     // Each line set through its list: Enter opens it on the first, and
     // Enter picks that.
-    keys(&mut app, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
     assert_eq!(app.ask_buttons(dialog(&app)), [true, true, true]);
     assert!(app.ask_note(dialog(&app)).is_empty());
     keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
@@ -15787,9 +15924,16 @@ fn the_ask_dialog_is_clicked_as_a_menu_is() {
     let (ox, oy) = option_at(&draw(&mut app), "change patch");
     app.click(ox, oy, false);
     assert_eq!(dialog(&app).permission().map(|p| p.label()), Some("change patch"));
+    let (x, y) = at(&draw(&mut app), "Model: [ — ]");
+    app.hover(x, y);
+    assert_eq!(dialog(&app).line, ask_dialog::MODEL_LINE);
+    app.click(x, y, false);
+    let (ox, oy) = option_at(&draw(&mut app), "claude-haiku-5-5");
+    app.click(ox, oy, false);
+    assert_eq!(dialog(&app).model.map(|m| m.id()), Some("claude-haiku-5-5"));
     let (x, y) = at(&draw(&mut app), "Effort: [ — ]");
     app.hover(x, y);
-    assert_eq!(dialog(&app).line, 1);
+    assert_eq!(dialog(&app).line, ask_dialog::EFFORT_LINE);
     app.click(x, y, false);
     let (ox, oy) = option_at(&draw(&mut app), "low");
     app.click(ox, oy, false);
@@ -15800,7 +15944,7 @@ fn the_ask_dialog_is_clicked_as_a_menu_is() {
     app.click(x - 1, y, false);
     assert!(matches!(app.mode, Mode::Ask(_)), "{:?}", app.mode);
     app.hover(x, y);
-    assert_eq!((dialog(&app).line, dialog(&app).button), (2, Button::Later));
+    assert_eq!((dialog(&app).line, dialog(&app).button), (ask_dialog::BUTTONS_LINE, Button::Later));
     app.click(x, y, false);
     assert!(app.status.starts_with("batched (may change the code)"), "{}", app.status);
     assert_eq!(app.mode, Mode::Normal);
@@ -15814,7 +15958,7 @@ fn the_ask_dialog_is_clicked_as_a_menu_is() {
 }
 
 #[test]
-fn an_ask_that_waits_goes_at_the_effort_it_was_sent_at() {
+fn an_ask_that_waits_goes_with_the_model_and_at_the_effort_it_was_sent_with() {
     use stacked::db::Effort;
     let (_tmp, db, _src) = setup();
     fake_claude();
@@ -15824,26 +15968,32 @@ fn an_ask_that_waits_goes_at_the_effort_it_was_sent_at() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
-    // Asked later, at low: it waits in the batch at that effort.
+    // Asked later, at low: it waits in the batch at that effort, with the
+    // model the dialog set.
     ask_via(&mut app, "Ask agent…", "answer only", "low", "Ask Later");
     let n = notes_of(&db, "s", 0).remove(0);
-    assert_eq!(n.queued.as_ref().map(|q| (q.batched(), q.effort)), Some((true, Some(Effort::Low))));
-    // Sent now, alone, or with the batch: each starts at the effort it was
-    // batched at.
+    assert_eq!(n.queued.as_ref().map(|q| (q.batched(), q.model.as_deref(), q.effort)), Some((true, Some(MODEL), Some(Effort::Low))));
+    // Sent now, alone, or with the batch: each starts with the model and at
+    // the effort it was batched with, as their dropdowns say.
     keys(&mut app, &[KeyCode::Home]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
-    assert!(draw(&mut app).contains("Send it now (answer only)    Effort [low]"), "{}", draw(&mut app));
+    assert!(draw(&mut app).contains("Send it now (answer only)    Model [claude-opus-5-5]    Effort [low]"), "{}", draw(&mut app));
     keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
     assert!(app.on_banner);
     keys(&mut app, &[KeyCode::Enter]);
-    assert!(draw(&mut app).contains("Send 1 answer only to    [x] a single agent  [ ] fan out    Effort [low]"), "{}", draw(&mut app));
+    let screen = draw(&mut app);
+    assert!(screen.contains("Send 1 answer only to    [x] a single agent  [ ] fan out    Model [claude-opus-5-5]    Effort [low]"), "{screen}");
+    // The model's dropdown, Tab to it, then →: another model, for this
+    // ask alone.
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Right]);
+    assert!(draw(&mut app).contains("Model [claude-sonnet-5-5]"), "{}", draw(&mut app));
     keys(&mut app, &[KeyCode::Enter]);
     assert!(app.status.starts_with("sent the batch (answer only)"), "{}", app.status);
-    assert_eq!(efforts(&mut app, 1), ["low"]);
-    // One that waits its turn goes at its own; one sent before stacked
-    // asked at an effort, at the agent's own.
-    for (id, effort) in [("q-xhigh", Some(Effort::Xhigh)), ("q-before", None)] {
+    assert_eq!((efforts(&mut app, 1), models(&mut app, 1)), (vec!["low".to_string()], vec!["claude-sonnet-5-5".to_string()]));
+    // One that waits its turn goes with its own; one sent before stacked
+    // asked with a model and at an effort, with the agent's own.
+    for (id, model, effort) in [("q-xhigh", Some("claude-haiku-5-5"), Some(Effort::Xhigh)), ("q-before", None, None)] {
         Db::edit(&db, |d| {
             d.set_note(Note {
                 id: id.into(),
@@ -15856,6 +16006,7 @@ fn an_ask_that_waits_goes_at_the_effort_it_was_sent_at() {
                     on: None,
                     was: None,
                     effort,
+                    model: model.map(String::from),
                     follow: false,
                 }),
                 ..n.clone()
@@ -15868,6 +16019,9 @@ fn an_ask_that_waits_goes_at_the_effort_it_was_sent_at() {
     let mut all = efforts(&mut app, 3);
     all.sort();
     assert_eq!(all, ["low", "none", "xhigh"]);
+    let mut all = models(&mut app, 3);
+    all.sort();
+    assert_eq!(all, ["claude-haiku-5-5", "claude-sonnet-5-5", "none"]);
 }
 
 #[test]
@@ -15902,10 +16056,10 @@ fn work_sent_back_goes_at_the_effort_its_dialog_sets() {
     assert!(screen.contains("Send it back to the agent…") && !screen.contains("Effort [low]"), "{screen}");
     assert_eq!(app.hint(), "↑↓ choose · enter: do it · esc: close · ?: what it does");
     choose(&mut app, "Send it back to the agent…");
-    assert_eq!((dialog(&app).permission, dialog(&app).effort), (None, None));
-    in_dialog(&mut app, "change patch", "medium", "Send Now");
+    assert_eq!((dialog(&app).permission, dialog(&app).model, dialog(&app).effort), (None, None, None));
+    in_dialog_with(&mut app, "change patch", "claude-sonnet-5-5", "medium", "Send Now");
     assert!(app.status.starts_with("sent back to the agent (may change the code)"), "{}", app.status);
-    assert_eq!(efforts(&mut app, 1), ["medium"]);
+    assert_eq!((efforts(&mut app, 1), models(&mut app, 1)), (vec!["medium".to_string()], vec!["claude-sonnet-5-5".to_string()]));
 }
 
 #[test]
@@ -16300,11 +16454,11 @@ fn a_comment_asked_later_waits_in_the_batch() {
     // Later, the dialog's Ask Later: saved, then put in the batch, as `?`
     // says on it.
     choose(&mut app, "Ask agent…");
-    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right, KeyCode::Down, KeyCode::Right]);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right, KeyCode::Down, KeyCode::Right, KeyCode::Down, KeyCode::Right]);
     assert_eq!(dialog(&app).button, Button::Later);
     assert_eq!(
         app.help()[0],
-        "Press Enter to save the comment, then put the ask in the stack's batch, as the two lines say: it waits there until the banner sends the batch."
+        "Press Enter to save the comment, then put the ask in the stack's batch, as the three lines say: it waits there until the banner sends the batch."
     );
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(batched(&db), [("why so loud?".to_string(), Way::Answer, false)]);
@@ -16427,8 +16581,9 @@ fn the_banner_sends_the_batch_its_edits_to_one_agent_its_answers_to_one_or_each_
     assert!(all[9..14].iter().all(|l| l.starts_with("Go to ")) && all[14].is_empty(), "{all:?}");
     assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 0));
     assert_eq!(choices_named(&app, "Send 2 answers only to"), ["a single agent", "fan out"]);
-    // Each sends at an effort of its own: ← → pick it.
-    assert_eq!(app.hint(), "↑↓ choose · ←→: effort · enter: do it · esc: close · ?: what it does");
+    // Each sends with a model and at an effort of its own: ← → pick the
+    // model, and Tab goes to the effort.
+    assert_eq!(app.hint(), "↑↓ choose · ←→: model · tab: effort · enter: do it · esc: close · ?: what it does");
     // Unchecked, out of the batch; checked again, back as it was. The menu
     // stays, on it.
     keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Down]);
@@ -17957,7 +18112,7 @@ fn answered_in_review(db: &Path, app: &mut App, answer: &str) -> Note {
 }
 
 #[test]
-fn sending_work_back_opens_the_ask_dialog_unset_its_send_now_grayed_until_both_lines_are_set() {
+fn sending_work_back_opens_the_ask_dialog_unset_its_send_now_grayed_until_the_three_lines_are_set() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     answered_in_review(&db, &mut app, "Still too loud.");
@@ -17965,56 +18120,60 @@ fn sending_work_back_opens_the_ask_dialog_unset_its_send_now_grayed_until_both_l
     // sending the work back from the menu, as every ask does; the menu says
     // what the dialog sets.
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(menu_note(&app).contains("Send it back to the agent… opens a dialog that sets what the agent may do, and its effort"), "{}", menu_note(&app));
+    assert!(menu_note(&app).contains("Send it back to the agent… opens a dialog that sets what the agent may do, its model and its effort"), "{}", menu_note(&app));
     choose(&mut app, "Send it back to the agent…");
     // Its title says it sends back the work, what it holds, and what was
     // asked; nothing set; the permissions those of the comment going back.
     let d = dialog(&app).clone();
     assert_eq!(d.title, "send back the agent's work: a change of patch 1, 1 reply · asked \"why so loud?\"");
-    assert_eq!((d.permission, d.effort, d.line, d.list), (None, None, 0, None));
+    assert_eq!((d.permission, d.model, d.effort, d.line, d.list), (None, None, None, 0, None));
     assert_eq!(d.permission_labels(), ["answer only", "change patch", "change stack"]);
     assert_eq!(app.ask_lines(&d)[1], "Not set yet: ← or → sets answer only, then steps to change patch and change stack. Enter opens the list of them.");
-    // Its buttons, Send Now and Cancel: Send Now grayed until both lines are
+    // Its buttons, Send Now and Cancel: Send Now grayed until the three lines are
     // set, as the dialog says under them.
     let screen = draw(&mut app);
     assert!(screen.contains("< Send Now >   < Cancel >") && !screen.contains("Ask Later"), "{screen}");
     assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
-    assert_eq!(app.ask_note(dialog(&app)), ["Send Now is grayed until the permission and the effort are set."]);
-    dialog_line(&mut app, 2);
-    assert_eq!(app.help()[0], "Send Now is grayed until the permission and the effort are set.");
+    assert_eq!(app.ask_note(dialog(&app)), ["Send Now is grayed until the permission, the model and the effort are set."]);
+    dialog_line(&mut app, ask_dialog::BUTTONS_LINE);
+    assert_eq!(app.help()[0], "Send Now is grayed until the permission, the model and the effort are set.");
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.status, "Send Now is grayed until the permission and the effort are set.");
+    assert_eq!(app.status, "Send Now is grayed until the permission, the model and the effort are set.");
     assert!(matches!(app.mode, Mode::Ask(_)), "{:?}", app.mode);
     // Each permission set says what it does with the work: one that only
     // reads leaves it waiting for your review; one that changes the stack
     // rejects it.
-    dialog_line(&mut app, 0);
+    dialog_line(&mut app, ask_dialog::PERMISSION_LINE);
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(
         app.ask_lines(dialog(&app))[1],
         "This work stays waiting for your review: the agent answers on the stack this work makes, and changes nothing, and its replies come into this review. 1 comment goes back to the agent."
     );
-    assert_eq!(app.ask_note(dialog(&app)), ["Send Now is grayed until the effort is set."]);
+    assert_eq!(app.ask_note(dialog(&app)), ["Send Now is grayed until the model and the effort are set."]);
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(
         app.ask_lines(dialog(&app))[1],
         "This work is rejected, its change not applied: the agent may change the code within the comment's place, its patch and no other, going on from the stack this work makes, and its new work lands for your review in place of this one. 1 comment goes back to the agent."
     );
-    dialog_line(&mut app, 1);
+    dialog_line(&mut app, ask_dialog::MODEL_LINE);
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(dialog(&app).model, Some(stacked::db::Model::Fable51));
+    assert_eq!(app.ask_note(dialog(&app)), ["Send Now is grayed until the effort is set."]);
+    dialog_line(&mut app, ask_dialog::EFFORT_LINE);
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(dialog(&app).effort, Some(stacked::db::Effort::Low));
     assert_eq!(app.ask_buttons(dialog(&app)), [true, false, true]);
     assert!(app.ask_note(dialog(&app)).is_empty(), "{:?}", app.ask_note(dialog(&app)));
     // ? says what each button does, as the permission set does it.
-    dialog_line(&mut app, 2);
+    dialog_line(&mut app, ask_dialog::BUTTONS_LINE);
     assert_eq!(app.hint(), "↑↓ choose · ←→: another button · enter: press it · esc: cancel · ?: what it does");
-    assert_eq!(app.help()[0], "Press Enter to send the work back now, as the two lines say: this work is rejected, and the agent is asked again, going on from it.");
-    dialog_line(&mut app, 0);
+    assert_eq!(app.help()[0], "Press Enter to send the work back now, as the three lines say: this work is rejected, and the agent is asked again, going on from it.");
+    dialog_line(&mut app, ask_dialog::PERMISSION_LINE);
     keys(&mut app, &[KeyCode::Left]);
-    dialog_line(&mut app, 2);
+    dialog_line(&mut app, ask_dialog::BUTTONS_LINE);
     assert_eq!(
         app.help()[0],
-        "Press Enter to ask the follow-up now, as the two lines say: this work stays waiting for your review, and what the agent brings back comes into it."
+        "Press Enter to ask the follow-up now, as the three lines say: this work stays waiting for your review, and what the agent brings back comes into it."
     );
     // Cancel sends nothing: back in the review, the work as it was.
     keys(&mut app, &[KeyCode::Right]);
@@ -18094,11 +18253,11 @@ fn sent_back_to_answer_only_the_work_stays_for_review_and_the_follow_up_s_replie
     assert_eq!(app.screen, Screen::Review);
     assert!(!Db::load(&db).unwrap().review("run-agent").is_some_and(|v| v.closed));
     let screen = wait_for(&mut app, " the follow-up you asked, with the agent");
-    for line in ["   ● answer only, at high · 1 comment", " stack operations · ✓ 1 accepted"] {
+    for line in ["   ● answer only, at high with claude-opus", " stack operations · ✓ 1 accepted"] {
         assert!(screen.contains(line), "{line:?} in:\n{screen}");
     }
     assert!(!screen.contains(" what you wrote, to send back"), "{screen}");
-    assert!(selected_line(&mut app).is_some_and(|l| l.contains("answer only, at high")), "{:?}", selected_line(&mut app));
+    assert!(selected_line(&mut app).is_some_and(|l| l.contains("answer only, at high with claude-opus")), "{:?}", selected_line(&mut app));
     assert_eq!(app.hint(), "↑↓ choose · enter: nothing, the follow-up runs · →: look closer · space: menu · esc: save, discard or close");
     assert!(screen.contains("The follow-up asks the agent about these comments"), "{screen}");
     drop(held);
@@ -18251,15 +18410,15 @@ fn send_now_is_grayed_while_the_agent_cannot_be_reached() {
     answered_in_review(&db, &mut app, "Still too loud.");
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Send it back to the agent…");
-    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right]);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right, KeyCode::Down, KeyCode::Right]);
     app.settle();
-    // Both lines set, Send Now grayed, as Ask Now is, saying why.
+    // The three lines set, Send Now grayed, as Ask Now is, saying why.
     let said = dialog(&app).target.clone().expect("checked").said;
     let unreached = format!("Send Now is grayed: the network does not reach {said}.");
     let off = "If claude reaches it all the same, `stacked config agent.reach_check false` turns this check off.";
     assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
     assert_eq!(app.ask_note(dialog(&app))[..2], [unreached.clone(), off.to_string()]);
-    dialog_line(&mut app, 2);
+    dialog_line(&mut app, ask_dialog::BUTTONS_LINE);
     assert_eq!(app.help()[0], unreached);
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.status, unreached);
@@ -18853,7 +19012,7 @@ fn answers_before_an_edit(db: &Path, app: &mut App) -> (String, String) {
     typed(app, "why so loud?");
     keys(app, &[KeyCode::Esc]);
     ask_now(app, "Ask agent…", "answer only");
-    wait_for(app, "with the agent (answer only, at high)");
+    wait_for(app, "with the agent (answer only, at high with");
     let running = until(
         app,
         |app| app.db.runs().into_iter().find(|r| r.state == stacked::db::RunState::Started).map(|r| r.id.clone()),
@@ -18985,7 +19144,7 @@ fn an_answer_kept_lands_on_the_stack_it_was_asked_on_its_heading_saying_how_many
     drop(d);
     draw(&mut app);
     let texts = row_texts(&app);
-    assert!(texts.iter().any(|t| t == "     ▎ agent(high), on the stack 1 edit ago:"), "{texts:#?}");
+    assert!(texts.iter().any(|t| t == "     ▎ agent(claude-opus-5-5, high), on the stack 1 edit"), "{texts:#?}");
     assert!(texts.iter().any(|t| t == "     ▎   Seen."), "{texts:#?}");
 }
 
@@ -19112,10 +19271,26 @@ fn a_change_rejected_passes_over_the_answers_made_before_it_which_go_on_as_they_
 fn the_heading_of_an_answer_says_how_many_edits_old_its_stack_is_while_its_thread_is_open() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
+    // Each heading of the agent's turns, whole: one the pane's width wraps,
+    // the model in it, joined with the rest of it on the rows under it.
     let headings = |app: &mut App| -> Vec<String> {
         app.refresh();
         draw(app);
-        row_texts(app).into_iter().filter(|t| t.starts_with("     ▎ agent")).collect()
+        let rows = row_texts(app);
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < rows.len() {
+            if rows[at].starts_with("     ▎ agent") {
+                let mut heading = rows[at].clone();
+                while !heading.ends_with(':') && at + 1 < rows.len() {
+                    at += 1;
+                    heading = format!("{heading} {}", rows[at].trim_start().trim_start_matches('▎').trim());
+                }
+                out.push(heading);
+            }
+            at += 1;
+        }
+        out
     };
     let accept = |db: &Path, run: &str| Db::edit(db, |d| stacked::held::close(d, run, &Default::default(), Some(true)).map(|_| ())).unwrap();
     // An answer on line +LINE 39, accepted into its thread: of the stack as
@@ -19127,12 +19302,12 @@ fn the_heading_of_an_answer_says_how_many_edits_old_its_stack_is_while_its_threa
     keys(&mut app, &[KeyCode::Esc]);
     ask_now(&mut app, "Ask agent…", "answer only");
     accept_landed(&mut app, &db);
-    assert_eq!(headings(&mut app), ["     ▎ agent(high):"]);
+    assert_eq!(headings(&mut app), ["     ▎ agent(claude-opus-5-5, high):"]);
     // Two edits accepted since: 1 edit ago, then 2.
     accept(&db, &hand_edit(&db, None));
-    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 1 edit ago:"]);
+    assert_eq!(headings(&mut app), ["     ▎ agent(claude-opus-5-5, high), on the stack 1 edit ago:"]);
     accept(&db, &hand_edit_to(&db, "+Two", "+TWo"));
-    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 2 edits ago:"]);
+    assert_eq!(headings(&mut app), ["     ▎ agent(claude-opus-5-5, high), on the stack 2 edits ago:"]);
     // Another, on line 40, asked on the stack as it is now.
     down_to(&mut app, " line 40");
     keys(&mut app, &[KeyCode::Enter]);
@@ -19140,19 +19315,19 @@ fn the_heading_of_an_answer_says_how_many_edits_old_its_stack_is_while_its_threa
     keys(&mut app, &[KeyCode::Esc]);
     ask_now(&mut app, "Ask agent…", "answer only");
     accept_landed(&mut app, &db);
-    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 2 edits ago:", "     ▎ agent(high):"]);
+    assert_eq!(headings(&mut app), ["     ▎ agent(claude-opus-5-5, high), on the stack 2 edits ago:", "     ▎ agent(claude-opus-5-5, high):"]);
     // The last edit undone, then another made in its place: the stack the
     // second was asked on is not on the way to it, another version; the
     // first, 2 edits ago again, along the stack's history.
     Db::edit(&db, |d| d.undo("s").map(|_| ())).unwrap();
-    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 1 edit ago:", "     ▎ agent(high), on another version of the stack:"]);
+    assert_eq!(headings(&mut app), ["     ▎ agent(claude-opus-5-5, high), on the stack 1 edit ago:", "     ▎ agent(claude-opus-5-5, high), on another version of the stack:"]);
     accept(&db, &hand_edit_to(&db, "+Two", "+tWo"));
-    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 2 edits ago:", "     ▎ agent(high), on another version of the stack:"]);
+    assert_eq!(headings(&mut app), ["     ▎ agent(claude-opus-5-5, high), on the stack 2 edits ago:", "     ▎ agent(claude-opus-5-5, high), on another version of the stack:"]);
     // Closed, a thread says it no more: as it was.
     let first = notes_of(&db, "s", 0).into_iter().find(|n| n.text.starts_with("why so loud?")).unwrap();
     Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..first })).unwrap();
     app.show = Show::Closed;
-    assert_eq!(headings(&mut app), ["     ▎ agent(high):"]);
+    assert_eq!(headings(&mut app), ["     ▎ agent(claude-opus-5-5, high):"]);
 }
 
 #[test]
@@ -19425,6 +19600,7 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
                 on: None,
                 was: None,
                 effort: None,
+                model: None,
                 follow: false,
             }),
             ..n
@@ -20179,6 +20355,7 @@ fn delete_takes_a_comment_back_from_the_queue_once_asked_its_comment_open_or_out
             on: None,
             was: None,
             effort: None,
+            model: None,
             follow: false,
         };
         Db::edit(&db, |d| d.set_note(Note { queued: Some(queued), ..n })).unwrap();
@@ -20243,7 +20420,7 @@ fn an_edit_ask_waiting_its_turn_is_taken_back_once_asked_from_its_banner_line_an
     let (change, id) = stack_note(&db, "s-c1", "Make it better.");
     changing(&db, &change, &id, serde_json::json!("stack"));
     let both: Vec<(String, String)> = notes_of(&db, "s", 0).iter().map(|n| (n.change.clone(), n.id.clone())).collect();
-    let waits = stacked::ask::send(&db, "s", &both, Way::Change, false, Effort::High).unwrap();
+    let waits = stacked::ask::send(&db, "s", &both, Way::Change, false, None, Effort::High).unwrap();
     assert_eq!(waits.as_deref(), Some("once the agent's change on the stack lands"));
     app.refresh();
     let of = |text: &str| notes_of(&db, "s", 0).into_iter().find(|n| n.text == text).unwrap();
@@ -20317,7 +20494,7 @@ fn a_round_sent_back_waiting_its_turn_is_taken_back_once_asked_the_work_staying_
     changing(&db, &change, &id, serde_json::json!("stack"));
     // Your answer to its reply sends the work back: the round waits its turn.
     Db::edit(&db, |d| stacked::held::answer(d, "run-1", 0, "Still too loud.")).unwrap();
-    let said = stacked::ask::send_back(&db, "s", "run-1", &Default::default(), None, None).unwrap();
+    let said = stacked::ask::send_back(&db, "s", "run-1", &Default::default(), None, None, None).unwrap();
     assert_eq!(said, "sent back to the agent (may change the code): 1 comment to ask again");
     let rev = Db::load(&db).unwrap().head("s").unwrap().0;
     app.refresh();
@@ -21322,7 +21499,7 @@ fn a_comment_hidden_moved_away_or_closed_elsewhere_leaves_the_cursor_where_it_wa
     // cursor on a turn of the other: the cursor stays there.
     down_to(&mut app, "     ▎   Which one?");
     let mut y = cursor_line_y(&mut app);
-    Db::edit(&db, |d| stacked::ask::promote(d, "s", &a, "patch 2 says two too", None)).unwrap();
+    Db::edit(&db, |d| stacked::ask::promote(d, "s", &a, "patch 2 says two too", &Default::default())).unwrap();
     app.refresh();
     let screen = draw(&mut app);
     assert!(!app.on_stack && !screen.contains("why so loud?"), "{screen}");

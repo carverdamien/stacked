@@ -194,7 +194,7 @@ impl Search<'_> {
                 }
                 let who = match t.role {
                     Role::You => "you".to_string(),
-                    Role::Agent => crate::thread::agent_at(t.agent_effort()),
+                    Role::Agent => crate::thread::agent_at(&t.agent_asked()),
                     Role::Reviewer => t.tag.clone().unwrap_or_else(|| "reviewer".into()),
                 };
                 let hits: Vec<String> = t.body.lines().filter(|l| self.matches(l)).map(|l| l.trim().to_string()).collect();

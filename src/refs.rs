@@ -1257,6 +1257,7 @@ mod tests {
             anew: false,
             redacted: false,
             effort: None,
+            model: None,
             stack: None,
         };
         // The agent's reply, deleted the first way, names r1 and points at

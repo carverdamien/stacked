@@ -248,7 +248,7 @@
   bar of the place the cursor is in while what it holds does not fit,
   where each place draws it, and its thumb;
   `tui/finding.rs`, the search of the middle (`/`); `tui/ask_dialog.rs`,
-  the dialog every `Ask agent…` item opens, its permission and effort set
+  the dialog every `Ask agent…` item opens, its permission, model and effort set
   each time, then Ask Now, Ask Later or Cancel; and a review's `Send it
   back to the agent…`, then Send Now or Cancel; the lists of a dialog's
   lines, and its buttons, as the dialog of the views of the interdiffs

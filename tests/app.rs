@@ -708,6 +708,12 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_window
     screen(&s, "answer only", |b| find(b, "Permission: [answer only]").is_some() && find(b, "│ answer only ").is_none());
     press(&s, KeyCode::Down);
     press(&s, KeyCode::Enter);
+    screen(&s, "the model's list", |b| find(b, "│ claude-opus-5-5   │").is_some());
+    press(&s, KeyCode::Down);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the model", |b| find(b, "Model: [claude-opus-5-5]").is_some());
+    press(&s, KeyCode::Down);
+    press(&s, KeyCode::Enter);
     screen(&s, "the effort's list", |b| find(b, "│ xhigh  │").is_some());
     press(&s, KeyCode::Enter);
     let set = screen(&s, "low", |b| find(b, "Effort: [low]").is_some());
@@ -718,7 +724,7 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_window
     screen(&s, "batched", |b| text(b).contains("batched (answer only): 1 ask in the batch"));
     let d = stacked::db::Db::load(&db).unwrap();
     let q = d.stack_notes("s").into_iter().find_map(|n| n.queued.clone()).expect("batched");
-    assert_eq!((q.batched(), q.way, q.effort), (true, stacked::db::Way::Answer, Some(stacked::db::Effort::Low)));
+    assert_eq!((q.batched(), q.way, q.model.as_deref(), q.effort), (true, stacked::db::Way::Answer, Some("claude-opus-5-5"), Some(stacked::db::Effort::Low)));
 }
 
 /// The links a stand-in for the program that opens web links, in `dir`,
@@ -1252,7 +1258,7 @@ fn at_max(db: &Path) {
             ..Default::default()
         };
         let before = append_turn("Was it so before?", Role::Agent, "It was.", Some("answer"));
-        let thread = append_agent(&append_turn(&before, Role::You, "Why shout?", None), "A shout.", "answer", Some("max"));
+        let thread = append_agent(&append_turn(&before, Role::You, "Why shout?", None), "A shout.", "answer", &stacked::thread::At::new(None, Some("max")));
         d.set_note(note(&first, "c-max", thread))?;
         d.set_note(note(&second, "c-bee", "Why add b?".into()))?;
         let ask = serde_json::json!({"way": "answer", "scope": {"patch": second.change}, "from": from, "notes": [{"label": "c1", "change": second.change, "id": "c-bee"}], "effort": "max"});
@@ -1380,6 +1386,7 @@ fn waiting_their_turn(db: &Path) {
             on: None,
             was: None,
             effort: None,
+            model: None,
             follow: false,
         };
         d.set_note(Note {
@@ -1757,7 +1764,7 @@ fn a_comment_on_a_patch_the_work_adds_sends_it_back_from_its_review_in_the_windo
     screen(&s, "the dialog", |b| find(b, "Send it back to the agent…").is_some());
     press(&s, KeyCode::Enter);
     let b = screen(&s, "the ask dialog", |b| text(b).contains("send back the agent's work: a change of the stack"));
-    for said in ["< Send Now >   < Cancel >", "Send Now is grayed until the permission and the effort are set."] {
+    for said in ["< Send Now >   < Cancel >", "Send Now is grayed until the permission, the model and the effort"] {
         assert!(text(&b).contains(said), "{said:?} in:\n{}", text(&b));
     }
 }

@@ -252,7 +252,13 @@ at (`--effort`, else `high`, an effort an editor of before kept in the
 test's home no longer read; the settings' own taken out; a level claude does not
 take refused, nothing sent; a batch at the effort its comments were
 batched at, and work sent back at the effort it was asked at unless
-`--effort` says otherwise; the effort an ask was asked at said by
+`--effort` says otherwise; the model each ask goes with (`--model`, else
+none of its own; a batch with the model its comments were batched with,
+or the one given; work sent back with the model it was asked with unless
+`--model` says otherwise; an id that is not one of the dialog's refused,
+the ids said, nothing sent; `--model` refused in a review without
+`--send-back`), and the model said by `stacked landed` and `stacked
+runs`; the effort an ask was asked at said by
 `stacked landed`, `stacked runs`, `stacked comments` and its transcript,
 on the comment its reply waits on, on its reply and on the comment it
 opened, and kept on the fence as the thread is written again, a turn of
@@ -441,11 +447,14 @@ stepping on and stopping at either end; Enter opening the list of a
 line's options under it, on the one set or on the first, ↑↓ going round
 it, Home and End to its ends, ← → doing nothing in it, Enter picking an
 option and Esc leaving the line as it was, either closing the list alone,
-the dialog open on that line, and Ask Now and Ask Later grayed until both
-lines are set; ↑↓ going round to the buttons, ← → there past those
-grayed; Ask Now saving what changed first and asking at the permission
-and the effort set, the stand-in given that `--effort` and the tools of
-that way; Ask Later putting it in the batch; Cancel and Esc asking
+the dialog open on that line, and Ask Now and Ask Later grayed until the
+three lines are set, the note naming every one unset, in the lines'
+order; the model's line of the full ids, in the list's order; ↑↓ going
+round to the buttons, ← → there past those grayed; Ask Now saving what
+changed first and asking at the permission, the model and the effort set,
+the stand-in given that `--model`, that `--effort` and the tools of that
+way; the settings' `ask_model` and `ask_effort` set as the dialog opens,
+changed there as any, the ask going with them; Ask Later putting it in the batch; Cancel and Esc asking
 nothing, back to writing the comment; a second dialog unset, nothing
 kept for the stack; clicks opening a line's list, picking an option of
 it, closing the list alone from anywhere else, the mouse over an option
@@ -458,18 +467,18 @@ asking; `agent.reach_check` off, nothing checked; the items that open
 something to write first picking no effort; the review's `Send it back to
 the agent…` opening it on the work it sends back, its title saying so,
 nothing set, the permissions those of the comment going back, its
-buttons Send Now and Cancel, Send Now grayed until both lines are set and
+buttons Send Now and Cancel, Send Now grayed until the three lines are set and
 pressed grayed saying why, the line under the permission saying what each
 does with the work, `?` what Send Now does as the permission set does it,
 Cancel and a click out of it sending nothing, the review as it was, a
 second dialog unset; Send Now grayed, saying why, while the network does
-not reach the agent, nothing sent), the effort an ask goes at
-(the stand-in started at the effort the dialog set, the settings' own
-taken out; a batched comment, sent now or with the batch, at the effort
-it was batched at, one waiting its turn at its own, one queued by an
-older stacked at the agent's default; work sent back at the effort its
+not reach the agent, nothing sent), the model and the effort an ask goes with
+(the stand-in started with the model and at the effort the dialog set, the settings' own
+taken out; a batched comment, sent now or with the batch, with the model and at the effort
+it was batched with, or another its dropdown picks, one waiting its turn with its own, one queued by an
+older stacked with the agent's default; work sent back with the model and at the effort its
 dialog sets, the work asked at low, its item no dropdown of its own; the
-effort the agent was asked at shown wherever its work is
+model and the effort the agent was asked with shown wherever its work is
 named: its comment's state with the agent and replied to, in the middle
 and the banner, the banner's landed line, `Runs…` and the transcript, the
 review's title, the comment it opened and its reply in the review, then
@@ -1465,7 +1474,7 @@ of two tabs, one closed quitting nothing, the other served, then the other
 closed quitting, the ask dialog (opened with
 nothing set from `Ask agent about all…`, clicked, its permission set by
 clicks on its line and on an option of the list that opens under it, then
-stepped by → and back by ←, its effort picked in the list Enter opens, ↑
+stepped by → and back by ←, its model and its effort picked in the lists Enter opens, ↑
 and ↓ going round it, its lines set by → alone too, Ask Now grayed as
 claude is not found, saying so, Ask Later putting the comments in the
 batch; Esc closing it, a second one unset), the effort of `Send it
@@ -1727,7 +1736,7 @@ it would not move HEAD, and the view of why opened from it, then left; the
 ask dialog opened with nothing set from a click on `Ask agent about all…`,
 Ask Now and Ask Later drawn dim, Ask Now as claude is not found, which it
 says, a click on its permission's line opening the list of its options
-and a click on one of them picking it, Enter on its effort's line opening
+and a click on one of them picking it, Enter on its model's line and on its effort's line opening
 that line's list and Enter again picking low, and a click on Ask Later
 putting the comment in the batch; the agent's turns headed
 with the effort it was asked at, and its landed work named with it, in
@@ -2006,7 +2015,7 @@ test, `rg --hostname-bin` and `sort --co` too; a build and test is refused
 nothing. The
 stream's thinking is tested in `ask.rs`, with the prompt asking the agent
 to point at the stack before the web and its answer's schema taking a web
-link, the ask's effort given to claude after the settings' arguments, in
+link, the ask's model then its effort given to claude after the settings' arguments, in
 place of theirs, a child process that has exited not taken for alive
 though `kill` still finds it, its exit left for whoever started it, the
 wrapper of an ask the process started waited for once it has exited, and
@@ -2038,11 +2047,11 @@ read and written again, their headings, the first line an edit quotes cut
 short with `…`, and a name alone as ever; the fence of their comment read
 anew with its suggested edit read and written again, headed for what it
 is, the turn it replaces found by the line it quotes, and an edit's not
-taken for one; and the effort on the fence of
+taken for one; and the model and the effort on the fence of
 the agent's turn, after the way, read, headed and named with it, kept as
 the thread is written again, a reply added, a turn edited or one holding
 a code block, a turn of before read and written as it was, a comment the
-agent opened at an effort, and a reviewer named `effort` a name as ever;
+agent opened at an effort or with a model, and a reviewer named `effort` or `model` a name as ever;
 the stack an answer was asked on, last on its fence, after the effort or
 alone, read as the way and the effort as ever, kept as the thread is
 written again, a word after `stack` that is no rev read as part of the
@@ -2278,7 +2287,10 @@ StackED and `stacked web` name it, its first word's last path piece, by
 which the editors with windows of their own are told apart, a file of settings over another, a
 checkout's own read and written unless git tracks it, the patches
 pane's `compact`, as versions before the files wrote it, read as them,
-the width messages are wrapped at, one too narrow refused, the Bugzilla a
+the width messages are wrapped at, one too narrow refused, the ask
+dialog's `ask_model` and `ask_effort` unset unless set, set to one of the
+dialog's own values read and written, another refused saying the setting
+and the values it takes, the Bugzilla a
 bug opens on taken when it is a web link to a site, else said and not
 written, the keys listed by the context they are read in, and the sync's
 keys of before said to be gone where a file names them, refused to

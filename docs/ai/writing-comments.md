@@ -5,8 +5,10 @@ A comment shows under what it is on: `└ comment:` (or `└ agent's comment:`,
 thread, a bar at its left and its author's name in the author's colour
 (yours amber, the agent's violet, a reviewer's blue), and what they said in
 the terminal's own colour, so that no comment reads as code. The agent's
-name says the effort its run was asked at, when it was asked at one
-(`▎ agent(max):`, `└ agent's comment (max):`): Asking the agent, below.
+name says the model and the effort its run was asked with, as far as it
+was asked with them (`▎ agent(claude-opus-5-5, max):`, `└ agent's comment
+(claude-opus-5-5, max):`, `▎ agent(max):` of before models were picked):
+Asking the agent, below.
 A reviewer's
 comment edited on Phabricator is a turn of its own, headed by what it
 edits (`ann's edit of the comment that said "Hi Da":`), and the turn it
@@ -188,7 +190,7 @@ here or in $EDITOR; `Reply` adds to it without showing it. Not while the
 agent works on it. A comment waiting its turn
 leaves the agent's queue while it is edited, so that it is not asked as it
 was: its changes thrown away, or left as it is, it goes back on, as it was
-asked and at the same effort; edited, it waits to be asked again (or `Ask
+asked, with the same model and at the same effort; edited, it waits to be asked again (or `Ask
 agent…` saves it and asks it again, as its dialog sets). In $EDITOR it opens
 as a reply does: the conversation above what you said, the cursor on it,
 the comment's references under it. Only the lines stacked wrote are

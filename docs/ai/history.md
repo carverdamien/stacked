@@ -140,8 +140,8 @@ the command line.
 On a record of `History…`, Space, `Ask agent about this, answer only…`
 writes a question under it (`why was it dropped?`, `what changed since?`),
 and `Ask agent, answer only…`, in the menu Esc opens, asks it from the ask
-dialog, at the effort set there: answer only, the dialog's one permission
-here, so the agent changes nothing. It is told the
+dialog, with the model and at the effort set there: answer only, the
+dialog's one permission here, so the agent changes nothing. It is told the
 stack's history, oldest first, and that record in full: when, what it was,
 from which stack to which, and its stack diff, each new version's
 interdiff in it. It may run stacked's read-only commands to look further: `log`, `tree`, `export --rev @N`, `versions`, `interdiff`,

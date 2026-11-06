@@ -30,8 +30,11 @@
 //! and the effort's name (```agent answer effort max). It is headed
 //! `agent(max)`, and named `the agent's reply (max)`. A turn written before
 //! efforts were picked, or by an ask that went at the agent's own, has
-//! none, and reads as it always did. What the agent is told of a thread
-//! says none of it.
+//! none, and reads as it always did. A run asked with a model (claude's
+//! `--model`) says it the same way, before the effort: `model` and the
+//! model's id (```agent answer model claude-opus-5-5 effort max), headed
+//! `agent(claude-opus-5-5, max)`; one of before models were picked has
+//! none. What the agent is told of a thread says none of it.
 //!
 //! A turn of an answer-only ask's (a reply, or a comment it opened) names
 //! the stack it was asked on, last on its fence: `stack` and that stack's
@@ -72,6 +75,10 @@ pub const REDACTED: &str = "redacted";
 /// the fence of a turn of the agent's, after the way it was asked
 /// (```agent answer effort max).
 pub const EFFORT: &str = "effort";
+/// The word before the id of the model the agent's run was asked with, on
+/// the fence of a turn of the agent's, after the way it was asked and
+/// before the effort (```agent answer model claude-opus-5-5 effort max).
+pub const MODEL: &str = "model";
 /// The word before the rev of the stack an answer-only ask was asked on,
 /// last on the fence of a turn of the agent's that it brought back, after
 /// the effort if there is one (```agent answer effort max stack 12).
@@ -111,6 +118,10 @@ pub struct Turn {
     /// claude's `--effort` takes it (`max`). None for a turn of before
     /// efforts were picked, or of an ask that went at the agent's own.
     pub effort: Option<String>,
+    /// The agent's, its run asked with a model: that model's id, as
+    /// claude's `--model` takes it (`claude-opus-5-5`). None for a turn of
+    /// before models were picked.
+    pub model: Option<String>,
     /// The agent's, brought back by an answer-only ask: the stack that ask
     /// was asked on, by its rev, whose age its heading says while the stack
     /// has changed since. None for another ask's, and for one of before.
@@ -148,40 +159,81 @@ impl Turn {
                 false => format!("{whose} edit of the comment that said \"{}\"", quoted(was)),
             };
         }
-        named_at(&format!("{whose} {}", if i == 0 { "comment" } else { "reply" }), self.agent_effort())
+        named_at(&format!("{whose} {}", if i == 0 { "comment" } else { "reply" }), &self.agent_asked())
     }
 
-    /// The effort the agent's run was asked at, on a turn of the agent's
-    /// that says one.
-    pub fn agent_effort(&self) -> Option<&str> {
-        self.effort.as_deref().filter(|_| self.role == Role::Agent)
+    /// The model and the effort the agent's run was asked with, on a turn
+    /// of the agent's that says them.
+    pub fn agent_asked(&self) -> At {
+        match self.role {
+            Role::Agent => At::new(self.model.as_deref(), self.effort.as_deref()),
+            _ => At::default(),
+        }
+    }
+}
+
+/// What the agent's run was asked with, as its turns and its work are
+/// said: the model, by its id as claude's `--model` takes it
+/// (`claude-opus-5-5`), and the effort, by its name as claude's `--effort`
+/// takes it (`max`), each if it had one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct At {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl At {
+    pub fn new(model: Option<&str>, effort: Option<&str>) -> At {
+        At {
+            model: model.map(String::from),
+            effort: effort.map(String::from),
+        }
+    }
+
+    /// Whether it says neither.
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.effort.is_none()
+    }
+
+    /// Both, as brackets hold them: `claude-opus-5-5, max`; either alone;
+    /// none for neither.
+    pub fn bracketed(&self) -> Option<String> {
+        match (&self.model, &self.effort) {
+            (Some(m), Some(e)) => Some(format!("{m}, {e}")),
+            (Some(one), None) | (None, Some(one)) => Some(one.clone()),
+            (None, None) => None,
+        }
     }
 }
 
 /// The agent, as a turn of its is headed and as it is listed: `agent`; its
-/// run asked at an effort, `agent(max)`.
-pub fn agent_at(effort: Option<&str>) -> String {
-    match effort {
-        Some(e) => format!("agent({e})"),
+/// run asked with a model and at an effort, `agent(claude-opus-5-5, max)`,
+/// either alone as it had it, `agent(max)`.
+pub fn agent_at(at: &At) -> String {
+    match at.bracketed() {
+        Some(b) => format!("agent({b})"),
         None => "agent".into(),
     }
 }
 
-/// `said`, what names a turn of the agent's or its work, with the effort
-/// its run was asked at after it: `the agent's reply (max)`. As it is
-/// without one.
-pub fn named_at(said: &str, effort: Option<&str>) -> String {
-    match effort {
-        Some(e) => format!("{said} ({e})"),
+/// `said`, what names a turn of the agent's or its work, with the model
+/// and the effort its run was asked with after it: `the agent's reply
+/// (claude-opus-5-5, max)`. As it is without either.
+pub fn named_at(said: &str, at: &At) -> String {
+    match at.bracketed() {
+        Some(b) => format!("{said} ({b})"),
         None => said.to_string(),
     }
 }
 
 /// What follows the word that says an ask was asked, its run asked at an
-/// effort: ` at max`, as in `asked at max: "why?"`, `opened by the agent
-/// at max`. Nothing without one.
-pub fn asked_at(effort: Option<&str>) -> String {
-    effort.map_or(String::new(), |e| format!(" at {e}"))
+/// effort and with a model: ` at max with claude-opus-5-5`, as in `asked
+/// at max with claude-opus-5-5: "why?"`, `opened by the agent at max with
+/// claude-opus-5-5`; either alone as it had it. Nothing without either.
+pub fn asked_at(at: &At) -> String {
+    let effort = at.effort.as_ref().map_or(String::new(), |e| format!(" at {e}"));
+    let model = at.model.as_ref().map_or(String::new(), |m| format!(" with {m}"));
+    format!("{effort}{model}")
 }
 
 /// How old the stack an answer-only ask was asked on is, `since`, as the
@@ -279,11 +331,12 @@ fn closed(role: Role, tag: &str, deleted: bool, body: &[&str]) -> Turn {
     } else {
         body.to_vec()
     };
-    // The agent's: the way it was asked, then the effort its run was asked
-    // at, if it says one, then the stack an answer-only ask was asked on.
-    let (tag, effort, stack) = match role {
+    // The agent's: the way it was asked, then the model and the effort its
+    // run was asked with, if it says them, then the stack an answer-only
+    // ask was asked on.
+    let (tag, at, stack) = match role {
         Role::Agent if !deleted => way_and_effort(tag),
-        _ => (tag.to_string(), None, None),
+        _ => (tag.to_string(), At::default(), None),
     };
     let tag = tag.as_str();
     // A reviewer's: their name; `redacted`, if an edit of it replaces it;
@@ -313,38 +366,57 @@ fn closed(role: Role, tag: &str, deleted: bool, body: &[&str]) -> Turn {
         edit,
         anew,
         redacted,
-        effort,
+        effort: at.effort,
+        model: at.model,
         stack,
     }
 }
 
 /// What an agent's fence says after `agent`, `tag`, read: the way it was
-/// asked; the effort its run was asked at, after `effort`, if it says one;
-/// and last, after `stack`, the rev of the stack an answer-only ask was
-/// asked on, if it says one (`answer effort max stack 12`).
-fn way_and_effort(tag: &str) -> (String, Option<String>, Option<usize>) {
+/// asked; the model its run was asked with, after `model`, if it says one;
+/// the effort, after `effort`, if it says one; and last, after `stack`, the
+/// rev of the stack an answer-only ask was asked on, if it says one
+/// (`answer model claude-opus-5-5 effort max stack 12`).
+fn way_and_effort(tag: &str) -> (String, At, Option<usize>) {
     let words: Vec<&str> = tag.split_whitespace().collect();
     let (words, stack) = match words.as_slice() {
         [rest @ .., mark, rev] if *mark == STACK && rev.parse::<usize>().is_ok() => (rest, rev.parse::<usize>().ok()),
         all => (all, None),
     };
-    match words {
-        [way @ .., mark, effort] if *mark == EFFORT => (way.join(" "), Some(effort.to_string()), stack),
-        _ if stack.is_some() => (words.join(" "), None, stack),
-        _ => (tag.to_string(), None, None),
+    let (words, effort) = match words {
+        [rest @ .., mark, effort] if *mark == EFFORT => (rest, Some(*effort)),
+        all => (all, None),
+    };
+    let (words, model) = match words {
+        [rest @ .., mark, model] if *mark == MODEL => (rest, Some(*model)),
+        all => (all, None),
+    };
+    match (model, effort, stack) {
+        (None, None, None) => (tag.to_string(), At::default(), None),
+        _ => (words.join(" "), At::new(model, effort), stack),
     }
 }
 
 /// What the fence of a turn of the agent's says after the backticks: `agent`,
-/// the way it was asked (`tag`), then the effort its run was asked at, if it
-/// had one, then the stack an answer-only ask was asked on, by its rev, if
-/// it was one: `agent answer effort max stack 12`.
-pub fn agent_open(tag: &str, effort: Option<&str>, stack: Option<usize>) -> String {
+/// the way it was asked (`tag`), then the model and the effort its run was
+/// asked with, each if it had one, then the stack an answer-only ask was
+/// asked on, by its rev, if it was one: `agent answer model claude-opus-5-5
+/// effort max stack 12`.
+pub fn agent_open(tag: &str, at: &At, stack: Option<usize>) -> String {
     let mut open = word(AGENT_OPEN).to_string();
     let rev = stack.map(|r| r.to_string());
-    for w in [Some(tag).filter(|t| !t.is_empty()), effort.map(|_| EFFORT), effort, rev.as_ref().map(|_| STACK), rev.as_deref()]
-        .into_iter()
-        .flatten()
+    let (model, effort) = (at.model.as_deref(), at.effort.as_deref());
+    for w in [
+        Some(tag).filter(|t| !t.is_empty()),
+        model.map(|_| MODEL),
+        model,
+        effort.map(|_| EFFORT),
+        effort,
+        rev.as_ref().map(|_| STACK),
+        rev.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
     {
         open.push(' ');
         open.push_str(w);
@@ -380,6 +452,7 @@ pub fn all_turns(text: &str) -> Vec<Turn> {
                 anew: false,
                 redacted: false,
                 effort: None,
+                model: None,
                 stack: None,
             });
         }
@@ -427,7 +500,7 @@ pub fn all_turns(text: &str) -> Vec<Turn> {
 pub fn said_by(t: &Turn) -> String {
     match t.role {
         Role::You => "you".into(),
-        Role::Agent => agent_at(t.agent_effort()),
+        Role::Agent => agent_at(&t.agent_asked()),
         Role::Reviewer if t.edit.is_some() => t.name(1),
         Role::Reviewer => {
             let who = t.tag.clone().filter(|w| !w.is_empty()).unwrap_or_else(|| "reviewer".into());
@@ -502,9 +575,10 @@ pub fn render_thread(turns: &[Turn]) -> String {
                 }
                 return fenced(&open, &t.body);
             }
-            // The agent's: the effort its run was asked at after the way.
+            // The agent's: the model and the effort its run was asked with
+            // after the way.
             if t.role == Role::Agent {
-                return fenced(&agent_open(tag, t.effort.as_deref(), t.stack), &t.body);
+                return fenced(&agent_open(tag, &t.agent_asked(), t.stack), &t.body);
             }
             match tag {
                 "" => fenced(open, &t.body),
@@ -527,23 +601,24 @@ pub fn yours(body: &str) -> String {
 }
 
 pub fn append_turn(text: &str, role: Role, body: &str, tag: Option<&str>) -> String {
-    appended(text, role, body, tag, None, None)
+    appended(text, role, body, tag, &At::default(), None)
 }
 
 /// `text` with a turn of the agent's after the rest, `body`, asked in the
-/// way `tag` names (`answer`), at `effort` when its run had one: the effort
-/// on its fence, every turn before it as it was.
-pub fn append_agent(text: &str, body: &str, tag: &str, effort: Option<&str>) -> String {
-    appended(text, Role::Agent, body, Some(tag), effort, None)
+/// way `tag` names (`answer`), with the model and at the effort `at` its
+/// run had, if it had them: they are on its fence, every turn before it as
+/// it was.
+pub fn append_agent(text: &str, body: &str, tag: &str, at: &At) -> String {
+    appended(text, Role::Agent, body, Some(tag), at, None)
 }
 
 /// As `append_agent`, the turn brought back by an answer-only ask asked on
 /// the stack at `stack`, when it was one: that stack's rev on its fence.
-pub fn append_agent_on(text: &str, body: &str, tag: &str, effort: Option<&str>, stack: Option<usize>) -> String {
-    appended(text, Role::Agent, body, Some(tag), effort, stack)
+pub fn append_agent_on(text: &str, body: &str, tag: &str, at: &At, stack: Option<usize>) -> String {
+    appended(text, Role::Agent, body, Some(tag), at, stack)
 }
 
-fn appended(text: &str, role: Role, body: &str, tag: Option<&str>, effort: Option<&str>, stack: Option<usize>) -> String {
+fn appended(text: &str, role: Role, body: &str, tag: Option<&str>, at: &At, stack: Option<usize>) -> String {
     let mut turns = all_turns(text);
     turns.push(Turn {
         role,
@@ -553,7 +628,8 @@ fn appended(text: &str, role: Role, body: &str, tag: Option<&str>, effort: Optio
         edit: None,
         anew: false,
         redacted: false,
-        effort: effort.map(String::from),
+        effort: at.effort.clone(),
+        model: at.model.clone(),
         stack,
     });
     render_thread(&turns)
@@ -619,6 +695,7 @@ pub fn rewind(text: &str, k: usize, body: &str) -> Option<String> {
         anew: false,
         redacted: false,
         effort: None,
+        model: None,
         stack: None,
     });
     Some(render_thread(&turns))
@@ -680,17 +757,17 @@ pub fn last_reply_way(text: &str) -> Option<String> {
         .map(|t| t.tag.unwrap_or_default())
 }
 
-/// The effort the run of the agent's latest reply was asked at, if it
-/// says one.
-pub fn last_reply_effort(text: &str) -> Option<String> {
-    thread_turns(text).into_iter().rfind(|t| t.role == Role::Agent)?.effort
+/// The model and the effort the run of the agent's latest reply was asked
+/// with, as far as it says them.
+pub fn last_reply_at(text: &str) -> At {
+    thread_turns(text).into_iter().rfind(|t| t.role == Role::Agent).map_or_else(At::default, |t| t.agent_asked())
 }
 
-/// The effort the run of the agent's turn that opened comment `text` was
-/// asked at, if the agent's is its first turn and says one: the effort of
-/// a comment the agent opened.
-pub fn opened_effort(text: &str) -> Option<String> {
-    thread_turns(text).into_iter().next().filter(|t| t.role == Role::Agent)?.effort
+/// The model and the effort the run of the agent's turn that opened
+/// comment `text` was asked with, if the agent's is its first turn, as far
+/// as it says them: those of a comment the agent opened.
+pub fn opened_at(text: &str) -> At {
+    thread_turns(text).into_iter().next().map_or_else(At::default, |t| t.agent_asked())
 }
 
 /// The part each line of a comment plays, for colouring the editor.
@@ -742,6 +819,11 @@ pub fn thread_line_roles(lines: &[String]) -> Vec<LineRole> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run asked at effort `e` alone, of no model.
+    fn at(e: &str) -> At {
+        At::new(None, Some(e))
+    }
 
     #[test]
     fn a_turn_of_yours_holding_a_fence_is_fenced_as_yours() {
@@ -901,20 +983,20 @@ mod tests {
     #[test]
     fn the_agent_s_turn_says_the_effort_its_run_was_asked_at_and_one_of_before_reads_as_ever() {
         // Filed at max: the effort on its fence, after the way it was asked.
-        let text = append_agent("why so loud?", "It is a shout.", "answer", Some("max"));
+        let text = append_agent("why so loud?", "It is a shout.", "answer", &at("max"));
         assert_eq!(text, "why so loud?\n```agent answer effort max\nIt is a shout.\n```");
         let t = &thread_turns(&text)[1];
-        assert_eq!((t.role, t.tag.as_deref(), t.effort.as_deref()), (Role::Agent, Some("answer"), Some("max")));
+        assert_eq!((t.role, t.tag.as_deref(), t.effort.as_deref(), t.model.as_deref()), (Role::Agent, Some("answer"), Some("max"), None));
         // Headed and named with it; the way it was asked as it was.
         assert_eq!((said_by(t), t.name(1)), ("agent(max)".to_string(), "the agent's reply (max)".to_string()));
-        assert_eq!((last_reply_way(&text).as_deref(), last_reply_effort(&text).as_deref()), (Some("answer"), Some("max")));
+        assert_eq!((last_reply_way(&text).as_deref(), last_reply_at(&text)), (Some("answer"), at("max")));
         assert_eq!(said_lines(&text), ["you: why so loud?", "agent(max): It is a shout."]);
         assert_eq!(rewound_lines(&text, 0), ["# you:", "#   why so loud?", "# agent(max):", "#   It is a shout."]);
         // Written again, a reply added, a turn edited, a code block in one:
         // each turn keeps its own, or has none.
         let more = append_turn(&text, Role::You, "louder?", None);
-        let more = append_agent(&more, "Louder:\n\n```\nSHOUT\n```", "change", Some("low"));
-        let more = append_agent(&more, "As ever.", "answer", None);
+        let more = append_agent(&more, "Louder:\n\n```\nSHOUT\n```", "change", &at("low"));
+        let more = append_agent(&more, "As ever.", "answer", &At::default());
         let more = edit_turn(&more, 1, "It is a shout, really.").unwrap();
         assert!(more.contains("\n````agent change effort low\nLouder:\n"), "{more}");
         let marks: Vec<(String, Option<String>)> = all_turns(&more).into_iter().map(|t| (said_by(&t), t.effort)).collect();
@@ -926,46 +1008,79 @@ mod tests {
         // A turn of before: no effort, read and written as it was.
         let old = "why?\n```agent answer\nBecause.\n```\nthanks\n```claude change\nDone.\n```";
         let turns = all_turns(old);
-        assert!(turns.iter().all(|t| t.effort.is_none()), "{turns:?}");
+        assert!(turns.iter().all(|t| t.effort.is_none() && t.model.is_none()), "{turns:?}");
         assert_eq!(turns.iter().enumerate().map(|(i, t)| t.name(i)).collect::<Vec<_>>(), ["your comment", "the agent's reply", "your reply", "the agent's reply"]);
         assert_eq!(said_lines(old), ["you: why?", "agent: Because.", "you: thanks", "agent: Done."]);
-        assert_eq!((last_reply_way(old).as_deref(), last_reply_effort(old)), (Some("change"), None));
+        assert_eq!((last_reply_way(old).as_deref(), last_reply_at(old)), (Some("change"), At::default()));
         assert_eq!(render_thread(&turns), "why?\n```agent answer\nBecause.\n```\nthanks\n```agent change\nDone.\n```");
         // A comment the agent opened: its first turn says it, named the
         // agent's comment at it.
-        let opened = fenced(&agent_open("answer", Some("xhigh"), None), "Look here.");
+        let opened = fenced(&agent_open("answer", &at("xhigh"), None), "Look here.");
         assert_eq!(opened, "```agent answer effort xhigh\nLook here.\n```");
-        assert_eq!((opened_effort(&opened).as_deref(), all_turns(&opened)[0].name(0)), (Some("xhigh"), "the agent's comment (xhigh)".into()));
-        assert_eq!((opened_effort("mine"), opened_effort(&append_agent("mine", "Seen.", "answer", Some("max")))), (None, None));
+        assert_eq!((opened_at(&opened), all_turns(&opened)[0].name(0)), (at("xhigh"), "the agent's comment (xhigh)".into()));
+        assert_eq!((opened_at("mine"), opened_at(&append_agent("mine", "Seen.", "answer", &at("max")))), (At::default(), At::default()));
         // No way named, the effort alone; the opening words as ever.
-        assert_eq!((agent_open("", Some("high"), None), agent_open("test", None, None), agent_open("", None, None)), ("agent effort high".into(), "agent test".into(), "agent".into()));
+        let none = At::default();
+        assert_eq!((agent_open("", &at("high"), None), agent_open("test", &none, None), agent_open("", &none, None)), ("agent effort high".into(), "agent test".into(), "agent".into()));
         let t = &all_turns("```agent effort high\nHm.\n```")[0];
         assert_eq!((t.tag.as_deref(), t.effort.as_deref()), (Some(""), Some("high")));
         // A reviewer's name and the word: a name, as ever.
         let t = &all_turns(&fenced("reviewer effort max", "Hi."))[0];
         assert_eq!((t.tag.as_deref(), t.effort.as_deref(), said_by(t)), (Some("effort max"), None, "effort max".to_string()));
         // Said with it elsewhere, as what was asked ends with it.
-        assert_eq!((agent_at(None), named_at("the agent's work", None), asked_at(None)), ("agent".into(), "the agent's work".into(), String::new()));
-        assert_eq!(asked_at(Some("low")), " at low");
+        assert_eq!((agent_at(&none), named_at("the agent's work", &none), asked_at(&none)), ("agent".into(), "the agent's work".into(), String::new()));
+        assert_eq!(asked_at(&at("low")), " at low");
+    }
+
+    #[test]
+    fn the_agent_s_turn_says_the_model_its_run_was_asked_with_before_the_effort_and_one_of_before_reads_as_ever() {
+        // Filed with a model and at an effort: both on its fence, the model
+        // first, after the way it was asked; the stack last.
+        let both = At::new(Some("claude-opus-5-5"), Some("max"));
+        let text = append_agent_on("why so loud?", "It is a shout.", "answer", &both, Some(12));
+        assert_eq!(text, "why so loud?\n```agent answer model claude-opus-5-5 effort max stack 12\nIt is a shout.\n```");
+        let t = &thread_turns(&text)[1];
+        assert_eq!((t.tag.as_deref(), t.model.as_deref(), t.effort.as_deref(), t.stack), (Some("answer"), Some("claude-opus-5-5"), Some("max"), Some(12)));
+        // Headed and named with both, the model first; said after the word
+        // that says it was asked, the effort first.
+        assert_eq!((said_by(t), t.name(1)), ("agent(claude-opus-5-5, max)".to_string(), "the agent's reply (claude-opus-5-5, max)".to_string()));
+        assert_eq!((last_reply_way(&text).as_deref(), last_reply_at(&text)), (Some("answer"), both.clone()));
+        assert_eq!(asked_at(&both), " at max with claude-opus-5-5");
+        assert_eq!(said_lines(&text), ["you: why so loud?", "agent(claude-opus-5-5, max): It is a shout."]);
+        // Written again with the thread, as it was.
+        let more = append_agent(&append_turn(&text, Role::You, "louder?", None), "Louder.", "change", &at("low"));
+        assert_eq!(render_thread(&all_turns(&more)), more);
+        // The model alone, a way or none.
+        let model = At::new(Some("claude-haiku-5-5"), None);
+        assert_eq!((agent_open("test", &model, None), agent_open("", &model, None)), ("agent test model claude-haiku-5-5".into(), "agent model claude-haiku-5-5".into()));
+        let t = &all_turns("```agent model claude-haiku-5-5\nHm.\n```")[0];
+        assert_eq!((t.tag.as_deref(), t.agent_asked(), said_by(t)), (Some(""), model.clone(), "agent(claude-haiku-5-5)".to_string()));
+        assert_eq!((asked_at(&model), named_at("the agent's work", &model)), (" with claude-haiku-5-5".into(), "the agent's work (claude-haiku-5-5)".into()));
+        // A comment the agent opened, with both.
+        let opened = fenced(&agent_open("answer", &both, None), "Look here.");
+        assert_eq!((opened_at(&opened), all_turns(&opened)[0].name(0)), (both, "the agent's comment (claude-opus-5-5, max)".into()));
+        // A reviewer's name and the word: a name, as ever.
+        let t = &all_turns(&fenced("reviewer model x", "Hi."))[0];
+        assert_eq!((t.tag.as_deref(), t.model.as_deref(), said_by(t)), (Some("model x"), None, "model x".to_string()));
     }
 
     #[test]
     fn an_answer_s_turn_names_the_stack_it_was_asked_on_last_on_its_fence() {
         // Filed: the stack's rev last, after the effort, or alone.
-        let text = append_agent_on("why so loud?", "It is a shout.", "answer", Some("max"), Some(12));
+        let text = append_agent_on("why so loud?", "It is a shout.", "answer", &at("max"), Some(12));
         assert_eq!(text, "why so loud?\n```agent answer effort max stack 12\nIt is a shout.\n```");
         let t = &thread_turns(&text)[1];
         assert_eq!((t.tag.as_deref(), t.effort.as_deref(), t.stack), (Some("answer"), Some("max"), Some(12)));
         // Read as the way it was asked and the effort, as ever: the way, the
         // heading, what a thread read as lines says.
-        assert_eq!((last_reply_way(&text).as_deref(), last_reply_effort(&text).as_deref()), (Some("answer"), Some("max")));
+        assert_eq!((last_reply_way(&text).as_deref(), last_reply_at(&text)), (Some("answer"), at("max")));
         assert_eq!((said_by(t), t.name(1)), ("agent(max)".to_string(), "the agent's reply (max)".to_string()));
         assert_eq!(said_lines(&text), ["you: why so loud?", "agent(max): It is a shout."]);
         let alone = all_turns("```agent answer stack 3\nSeen.\n```");
         assert_eq!((alone[0].tag.as_deref(), alone[0].effort.as_deref(), alone[0].stack), (Some("answer"), None, Some(3)));
         // Written again with the thread, each turn's kept; one of before, or
         // of another ask, names none.
-        let more = append_agent(&append_turn(&text, Role::You, "louder?", None), "Louder.", "change", Some("low"));
+        let more = append_agent(&append_turn(&text, Role::You, "louder?", None), "Louder.", "change", &at("low"));
         let stacks: Vec<Option<usize>> = all_turns(&more).into_iter().map(|t| t.stack).collect();
         assert_eq!(stacks, [None, Some(12), None, None]);
         assert_eq!(render_thread(&all_turns(&more)), more);

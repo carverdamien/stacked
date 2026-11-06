@@ -127,9 +127,11 @@ From there, a typical round goes like this:
    A comment can also go on a file as a whole, on a patch (its title in
    the left pane), or on the whole stack (its header).
 3. **Ask the agent.** `Ask agent…` opens the ask dialog. Set the
-   permission, what the agent may do, and the effort, how hard it works,
-   then press `Ask Now`. Both start unset every time, so that no ask goes
-   the way the last one went by mistake. The agent's progress shows under
+   permission, what the agent may do, the model it works with, and the
+   effort, how hard it works, then press `Ask Now`. All three start unset
+   every time, so that no ask goes the way the last one went by mistake,
+   unless the settings name a model and an effort for the dialog to open
+   with (below). The agent's progress shows under
    the comment while you go on working.
 4. **Review what comes back.** When the agent is done, a banner under the
    top bar says that its work waits for your review. Esc goes to the
@@ -213,8 +215,12 @@ The ask dialog sets two things every time. The permission is one of:
 - **file a bug**, with the `moz-phab` feature, on a patch whose title
   names no bug: it drafts the bug (Filing a bug, below).
 
-The dialog offers only those that fit where the comment is. The effort is
-claude's `--effort`: low, medium, high, xhigh or max. `Ask Later`, in
+The dialog offers only those that fit where the comment is. The model is
+claude's `--model`, by its full id: claude-fable-5-1, claude-opus-5-5,
+claude-sonnet-5-5 or claude-haiku-5-5. The effort is claude's `--effort`:
+low, medium, high, xhigh or max. The agent's replies, and its work, say
+the model and the effort they were asked with: `agent(claude-opus-5-5,
+max)`. `Ask Later`, in
 place of `Ask Now`, puts the ask in the stack's batch, and the banner
 sends the batch when you are ready: several comments to one agent, or the
 answers to an agent each.
@@ -510,7 +516,13 @@ The main ones:
   for comments, patches and code (`hx {file}:{line}`; else `$VISUAL`,
   `$EDITOR`, then vi).
 - `[agent]`: the program run as the agent and its arguments, the tools each
-  kind of ask may use, where the agents' worktrees go, and `chain`.
+  kind of ask may use, where the agents' worktrees go, and `chain`; and
+  `ask_model` and `ask_effort`, the model and the effort the ask dialog
+  opens with, set already (`stacked config agent.ask_model
+  claude-opus-5-5`, `stacked config agent.ask_effort max`). Unless they
+  are set, the dialog opens with neither, and you pick them there. Only
+  the dialog's own values are taken: another is refused, saying which
+  values the setting takes.
 - `[reviews]`: Phabricator's address, token and trailer, and Bugzilla's
   address; `source = "none"` turns Phabricator off.
 - `[view]`: the layout and the panes at the start, the view of the

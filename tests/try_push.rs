@@ -588,8 +588,11 @@ fn hows(app: &mut App) -> Vec<String> {
     all
 }
 
+/// The model the tests' try push asks pick in the ask dialog.
+const MODEL: stacked::db::Model = stacked::db::Model::Opus55;
+
 /// The open menu's `Ask agent…` chosen, and in the dialog it opens,
-/// `permission` set and the effort high, each with → on its line (from
+/// `permission` set, the model `MODEL` and the effort high, each with → on its line (from
 /// unset, the first, then on), then `button` pressed: Ask Now, or Ask
 /// Later.
 fn ask_as(app: &mut App, permission: &str, button: &str) {
@@ -607,9 +610,9 @@ fn ask_at(app: &mut App, permission: &str, effort: stacked::db::Effort, button: 
     draw(app);
 }
 
-/// In the ask dialog open, `permission` and the effort `effort` set, each
-/// with → on its line (from unset, the first, then on); the cursor then on
-/// its buttons' line, on the first.
+/// In the ask dialog open, `permission`, the model `MODEL` and the effort
+/// `effort` set, each with → on its line (from unset, the first, then on);
+/// the cursor then on its buttons' line, on the first.
 fn set_in_dialog(app: &mut App, permission: &str, effort: stacked::db::Effort) {
     let step = |app: &mut App, done: &dyn Fn(&stacked::tui::AskDialog) -> bool| {
         for _ in 0..8 {
@@ -623,6 +626,8 @@ fn set_in_dialog(app: &mut App, permission: &str, effort: stacked::db::Effort) {
         panic!("never so: {:?}", app.mode);
     };
     step(app, &|d| d.permission().map(|p| p.label()) == Some(permission));
+    key(app, KeyCode::Down);
+    step(app, &|d| d.model == Some(MODEL));
     key(app, KeyCode::Down);
     step(app, &|d| d.effort == Some(effort));
     key(app, KeyCode::Down);
@@ -1119,7 +1124,7 @@ fn a_try_push_ask_waits_for_the_tasks_mach_can_push_its_prompt_naming_their_list
     assert!(screen.contains("⋯ stacked lists the tasks mach can push from"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     let screen = draw(&mut app);
-    assert!(screen.contains("· with the agent (try push, at high) · stacked lists the tasks mach can push"), "{screen}");
+    assert!(screen.contains("· with the agent (try push, at high with claude-opus-5-5) · stacked lists the"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     assert!(claude_args(&db).is_empty(), "the agent waits for the list");
     // mach run as the push's check runs it, every task selected, the preset
@@ -1326,6 +1331,7 @@ fn queued_as_try(db: &Path, id: &str, stage: stacked::db::Stage) {
         on: None,
         was: None,
         effort: None,
+        model: None,
         follow: false,
     };
     Db::edit(db, |d| d.set_note(Note { queued: Some(queued), failed: None, ..n })).unwrap();
@@ -1579,7 +1585,7 @@ fn a_try_push_followed_is_tracked_in_the_banner_and_its_summary_lands_for_review
 }
 
 #[test]
-fn a_try_push_s_replies_say_the_effort_its_tasks_were_selected_at() {
+fn a_try_push_s_replies_say_the_model_and_the_effort_its_tasks_were_selected_with() {
     use stacked::db::Effort;
     use stacked::thread::{said_by, thread_turns};
     let (_tmp, db, _src) = setup();
@@ -1594,17 +1600,17 @@ fn a_try_push_s_replies_say_the_effort_its_tasks_were_selected_at() {
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
     let screen = draw(&mut app);
-    assert!(screen.contains(" the agent's work (max): 1 task to push") && screen.contains("▎ agent(max):"), "{screen}");
+    assert!(screen.contains(" the agent's work (claude-opus-5-5, max): 1 task") && screen.contains("▎ agent(claude-opus-5-5, max):"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
     choose(&mut app, "Accept them and close");
-    // Pushed: the push keeps the effort, and its link is a reply at it.
+    // Pushed: the push keeps the model and the effort, and its link is a reply with them.
     let r = wait_push(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.link.is_some()) && r.pid.is_none());
-    assert_eq!(r.push.as_ref().and_then(|p| p.effort), Some(Effort::Max));
+    assert_eq!(r.push.as_ref().map(|p| (p.model.as_deref(), p.effort)), Some((Some(MODEL.id()), Some(Effort::Max))));
     let text = notes_of(&db, 0)[0].text.clone();
     let last = thread_turns(&text).pop().unwrap();
-    assert!(last.body.starts_with("stacked pushed ") && said_by(&last) == "agent(max)", "{text}");
-    assert!(text.contains("```agent try effort max\nstacked pushed "), "{text}");
+    assert!(last.body.starts_with("stacked pushed ") && said_by(&last) == "agent(claude-opus-5-5, max)", "{text}");
+    assert!(text.contains("```agent try model claude-opus-5-5 effort max\nstacked pushed "), "{text}");
     // Done: its summary, held for your review, at it too, and so in the
     // thread once taken.
     let rev = "abcdef0123456789abcdef0123456789abcdef02";
@@ -1615,12 +1621,12 @@ fn a_try_push_s_replies_say_the_effort_its_tasks_were_selected_at() {
         p.jobs = vec![treeherder_job("Gecko Decision Task", "completed", "success", "dec", 0), treeherder_job("build-linux64/debug", "completed", "success", "b1", 0)];
     });
     let r = look_until(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
-    assert_eq!(r.held.as_ref().map(|h| h.replies[0].effort), Some(Some(Effort::Max)));
+    assert_eq!(r.held.as_ref().map(|h| (h.replies[0].model.as_deref(), h.replies[0].effort)), Some((Some(MODEL.id()), Some(Effort::Max))));
     to_comment(&mut app, &id);
-    assert!(draw(&mut app).contains("the agent's reply (max) waits for your review"), "{}", draw(&mut app));
+    assert!(draw(&mut app).contains("the agent's reply (claude-opus-5-5, max) waits"), "{}", draw(&mut app));
     keys(&mut app, &[KeyCode::Enter]);
     let last = thread_turns(&notes_of(&db, 0)[0].text).pop().unwrap();
-    assert!(last.body.starts_with("The try push is done.") && last.effort.as_deref() == Some("max"), "{last:?}");
+    assert!(last.body.starts_with("The try push is done.") && last.effort.as_deref() == Some("max") && last.model.as_deref() == Some(MODEL.id()), "{last:?}");
 }
 
 #[test]

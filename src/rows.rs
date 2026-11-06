@@ -436,15 +436,16 @@ pub const BAR: char = '▎';
 /// The rows of a comment, its turns folded to `width`, what `deco` says of
 /// it on its first line and under it: under its turns, the agent's stream,
 /// then its references. Each turn is headed by who said it, the agent's
-/// with the effort its run was asked at when it says one (`agent(max)`),
-/// and an answer's with how old the stack it was asked on is, as `deco`
-/// says it (`agent(max), on the stack 2 edits ago`); a comment the agent
-/// opened is the agent's comment at that effort.
+/// with the model and the effort its run was asked with as far as it says
+/// them (`agent(claude-opus-5-5, max)`), and an answer's with how old the
+/// stack it was asked on is, as `deco` says it (`agent(max), on the stack 2
+/// edits ago`); a comment the agent opened is the agent's comment with
+/// that model and at that effort.
 pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
     let by = by_of(n);
     let who = match (&by, n.by.as_deref()) {
         (By::You, _) => "comment".to_string(),
-        (By::Agent, _) => crate::thread::named_at("agent's comment", crate::thread::opened_effort(&n.text).as_deref()),
+        (By::Agent, _) => crate::thread::named_at("agent's comment", &crate::thread::opened_at(&n.text)),
         (_, Some(who)) => format!("{who}'s comment"),
         _ => unreachable!(),
     };

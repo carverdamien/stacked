@@ -226,6 +226,9 @@ pub struct FollowUp {
     /// The effort it was asked at, if it was asked at one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<crate::db::Effort>,
+    /// The model it was asked with, by its id, if it was asked with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// The comments it was asked about, by (change, id).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asked: Vec<(String, String)>,
@@ -300,6 +303,11 @@ pub struct Reply {
     /// before efforts were picked brought back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<crate::db::Effort>,
+    /// The agent's, its run asked with a model: that model's id, which its
+    /// turn in the thread says. None for a reviewer's, and for one an ask
+    /// made before models were picked brought back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// An answer-only ask's: the stack it was asked on, by its rev, which
     /// its turn's fence names, its heading saying how many edits old that
     /// stack is while the stack has changed since. None for another ask's,
@@ -329,7 +337,8 @@ pub struct Closed {
 
 impl Reply {
     /// Thread `text` with this reply as its last turn: the reviewer's who
-    /// wrote it, or the agent's, the effort its run was asked at on it, and
+    /// wrote it, or the agent's, the model and the effort its run was asked
+    /// with on it, and
     /// an answer-only ask's the stack it was asked on; your answer to it
     /// after, if you wrote one. A reviewer's edit is their edit of their
     /// turn as it was, which it redacts (`edited`), as their comment read
@@ -338,7 +347,7 @@ impl Reply {
         let text = match (&self.reviewer, &self.was) {
             (Some(who), Some(was)) => edited(text, who, was, &self.text, self.anew),
             (Some(who), None) => append_turn(text, Role::Reviewer, &self.text, Some(who)),
-            (None, _) => append_agent_on(text, &self.text, &self.tag, self.effort_said(), self.asked_on),
+            (None, _) => append_agent_on(text, &self.text, &self.tag, &self.asked_with(), self.asked_on),
         };
         match &self.answer {
             Some(a) => append_turn(&text, Role::You, a, None),
@@ -353,14 +362,15 @@ impl Reply {
 
     /// It, said: `the agent's reply`, `ann's reply`, `ann's edit`; their
     /// comment read again with its suggested edit, `ann's suggested edit`;
-    /// the agent's, its run asked at an effort, `the agent's reply (max)`.
+    /// the agent's, its run asked with a model and at an effort, `the
+    /// agent's reply (claude-opus-5-5, max)`.
     pub fn said(&self) -> String {
         let what = match (self.is_edit(), self.is_anew()) {
             (true, _) => "edit",
             (_, true) => "suggested edit",
             _ => "reply",
         };
-        crate::thread::named_at(&format!("{}'s {what}", self.who()), self.effort_said())
+        crate::thread::named_at(&format!("{}'s {what}", self.who()), &self.asked_with())
     }
 
     /// Whether it is a reviewer's edit, on Phabricator, of their comment
@@ -376,10 +386,13 @@ impl Reply {
         self.was.is_some() && self.anew
     }
 
-    /// The name of the effort the agent's run was asked at, if it is the
-    /// agent's and its run had one.
-    pub fn effort_said(&self) -> Option<&'static str> {
-        self.effort.filter(|_| self.reviewer.is_none()).map(crate::db::Effort::name)
+    /// The model and the effort the agent's run was asked with, if it is
+    /// the agent's, as far as its run had them.
+    pub fn asked_with(&self) -> crate::thread::At {
+        match self.reviewer {
+            None => crate::thread::At::new(self.model.as_deref(), self.effort.map(crate::db::Effort::name)),
+            Some(_) => crate::thread::At::default(),
+        }
     }
 }
 
@@ -415,6 +428,7 @@ fn edited(text: &str, who: &str, was: &str, now: &str, anew: bool) -> String {
         anew,
         redacted: false,
         effort: None,
+        model: None,
         stack: None,
     });
     render_thread(&turns)
@@ -929,7 +943,7 @@ fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<bool> {
         db.set_note(n.clone())?;
     }
     if let Some(why) = &rp.promote {
-        crate::ask::promote(db, name, &n, why, rp.effort)?;
+        crate::ask::promote(db, name, &n, why, &rp.asked_with())?;
     }
     Ok(reopened)
 }
@@ -1266,13 +1280,15 @@ pub fn answer_tool(db: &mut Db, id: &str, k: usize, text: &str) -> Result<()> {
 }
 
 /// What goes back to the agent from a review: the comments to ask again,
-/// how, whether of the whole stack, and at what effort, the work's own.
+/// how, whether of the whole stack, and at what effort and with what
+/// model, the work's own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Round {
     pub notes: Vec<(String, String)>,
     pub way: crate::db::Way,
     pub whole: bool,
     pub effort: Option<crate::db::Effort>,
+    pub model: Option<String>,
     /// How many edits that went on from it are asked again.
     pub dropped: usize,
     /// How many follow-ups asked from its review were stopped, as it went
@@ -1376,6 +1392,7 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
         way: i.way,
         whole,
         effort: i.effort,
+        model: i.model.clone(),
         dropped,
         stopped,
         allowed: crate::refusals::carried(db, id),
@@ -1503,6 +1520,7 @@ fn send_back_pull(db: &mut Db, id: &str) -> Result<Round> {
         way: crate::db::Way::Change,
         whole: false,
         effort: None,
+        model: None,
         dropped,
         stopped: 0,
         allowed: Vec::new(),
@@ -1574,6 +1592,7 @@ pub fn follow_up(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
         way: i.way,
         whole: false,
         effort: i.effort,
+        model: i.model.clone(),
         dropped: 0,
         stopped: 0,
         allowed: crate::refusals::carried(db, id),
@@ -1620,6 +1639,7 @@ pub fn come_in(db: &mut Db, f: &Run, i: &crate::ask::Info, brought: &Held, ok: b
             run: f.id.clone(),
             way: i.way,
             effort: i.effort,
+            model: i.model.clone(),
             asked: i.notes.iter().map(|sh| (sh.change.clone(), sh.id.clone())).collect(),
             found,
         };

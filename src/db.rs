@@ -859,6 +859,49 @@ impl Effort {
     }
 }
 
+/// The model the agent works on an ask with, by its full id, as claude's
+/// `--model` takes it, in the ask dialog's order. There is no default: the
+/// dialog's model is picked. A record keeps the id itself
+/// (`Queued::model`), not one of these, so that one of a model since taken
+/// out of the list still loads, and goes as it was asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Model {
+    Fable51,
+    Opus55,
+    Sonnet55,
+    Haiku55,
+}
+
+impl Model {
+    pub const ALL: [Model; 4] = [Model::Fable51, Model::Opus55, Model::Sonnet55, Model::Haiku55];
+
+    /// Each model's id, as claude takes it.
+    pub const IDS: [&'static str; 4] = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
+
+    pub fn id(self) -> &'static str {
+        Model::IDS[self as usize]
+    }
+
+    /// The model of id `id`, if the list has it.
+    pub fn parse(id: &str) -> Option<Model> {
+        Model::ALL.into_iter().find(|m| m.id() == id)
+    }
+
+    /// The ids, said: `claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5
+    /// or claude-haiku-5-5`.
+    pub fn listed() -> String {
+        let (last, rest) = Model::IDS.split_last().unwrap();
+        format!("{} or {last}", rest.join(", "))
+    }
+
+    /// Of the ids `ids`, the one first in the list, as an ask of comments
+    /// queued with more than one goes with it; an id the list does not
+    /// have after those it has.
+    pub fn first_of<'a>(ids: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+        ids.into_iter().min_by_key(|id| Model::parse(id).map_or(Model::ALL.len(), |m| m as usize))
+    }
+}
+
 /// A comment sent and waiting: how, and the batch it goes in. Comments
 /// sent together go in one ask. A patch's comment may be sent to the whole
 /// stack (`stack`): the agent may then change any patch, as for the
@@ -888,6 +931,11 @@ pub struct Queued {
     /// goes at the agent's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
+    /// The model the agent is asked with, by its id, as picked when the
+    /// comment was put on the queue or in the batch. None for one queued
+    /// before models were picked, which goes with the agent's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// With `on`: a follow-up that only reads (an answer, a build and test,
     /// a try push's selection), asked from the review of that work, which
     /// stays waiting for your review: what it brings back comes into that
@@ -3615,6 +3663,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_comment_queued_before_models_were_picked_loads_with_none_and_one_of_a_model_keeps_its_id() {
+        // Written before: no model, read as none, and written so again.
+        let before: Queued = serde_json::from_str(r#"{"way": "answer", "batch": "b1", "effort": "max"}"#).unwrap();
+        assert_eq!((before.model.as_deref(), before.effort), (None, Some(Effort::Max)));
+        assert!(!serde_json::to_string(&before).unwrap().contains("model"));
+        // With one: its id, kept as it is, one the list no longer has too.
+        for id in ["claude-opus-5-5", "claude-gone-4"] {
+            let q = Queued { model: Some(id.into()), ..before.clone() };
+            let read: Queued = serde_json::from_str(&serde_json::to_string(&q).unwrap()).unwrap();
+            assert_eq!(read.model.as_deref(), Some(id));
+        }
+        // An ask's own, the same.
+        let info = |extra: &str| serde_json::from_str::<crate::ask::Info>(&format!(r#"{{"way": "answer", "scope": "stack", "from": 0, "notes": []{extra}}}"#)).unwrap();
+        assert_eq!((info("").model, info(r#", "model": "claude-haiku-5-5""#).model.as_deref()), (None, Some("claude-haiku-5-5")));
+        let run = |ask: serde_json::Value| Run { ask: Some(ask), ..Default::default() };
+        assert_eq!(crate::ask::model_of(&run(serde_json::json!({"effort": "low"}))), None);
+        assert_eq!(crate::ask::at_of(&run(serde_json::json!({"effort": "low", "model": "claude-opus-5-5"}))).bracketed().as_deref(), Some("claude-opus-5-5, low"));
+    }
+
+    #[test]
     fn ids_are_never_made_twice() {
         // Many at once, in the same millisecond, from threads of one
         // process: as asks are launched away from the screen.
@@ -3646,7 +3714,7 @@ mod tests {
             db.set_note(note("b", "kept"))?;
             // Moved to the stack, as the agent moves one: not deleted.
             db.set_note(note("m", "needs the stack"))?;
-            crate::ask::promote(db, "s", &note("m", "needs the stack"), "it needs more", None)
+            crate::ask::promote(db, "s", &note("m", "needs the stack"), "it needs more", &crate::thread::At::default())
         })
         .unwrap();
         let db = Db::load(&path).unwrap();

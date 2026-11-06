@@ -44,8 +44,8 @@ its tests. A new section is a new file, listed here in its place.
 - [Editing a patch by hand](editing-a-patch-by-hand.md): a file or a patch
   in `$EDITOR`, conflicts resolved by hand, a file's changes dropped, long
   message lines wrapped, and the review each edit lands for.
-- [Asking the agent](asking-the-agent.md): the ask dialog, its permissions
-  and efforts, what each kind of ask may use, references, the batch, the
+- [Asking the agent](asking-the-agent.md): the ask dialog, its permissions,
+  models and efforts, what each kind of ask may use, references, the batch, the
   worktrees, the queue, chained changes, how a change lands, a comment's
   states, and stopping an ask.
 - [What the agent brings back waits for your review](what-the-agent-brings-back-waits-for-your-review.md):

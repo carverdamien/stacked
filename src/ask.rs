@@ -79,7 +79,7 @@ use serde_json::{Map, Value};
 use crate::claude::{allowed_tools, format_event, last_object, parse_claude_replies, parse_review_notes};
 use crate::config::Workspace;
 use crate::db::{
-    Db, Effort, Error, Moved, Note, Patch, Queued, Record, Result, Run, RunState, Stack, Stage, Way,
+    Db, Effort, Error, Model, Moved, Note, Patch, Queued, Record, Result, Run, RunState, Stack, Stage, Way,
     err, now, stack_change,
 };
 use crate::git;
@@ -133,17 +133,31 @@ pub fn effort_of(r: &Run) -> Option<Effort> {
     Asked::deserialize(r.ask.as_ref()?).ok()?.effort
 }
 
-/// The name of the effort run `r` was asked at, as `effort_of` reads it.
-pub fn effort_said(r: &Run) -> Option<&'static str> {
-    effort_of(r).map(Effort::name)
+/// The id of the model run `r` was asked with, if it is an ask that had
+/// one: read from its run without the rest, as it is read on every redraw.
+/// None for an ask made before models were picked, which went with the
+/// agent's own.
+pub fn model_of(r: &Run) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Asked {
+        #[serde(default)]
+        model: Option<String>,
+    }
+    Asked::deserialize(r.ask.as_ref()?).ok()?.model
+}
+
+/// The model and the effort run `r` was asked with, as `model_of` and
+/// `effort_of` read them, to say.
+pub fn at_of(r: &Run) -> crate::thread::At {
+    crate::thread::At::new(model_of(r).as_deref(), effort_of(r).map(Effort::name))
 }
 
 /// What run `r` is, as Runs… and `stacked runs` list it: `answer`, `pull`;
-/// an ask asked at an effort with it, as the agent's turns are headed
-/// (`answer(max)`).
+/// an ask asked with a model and at an effort with them, as the agent's
+/// turns are headed (`answer(claude-opus-5-5, max)`).
 pub fn what_said(r: &Run) -> String {
-    match effort_said(r) {
-        Some(e) => format!("{}({e})", r.what),
+    match at_of(r).bracketed() {
+        Some(at) => format!("{}({at})", r.what),
         None => r.what.clone(),
     }
 }
@@ -232,6 +246,11 @@ pub struct Info {
     /// which goes at the agent's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
+    /// The model the agent is asked with (`--model`), by its id, the one
+    /// its comments were queued with; none for an ask made before models
+    /// were picked, which goes with the agent's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// What it may use for this work, besides what its kind of ask is
     /// given: what the review of the work it goes on with, sent back or
     /// asked again, allowed for this work of what the agent was refused
@@ -242,6 +261,13 @@ pub struct Info {
     /// it was refused is read against it as it lands.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub given: String,
+}
+
+impl Info {
+    /// The model and the effort it is asked with, to say.
+    pub fn asked_with(&self) -> crate::thread::At {
+        crate::thread::At::new(self.model.as_deref(), self.effort.map(Effort::name))
+    }
 }
 
 /// The stack ask `i` works on: the stack at `i.from`; or, a round sent
@@ -302,17 +328,27 @@ struct FollowLight {
     follow: bool,
     #[serde(default)]
     effort: Option<Effort>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// A follow-up of landed work that is going: waiting its turn, or with the
-/// agent (its run); how it was asked, at what effort, and about which
-/// comments, by (change, id).
+/// agent (its run); how it was asked, at what effort, with what model, and
+/// about which comments, by (change, id).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Following {
     pub run: Option<String>,
     pub way: Way,
     pub effort: Option<Effort>,
+    pub model: Option<String>,
     pub notes: Vec<(String, String)>,
+}
+
+impl Following {
+    /// The model and the effort it is asked with, to say.
+    pub fn asked_with(&self) -> crate::thread::At {
+        crate::thread::At::new(self.model.as_deref(), self.effort.map(Effort::name))
+    }
 }
 
 /// The follow-ups asked from the review of landed work `work` that are
@@ -327,6 +363,7 @@ pub fn follow_ups_going(db: &Db, work: &str) -> Vec<Following> {
                 run: Some(r.id.clone()),
                 way: f.way,
                 effort: f.effort,
+                model: f.model,
                 notes: f.notes.into_iter().map(|sh| (sh.change, sh.id)).collect(),
             });
         }
@@ -343,6 +380,7 @@ pub fn follow_ups_going(db: &Db, work: &str) -> Vec<Following> {
                     run: None,
                     way: q.way,
                     effort: q.effort,
+                    model: q.model.clone(),
                     notes: vec![at],
                 },
             )),
@@ -1019,8 +1057,8 @@ pub fn builds_going(db: &Db, name: &str) -> Vec<Run> {
 }
 
 /// The comments ask `i` was about back in the queue, ready, in the batch
-/// they were sent in: they go again as they were asked, at the effort they
-/// were asked at, the agent shown what run `was` brought back, if it
+/// they were sent in: they go again as they were asked, at the effort and
+/// with the model they were asked with, the agent shown what run `was` brought back, if it
 /// landed, and given what that run was given for this work.
 fn ask_again(db: &mut Db, i: &Info, was: Option<String>) -> Result<()> {
     let batch = if i.batch.is_empty() { format!("b{}", crate::db::unique()) } else { i.batch.clone() };
@@ -1036,6 +1074,7 @@ fn ask_again(db: &mut Db, i: &Info, was: Option<String>) -> Result<()> {
                 on: i.on.clone(),
                 was: was.clone(),
                 effort: i.effort,
+                model: i.model.clone(),
                 follow: i.follow,
             }),
             failed: None,
@@ -1284,12 +1323,12 @@ pub(crate) fn until_go(at: &Path) {
 }
 
 /// Sends `notes` (change, id) of stack `name` to the agent, in `way`, to
-/// the whole stack if `whole`, at `effort`: they wait as ready, together,
-/// and go as soon as nothing stands in their way. What they wait on, if
-/// they could not go at once.
-pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, effort: Effort) -> Result<Option<String>> {
+/// the whole stack if `whole`, with `model` if one is given and at
+/// `effort`: they wait as ready, together, and go as soon as nothing
+/// stands in their way. What they wait on, if they could not go at once.
+pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, model: Option<Model>, effort: Effort) -> Result<Option<String>> {
     at_the_gate();
-    queue(db_path, name, notes, way, whole, effort)?;
+    queue(db_path, name, notes, way, whole, model, effort)?;
     launch(db_path)?;
     let db = Db::load(db_path)?;
     let waiting = notes
@@ -1303,19 +1342,20 @@ pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, wh
 }
 
 /// Puts `notes` of stack `name` on the agent's queue, in `way`, together,
-/// at `effort`: `launch` starts them when nothing stands in their way, at
-/// that effort whenever that is. The editor launches elsewhere than where
-/// it draws: making a worktree takes time. With `whole`, a patch's
-/// comments are sent to the whole stack: the agent may change any patch,
-/// add patches anywhere, reorder them.
-pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, effort: Effort) -> Result<()> {
+/// with `model` if one is given and at `effort`: `launch` starts them when
+/// nothing stands in their way, with that model and at that effort
+/// whenever that is. The editor launches elsewhere than where it draws:
+/// making a worktree takes time. With `whole`, a patch's comments are sent
+/// to the whole stack: the agent may change any patch, add patches
+/// anywhere, reorder them.
+pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, model: Option<Model>, effort: Effort) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to send");
     }
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
         applies(db, name)?;
-        enqueue(db, notes, way, whole, Stage::Ready, None, Some(effort), false)
+        enqueue(db, notes, way, whole, Stage::Ready, None, model.map(Model::id), Some(effort), false)
     })
 }
 
@@ -1330,13 +1370,15 @@ pub fn way_of(db: &Db, id: &str) -> Option<Way> {
 /// stack, whose own work lands to review in its place; in the way the work
 /// was asked, of the whole stack as far as its comments reach, unless `how`
 /// says otherwise (the editor's dialog: a change, of the whole stack or
-/// not); at `effort`, else at the effort the work was asked at. What was
-/// sent, said. `launch` starts it.
+/// not); with `model`, else with the model the work was asked with; at
+/// `effort`, else at the effort the work was asked at. What was sent,
+/// said. `launch` starts it.
 pub fn send_back(
     db_path: &Path,
     name: &str,
     id: &str,
     marks: &std::collections::BTreeMap<String, bool>,
+    model: Option<Model>,
     effort: Option<Effort>,
     how: Option<(Way, bool)>,
 ) -> Result<String> {
@@ -1345,7 +1387,8 @@ pub fn send_back(
         applies(db, name)?;
         let round = crate::held::send_back(db, id, marks)?;
         let (way, whole) = how.unwrap_or((round.way, round.whole));
-        enqueue(db, &round.notes, way, whole, Stage::Ready, Some(id), effort.or(round.effort), false)?;
+        let model = model.map(Model::id).or(round.model.as_deref());
+        enqueue(db, &round.notes, way, whole, Stage::Ready, Some(id), model, effort.or(round.effort), false)?;
         let n = round.notes.len();
         let said = if whole && way == Way::Change { crate::db::WHOLE } else { way.said() };
         let mut out = format!("sent back to the agent ({said}): {n} comment{} to ask again", if n == 1 { "" } else { "s" });
@@ -1368,14 +1411,15 @@ pub fn send_back(
 }
 
 /// Asks a follow-up that only reads, in `way` (an answer, a build and
-/// test, a try push's selection), at `effort`, from the review of the work
-/// run `id` holds, as what you wrote there asks (`held::follow_up`): that
+/// test, a try push's selection), with `model`, else with the model the
+/// work was asked with, and at `effort`, from the review of the work run
+/// `id` holds, as what you wrote there asks (`held::follow_up`): that
 /// work stays waiting for your review, its marks as they are, and what the
 /// follow-up brings back comes into its review once it lands. It reads the
 /// stack that work makes. Its comments are asked together, with the whole
 /// stack in view when they are on more than one place, as an answer of
 /// several is. What was asked, said. `launch` starts it.
-pub fn follow_up(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>, way: Way, effort: Effort) -> Result<String> {
+pub fn follow_up(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>, way: Way, model: Option<Model>, effort: Effort) -> Result<String> {
     if !reads(way) && way != Way::Test {
         return err("a follow-up only reads: an answer, a build and test, or a try push's selection");
     }
@@ -1385,7 +1429,8 @@ pub fn follow_up(db_path: &Path, name: &str, id: &str, marks: &std::collections:
         let round = crate::held::follow_up(db, id, marks)?;
         let places: HashSet<Scope> = round.notes.iter().filter_map(|(c, i)| db.note(c, i)).map(scope_of).collect();
         let whole = way == Way::Answer && places.len() > 1;
-        enqueue(db, &round.notes, way, whole, Stage::Ready, Some(id), Some(effort), true)?;
+        let model = model.map(Model::id).or(round.model.as_deref());
+        enqueue(db, &round.notes, way, whole, Stage::Ready, Some(id), model, Some(effort), true)?;
         let n = round.notes.len();
         let mut out = format!(
             "asked as a follow-up ({}): {n} comment{}; what the agent brings back comes into this review",
@@ -1419,12 +1464,22 @@ fn applies(db: &Db, name: &str) -> Result<()> {
 }
 
 /// Under the lock: `notes` on the agent's queue, at `stage`, in `way`,
-/// together, in a batch of their own, to be asked at `effort`; from the
-/// stack of landed work `on`, if a round sent back from it, or, `follow`, a
-/// follow-up asked from its review, whose replies held there it is asked
-/// on.
+/// together, in a batch of their own, to be asked with the model of id
+/// `model` and at `effort`; from the stack of landed work `on`, if a round
+/// sent back from it, or, `follow`, a follow-up asked from its review,
+/// whose replies held there it is asked on.
 #[allow(clippy::too_many_arguments)]
-fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage: Stage, on: Option<&str>, effort: Option<Effort>, follow: bool) -> Result<()> {
+fn enqueue(
+    db: &mut Db,
+    notes: &[(String, String)],
+    way: Way,
+    whole: bool,
+    stage: Stage,
+    on: Option<&str>,
+    model: Option<&str>,
+    effort: Option<Effort>,
+    follow: bool,
+) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to send");
     }
@@ -1489,6 +1544,7 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
                 on: on.map(String::from),
                 was: None,
                 effort,
+                model: model.map(String::from),
                 follow,
             }),
             failed: None,
@@ -1499,9 +1555,9 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
 }
 
 /// Puts `notes` of stack `name` in its batch, to be asked later in `way`
-/// (to the whole stack if `whole`), at `effort`: each waits there until
-/// you send the batch. Nothing is started.
-pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, effort: Effort) -> Result<()> {
+/// (to the whole stack if `whole`), with `model` if one is given and at
+/// `effort`: each waits there until you send the batch. Nothing is started.
+pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, model: Option<Model>, effort: Effort) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to batch");
     }
@@ -1511,7 +1567,7 @@ pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
             if !db.stack_notes(name).iter().any(|n| (&n.change, &n.id) == (&at.0, &at.1)) {
                 return err(format!("that comment is not on {name}"));
             }
-            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch, None, Some(effort), false)?;
+            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch, None, model.map(Model::id), Some(effort), false)?;
         }
         Ok(())
     })
@@ -1536,6 +1592,15 @@ pub fn batched_effort(db: &Db, name: &str, way: Way) -> Option<Effort> {
         .into_iter()
         .filter_map(|n| n.queued.as_ref().filter(|q| q.batched() && q.way == way)?.effort)
         .max()
+}
+
+/// The id of the model stack `name`'s batch of what is asked in `way` was
+/// asked with: of those its comments were batched with, if any was, the
+/// first in the list (`Model::first_of`).
+pub fn batched_model(db: &Db, name: &str, way: Way) -> Option<String> {
+    let notes = db.stack_notes(name);
+    let ids = notes.iter().filter_map(|n| n.queued.as_ref().filter(|q| q.batched() && q.way == way)?.model.as_deref());
+    Model::first_of(ids).map(String::from)
 }
 
 /// Whether what is asked in `way` goes from the batch each comment in an
@@ -1563,9 +1628,12 @@ pub type Refused = Vec<((String, String), String)>;
 /// Together, comments from more than one place (the stack, or a patch) go
 /// to the whole stack, as do those batched so. Each ask goes at `effort`;
 /// else at the effort its comments were batched at, the highest of them for
-/// an ask of several. `launch` starts them. How many were sent, and those
-/// refused: a try push of a line, batched as an older stacked let it be.
-pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Option<Effort>) -> Result<(usize, Refused)> {
+/// an ask of several. Each goes with `model`, else with the model its
+/// comments were batched with, the first in the list of them for an ask of
+/// several (`batched_model`). `launch` starts them. How many were sent, and
+/// those refused: a try push of a line, batched as an older stacked let it
+/// be.
+pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, model: Option<Model>, effort: Option<Effort>) -> Result<(usize, Refused)> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
         let all = batched(db, name, way);
@@ -1574,6 +1642,7 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Op
         }
         applies(db, name)?;
         let own = |db: &Db, (c, i): &(String, String)| db.note(c, i).and_then(|n| n.queued.as_ref()?.effort);
+        let own_model = |db: &Db, (c, i): &(String, String)| db.note(c, i).and_then(|n| n.queued.as_ref()?.model.clone());
         // A try push of a line, batched as an older stacked let it be: out
         // of the batch as it goes, a comment still, its ask failed saying
         // why; the rest go.
@@ -1599,14 +1668,16 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Op
                     continue;
                 }
                 let at_effort = effort.or(own(db, at));
-                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None, at_effort, false)?;
+                let with = model.map(|m| m.id().to_string()).or(own_model(db, at));
+                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None, with.as_deref(), at_effort, false)?;
             }
         } else {
             let places: HashSet<Scope> = all.iter().filter_map(|((c, i), _)| db.note(c, i)).map(scope_of).collect();
             let whole = places.len() > 1 || all.iter().any(|(_, whole)| *whole);
             let notes: Vec<(String, String)> = all.iter().map(|(at, _)| at.clone()).collect();
             let at_effort = effort.or(batched_effort(db, name, way));
-            enqueue(db, &notes, way, whole, Stage::Ready, None, at_effort, false)?;
+            let with = model.map(|m| m.id().to_string()).or(batched_model(db, name, way));
+            enqueue(db, &notes, way, whole, Stage::Ready, None, with.as_deref(), at_effort, false)?;
         }
         Ok((all.len() - refused.len(), refused))
     })
@@ -1881,10 +1952,11 @@ type Claimed = (Vec<String>, Vec<String>, Vec<(String, Option<String>)>);
 fn claim(db: &mut Db) -> Result<Claimed> {
     // The ready batches: stack, way, scope, comments, the landed work a
     // round sent back starts from, the run asked before it, the effort they
-    // were sent at (the highest, should they differ), and whether they are
-    // a follow-up asked from the review of that work.
+    // were sent at (the highest, should they differ), whether they are a
+    // follow-up asked from the review of that work, and the model they were
+    // sent with (the first in the list, should they differ).
     let mut order: Vec<String> = Vec::new();
-    type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>, Option<Effort>, bool);
+    type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>, Option<Effort>, bool, Option<String>);
     let mut batches: HashMap<String, Batch> = HashMap::new();
     // A try push of a line, queued as an older stacked let it be: refused
     // as it would go, a comment still, its ask failed saying why.
@@ -1911,10 +1983,11 @@ fn claim(db: &mut Db) -> Result<Claimed> {
             }
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
-                (name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone(), q.effort, q.follow && q.on.is_some())
+                (name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone(), q.effort, q.follow && q.on.is_some(), q.model.clone())
             });
             entry.3.push(n.clone());
             entry.6 = entry.6.max(q.effort);
+            entry.8 = Model::first_of(entry.8.as_deref().into_iter().chain(q.model.as_deref())).map(String::from);
         }
     }
     #[cfg(feature = "try-push")]
@@ -2019,7 +2092,7 @@ fn claim(db: &mut Db) -> Result<Claimed> {
             #[cfg(not(feature = "moz-phab"))]
             Turn::Pull(..) => continue,
         };
-        let (name, way, scope, notes, on, was, effort, follow) = batches[b].clone();
+        let (name, way, scope, notes, on, was, effort, follow, model) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| going_of(db, &name));
         let go = match way {
             // A change has the stack to itself, from the stack as the change
@@ -2114,6 +2187,7 @@ fn claim(db: &mut Db) -> Result<Claimed> {
             todo: None,
             listing: None,
             effort,
+            model,
             allowed,
             given: String::new(),
         };
@@ -3646,8 +3720,9 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         c.args(["--json-schema", &answer_schema(&i, &s).to_string()]);
     }
     // What the settings add: a model, arguments of the user's; then the
-    // effort the ask goes at, in place of one they give.
-    let args = at_effort(cfg.agent_args(), i.effort);
+    // model the ask goes with and the effort it goes at, in place of those
+    // they give.
+    let args = at_effort(cfg.agent_args(), i.model.as_deref(), i.effort);
     c.args(&args);
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // The program run as claude: the tests' stand-in, else $STACKED_CLAUDE,
@@ -3698,21 +3773,30 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `args`, the arguments the settings add to claude, with `--effort` at
-/// `effort`, the ask's, after them, in place of any `--effort` of theirs;
-/// as they are for an ask with none.
-fn at_effort(args: Vec<String>, effort: Option<Effort>) -> Vec<String> {
-    let Some(effort) = effort else { return args };
+/// `args`, the arguments the settings add to claude, with `--model` the
+/// model of id `model`, the ask's, then `--effort` at `effort`, the ask's,
+/// after them, each in place of any of theirs (the settings' `model` too);
+/// each as they are for an ask with none.
+fn at_effort(args: Vec<String>, model: Option<&str>, effort: Option<Effort>) -> Vec<String> {
+    let args = own_flag(args, "--model", model);
+    own_flag(args, "--effort", effort.map(Effort::name))
+}
+
+/// `args` with `flag` given `value` after them, in place of any `flag` of
+/// theirs, either way it is written; as they are with no value.
+fn own_flag(args: Vec<String>, flag: &str, value: Option<&str>) -> Vec<String> {
+    let Some(value) = value else { return args };
+    let joined = format!("{flag}=");
     let mut out = Vec::new();
     let mut args = args.into_iter();
     while let Some(a) = args.next() {
-        if a == "--effort" {
+        if a == flag {
             args.next();
-        } else if !a.starts_with("--effort=") {
+        } else if !a.starts_with(&joined) {
             out.push(a);
         }
     }
-    out.extend(["--effort".to_string(), effort.name().to_string()]);
+    out.extend([flag.to_string(), value.to_string()]);
     out
 }
 
@@ -4153,8 +4237,8 @@ fn asked_on(db: &Db, i: &Info) -> Option<usize> {
 }
 
 /// Claude's replies to the comments it was sent, held: turns `way` names,
-/// at the effort the ask was asked at; an answer-only ask's naming the
-/// stack it was asked on (`asked_on`).
+/// with the model and at the effort the ask was asked with; an answer-only
+/// ask's naming the stack it was asked on (`asked_on`).
 fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::held::Reply> {
     let stack = db.node(i.from).map(|s| s.name.clone()).unwrap_or_default();
     i.notes
@@ -4172,6 +4256,7 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
                 })?,
                 tag: i.way.name().into(),
                 effort: i.effort,
+                model: i.model.clone(),
                 asked_on: asked_on(db, i),
                 ..Default::default()
             })
@@ -4236,6 +4321,7 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
                     tag: i.way.name().into(),
                     promote: Some(why.clone()),
                     effort: i.effort,
+                    model: i.model.clone(),
                     ..Default::default()
                 }),
                 None => {}
@@ -4477,10 +4563,10 @@ pub(crate) fn follow_lines(db: &mut Db, olds: &[Patch], now: &[String]) -> Resul
 }
 
 /// Moves comment `n` to stack `name`'s own comments, `why` claude's last
-/// turn, at the effort its ask was asked at: it needs more than its patch.
-/// It waits there to be sent again.
-pub fn promote(db: &mut Db, name: &str, n: &Note, why: &str, effort: Option<Effort>) -> Result<()> {
-    let text = append_agent(&n.text, &format!("This needs more than the patch: {why}"), "moved", effort.map(Effort::name));
+/// turn, with the model and at the effort its ask was asked with, `at`: it
+/// needs more than its patch. It waits there to be sent again.
+pub fn promote(db: &mut Db, name: &str, n: &Note, why: &str, at: &crate::thread::At) -> Result<()> {
+    let text = append_agent(&n.text, &format!("This needs more than the patch: {why}"), "moved", at);
     moved_to_stack(db, name, n, text)
 }
 
@@ -4577,7 +4663,7 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
             id: format!("agent:{}:{n}", run.id),
             line,
             text: fenced(
-                &agent_open(Way::Answer.name(), i.effort.map(Effort::name), asked_on(db, i)),
+                &agent_open(Way::Answer.name(), &i.asked_with(), asked_on(db, i)),
                 &crate::refs::attach(
                     str_of(note.get("text")).trim(),
                     &crate::refs::resolved(crate::refs::of_json(note.get("refs")), Some(1), &|c| named_comment(db, i, &from.name, c)),
@@ -4625,7 +4711,7 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
             text: {
                 let (found, refs) = crate::refs::text_and_refs(v);
                 let refs = crate::refs::resolved(refs, Some(1), &|c| named_comment(db, i, &from.name, c));
-                let open = agent_open(Way::Test.name(), i.effort.map(Effort::name), None);
+                let open = agent_open(Way::Test.name(), &i.asked_with(), None);
                 fenced(&open, &crate::refs::attach(&format!("{} ({tested})", found.trim()), &refs))
             },
             file: MSG_PATH.into(),
@@ -5377,18 +5463,42 @@ mod tests {
     fn the_ask_s_effort_goes_after_the_settings_arguments_in_place_of_theirs() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // The settings' arguments as they are, then the ask's effort.
-        assert_eq!(at_effort(args(&["--model", "opus"]), Some(Effort::Max)), args(&["--model", "opus", "--effort", "max"]));
+        assert_eq!(at_effort(args(&["--model", "opus"]), None, Some(Effort::Max)), args(&["--model", "opus", "--effort", "max"]));
         // The settings' own effort, either way it is written, taken out.
         let theirs = args(&["--effort", "low", "--verbose", "--effort=medium"]);
-        assert_eq!(at_effort(theirs.clone(), Some(Effort::Xhigh)), args(&["--verbose", "--effort", "xhigh"]));
+        assert_eq!(at_effort(theirs.clone(), None, Some(Effort::Xhigh)), args(&["--verbose", "--effort", "xhigh"]));
         // An ask of before, with none: the settings' as they are.
-        assert_eq!(at_effort(theirs.clone(), None), theirs);
+        assert_eq!(at_effort(theirs.clone(), None, None), theirs);
         // The levels as claude takes them, the least first, high unless
         // picked.
         assert_eq!(Effort::ALL.map(Effort::name), ["low", "medium", "high", "xhigh", "max"]);
         assert_eq!((Effort::default(), Effort::parse("xhigh"), Effort::parse("huge")), (Effort::High, Some(Effort::Xhigh), None));
         assert_eq!(Effort::listed(), "low, medium, high, xhigh or max");
         assert!(Effort::Low < Effort::Max);
+    }
+
+    #[test]
+    fn the_ask_s_model_goes_after_the_settings_arguments_in_place_of_theirs_and_before_its_effort() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // The settings' model, either way it is written, taken out; the
+        // ask's model, then its effort, after the rest.
+        let theirs = args(&["--model", "opus", "--verbose", "--model=sonnet", "--effort", "low"]);
+        assert_eq!(
+            at_effort(theirs.clone(), Some("claude-opus-5-5"), Some(Effort::Max)),
+            args(&["--verbose", "--model", "claude-opus-5-5", "--effort", "max"])
+        );
+        // The model alone: the settings' effort as it is.
+        assert_eq!(at_effort(theirs.clone(), Some("claude-haiku-5-5"), None), args(&["--verbose", "--effort", "low", "--model", "claude-haiku-5-5"]));
+        // An ask of before, with none: the settings' model as it is.
+        assert_eq!(at_effort(theirs.clone(), None, None), theirs);
+        // The models by their full ids, in the dialog's order, none by
+        // default; an ask of several goes with the first in the list.
+        assert_eq!(Model::ALL.map(Model::id), ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+        assert_eq!((Model::parse("claude-sonnet-5-5"), Model::parse("opus")), (Some(Model::Sonnet55), None));
+        assert_eq!(Model::listed(), "claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5");
+        assert_eq!(Model::first_of(["claude-haiku-5-5", "claude-opus-5-5"]), Some("claude-opus-5-5"));
+        assert_eq!(Model::first_of(["claude-gone-4", "claude-haiku-5-5"]), Some("claude-haiku-5-5"));
+        assert_eq!((Model::first_of(["claude-gone-4"]), Model::first_of([])), (Some("claude-gone-4"), None));
     }
 
     #[test]
@@ -5403,11 +5513,12 @@ mod tests {
         assert_eq!(transcript(&text), "The user: why, really?");
         // A turn deleted the first way is told to no one.
         assert_eq!(transcript("why?\n```deleted agent answer\n> Because.\n```\nand here?"), "The user: why?\nThe user: and here?");
-        // The effort its earlier turns were asked at is not told: they are
-        // told as ever.
-        let text = append_agent("why?", "Because.", "answer", Some("max"));
-        let text = append_agent(&append_turn(&text, Role::You, "and here?", None), "Here too.", "change", Some("low"));
-        assert!(text.contains("```agent answer effort max\n") && text.contains("```agent change effort low\n"), "{text}");
+        // The model and the effort its earlier turns were asked with are
+        // not told: they are told as ever.
+        let at = |m: Option<&str>, e: &str| crate::thread::At::new(m, Some(e));
+        let text = append_agent("why?", "Because.", "answer", &at(Some("claude-opus-5-5"), "max"));
+        let text = append_agent(&append_turn(&text, Role::You, "and here?", None), "Here too.", "change", &at(None, "low"));
+        assert!(text.contains("```agent answer model claude-opus-5-5 effort max\n") && text.contains("```agent change effort low\n"), "{text}");
         assert_eq!(transcript(&text), "The user: why?\nYou (the agent, earlier): Because.\nThe user: and here?\nYou (the agent, earlier): Here too.");
     }
 

@@ -3496,7 +3496,7 @@ fn a_reviewer_s_reply_to_a_comment_you_closed_reopens_it_once_accepted() {
     // there, where it was last, the patch's own left closed.
     Db::edit(&e.db, |db| {
         let n = db.note(&p.change, "phab:c1").unwrap().clone();
-        stacked::ask::promote(db, "s", &n, "it is the whole stack's", None)?;
+        stacked::ask::promote(db, "s", &n, "it is the whole stack's", &Default::default())?;
         let moved = db.notes("stack:s").into_iter().find(|n| n.id.starts_with("moved:")).unwrap().clone();
         db.set_note(Note { text: String::new(), ..moved })
     })
@@ -3731,7 +3731,7 @@ fn a_comment_edited_on_phabricator_is_held_as_an_edit_of_its_turn() {
     // there.
     Db::edit(&e.db, |db| {
         let n = db.note(&p.change, "phab:b1v2").unwrap().clone();
-        stacked::ask::promote(db, "s", &n, "it is the whole stack's", None)
+        stacked::ask::promote(db, "s", &n, "it is the whole stack's", &Default::default())
     })
     .unwrap();
     let b1 = ann("b1v3", "Typo there.", None, &[("b1v2", "Typo here."), ("b1", "Tpyo here.")]);
@@ -4180,6 +4180,71 @@ fn send_asks_at_the_effort_given_else_at_high() {
     assert!(err.contains("[possible values: low, medium, high, xhigh, max]"), "{err}");
     let db = Db::load(&e.db).unwrap();
     assert!(db.runs().len() == 5 && db.stack_notes("s").iter().all(|n| n.queued.is_none()), "{:?}", db.runs());
+}
+
+/// A line of a stand-in's script that adds to `file` the model it was
+/// given, a line for each ask: what followed each `--model`, or `none`.
+fn model_said(file: &Path) -> String {
+    format!(
+        r#"m=; prev=; for a in "$@"; do if test "$prev" = --model; then m="$m${{m:+ }}$a"; fi; prev=$a; done; echo "${{m:-none}}" >> '{}'"#,
+        file.display()
+    )
+}
+
+#[test]
+fn send_batch_and_send_back_ask_with_the_model_given_else_the_one_asked_with_before_else_none() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let models = e.root.join("models");
+    let claude = fake_claude(&e, "claude-model.sh", &model_said(&models), r#"{"replies": {"c1": "Seen."}}"#);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let run = |args: &[&str]| {
+        let (fine, out, err) = stacked_in(&e.src, &e.db, args, "", &env);
+        assert!(fine, "{args:?}: {out}{err}");
+        out
+    };
+    let said = || std::fs::read_to_string(&models).unwrap().lines().map(String::from).collect::<Vec<_>>();
+    // None given: no --model of the ask's own. Given: that one, by its
+    // full id.
+    let id = comment(&e, &["Why?"]);
+    run(&["send", "s", &id, "--answer-only", "--wait", "--accept"]);
+    let id = comment(&e, &["And?"]);
+    run(&["send", "s", &id, "--answer-only", "--model", "claude-haiku-5-5", "--effort", "low", "--wait"]);
+    assert_eq!(said(), ["none", "claude-haiku-5-5"]);
+    // Said with the run, as the effort is.
+    let waits = run(&["landed", "s"]);
+    assert!(waits.lines().next().unwrap().ends_with("\tasked at low with claude-haiku-5-5"), "{waits}");
+    let runs = run(&["runs", "s"]);
+    assert!(runs.contains("\tanswer(claude-haiku-5-5, low) s \"And?\"\t"), "{runs}");
+    // Its work answered in its review, it goes back with the model it was
+    // asked with; with the one given, if one is.
+    run(&["reply", "s", &id, "--answer", "Why", "not?"]);
+    run(&["review", "s", "--send-back"]);
+    landed(&e, 3);
+    run(&["reply", "s", &id, "--answer", "And", "then?"]);
+    run(&["review", "s", "--send-back", "--model", "claude-fable-5-1"]);
+    landed(&e, 4);
+    assert_eq!(said(), ["none", "claude-haiku-5-5", "claude-haiku-5-5", "claude-fable-5-1"]);
+    run(&["review", "s", "--accept-all"]);
+    // Batched with a model, it goes with it; the batch sent with another,
+    // with that one.
+    let one = comment(&e, &["Batched?"]);
+    run(&["send", "s", &one, "--later", "--answer-only", "--model", "claude-sonnet-5-5"]);
+    assert_eq!(Db::load(&e.db).unwrap().find_note("s", &one).unwrap().queued.as_ref().and_then(|q| q.model.clone()).as_deref(), Some("claude-sonnet-5-5"));
+    run(&["send", "s", "--batch", "--wait", "--accept"]);
+    let two = comment(&e, &["Again?"]);
+    run(&["send", "s", &two, "--later", "--answer-only", "--model", "claude-sonnet-5-5"]);
+    run(&["send", "s", "--batch", "--model", "claude-opus-5-5", "--wait"]);
+    assert_eq!(said()[4..], ["claude-sonnet-5-5", "claude-opus-5-5"]);
+    // An id that is not one of the list is refused, the ids said: nothing
+    // is sent. --model goes with --send-back alone in a review.
+    let id = comment(&e, &["Other?"]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--model", "opus"], "", &env);
+    assert!(!fine && err.contains("invalid value 'opus' for '--model <ID>'"), "{err}");
+    assert!(err.contains("[possible values: claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5]"), "{err}");
+    let (fine, _, err) = e.run(&["review", "s", "--accept-all", "--model", "claude-opus-5-5"]);
+    assert!(!fine && err.contains("--model goes with --send-back"), "{err}");
+    assert_eq!(said().len(), 6);
 }
 
 #[test]

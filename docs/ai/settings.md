@@ -3,8 +3,9 @@
 `~/.stacked/config.toml` holds the settings, in stacked's own folder,
 beside what stacked keeps between runs (`state.json`: the databases opened
 last, StackED above; and the searches of the middle, The editor above; not
-how the agent is asked, nor at what effort, which each ask dialog sets
-anew, Asking the agent above);
+how the agent is asked, nor with what model, nor at what effort, which
+each ask dialog sets anew, from `agent.ask_model` and `agent.ask_effort`
+when they are set, Asking the agent above);
 `$STACKED_HOME` names another folder than ~/.stacked, and `$STACKED_CONFIG`
 another file. A checkout's own settings, `.stacked/local.toml`, override
 them there (below); each is optional, and `stacked config` prints them all
@@ -26,13 +27,15 @@ settings:
   runs a terminal one in its page, unless `[web]`'s `editor` says otherwise
   (below).
 - `[agent]`: `command`, the program run as the agent; `args`, added to
-  every run, but an `--effort` they give, which the ask's own effort takes
-  the place of (Asking the agent, above); `worktree` and
+  every run, but an `--effort` or a `--model` they give, which the ask's
+  own effort and model take the place of (Asking the agent, above);
+  `worktree` and
   `answer_only_worktree`, when the worktree a change works in, and the one
   an answer works in, is made: `ondemand` or `precreate` (Asking the agent,
   above; `ondemand` unless set), as every ask runs in a worktree of its
   own, never in your checkout (a file of before that says `pwd` is read as
-  `ondemand`, and stacked says so); `model`. What each kind of ask may use
+  `ondemand`, and stacked says so); `model`, `--model` for every run,
+  which an ask's own model takes the place of. What each kind of ask may use
   besides what stacked gives it (Asking the agent, above), as claude names
   the tools for `--allowedTools`: all of an MCP server's
   (`mcp__bugzilla__*`; there is no way to name every server's at once), one
@@ -219,6 +222,22 @@ settings:
   agent, above; on unless set): `false` turns that check off, for a setup
   where it is wrong though claude works, a proxy the check does not go
   through, say. The program run as claude is looked for all the same.
+  `ask_model` and `ask_effort`, the model and the effort the ask dialog
+  opens with, set already, and changed there as any (Asking the agent,
+  above): unless set, none, each picked in the dialog. They take the
+  dialog's own values alone: a model by its full id (`claude-fable-5-1`,
+  `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`), an effort
+  by its name (`low`, `medium`, `high`, `xhigh` or `max`); another is
+  refused as the file is read, saying which setting and the values it
+  takes, and the line opens unset (`agent.ask_model: "opus" is not
+  claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or
+  claude-haiku-5-5`), and `stacked config` refuses to write it. They are
+  the editor's settings (the checkout's own too), never a database's; the
+  command line's `send` and `review --send-back` read neither, and the
+  menus' `Model […]` and `Effort […]` dropdowns start from them only for
+  what was asked with neither. `ask_model` is no `model`: `model` gives
+  `--model` to every run of claude, which an ask's own model takes the
+  place of, as its effort takes the place of an `--effort` in `args`.
 - `[reviews]` (built with the `moz-phab` feature, on by default; read
   either way, so one file serves both builds): `source`, `"phabricator"`
   or `"none"` (no pulling, of a stack or into a new one, no statuses of

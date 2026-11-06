@@ -418,6 +418,19 @@ pub struct Push {
     /// None for a push of before, or of work asked at the agent's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<crate::db::Effort>,
+    /// The model the agent that selected its tasks was asked with, by its
+    /// id, its work's: its replies on the comment say it, as the agent's
+    /// replies do. None for a push of before models were picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl Push {
+    /// The model and the effort the agent that selected its tasks was asked
+    /// with, to say.
+    fn asked_with(&self) -> crate::thread::At {
+        crate::thread::At::new(self.model.as_deref(), self.effort.map(crate::db::Effort::name))
+    }
 }
 
 fn is_zero(n: &i64) -> bool {
@@ -601,6 +614,7 @@ pub fn begin(db: &mut Db, work: &str, accepted: &[Task], rebuild: Option<u32>) -
             rebuild,
             lowest,
             effort: i.effort,
+            model: i.model.clone(),
             ..Default::default()
         })),
         ..Default::default()
@@ -1440,6 +1454,7 @@ pub fn follow(db_path: &Path, id: &str) -> Result<Option<String>> {
                         text,
                         tag: "try".into(),
                         effort: p.effort,
+                        model: p.model.clone(),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -1576,11 +1591,11 @@ fn end(db_path: &Path, id: &str, state: RunState, why: &str, said: &dyn Fn(&Note
 }
 
 /// `said`, given the comment that asked for try push `p`, a reply of the
-/// try push's on it, if it is open: at the effort of the agent that
-/// selected its tasks.
+/// try push's on it, if it is open: with the model and at the effort of
+/// the agent that selected its tasks.
 fn reply(db: &mut Db, p: &Push, said: &dyn Fn(&Note) -> String) -> Result<()> {
     let Some(n) = db.note(&p.change, &p.id).filter(|n| !n.text.is_empty()).cloned() else { return Ok(()) };
-    let text = append_agent(&n.text, &said(&n), "try", p.effort.map(crate::db::Effort::name));
+    let text = append_agent(&n.text, &said(&n), "try", &p.asked_with());
     db.set_note(Note { text, time: now(), ..n })
 }
 

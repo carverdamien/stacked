@@ -1422,6 +1422,12 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_browse
     until(&mut events, "build and test", |l| text(l).contains("Permission: [build and test]"));
     send(&["k Left -"]);
     until(&mut events, "change stack again", |l| text(l).contains("Permission: [change stack]"));
+    // Enter on the model's line opens its list, of the full ids, on the
+    // first: ↓ to the next, and Enter sets it.
+    send(&["k Down -", "k Enter -"]);
+    until(&mut events, "the model's list", |l| text(l).contains("│ claude-opus-5-5   │"));
+    send(&["k Down -", "k Enter -"]);
+    until(&mut events, "the model", |l| text(l).contains("Model: [claude-opus-5-5]"));
     // Enter on the effort's line opens its list, on low: ↑ goes round to
     // max, ↓ back round to low, and Enter sets it.
     send(&["k Down -", "k Enter -"]);
@@ -1433,7 +1439,7 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_browse
     until(&mut events, "batched", |l| text(l).contains("batched (may change the code): 1 ask in the batch"));
     let d = stacked::db::Db::load(&db).unwrap();
     let q = d.stack_notes("s").into_iter().find_map(|n| n.queued.clone()).expect("batched");
-    assert_eq!((q.batched(), q.way, q.effort), (true, stacked::db::Way::Change, Some(stacked::db::Effort::Low)));
+    assert_eq!((q.batched(), q.way, q.model.as_deref(), q.effort), (true, stacked::db::Way::Change, Some("claude-opus-5-5"), Some(stacked::db::Effort::Low)));
 }
 
 #[test]
@@ -1447,7 +1453,7 @@ fn the_ask_dialog_s_esc_cancels_and_the_effort_of_send_it_now_stops_at_either_en
             ask(port, &host, &input, &format!("{l}\n"));
         }
     };
-    // Ask agent about all… with Enter, both lines set with →, then Esc:
+    // Ask agent about all… with Enter, two lines set with →, then Esc:
     // closed, nothing asked, as Space opens the menu again; opened again,
     // nothing set.
     until(&mut events, "the stack's menu", |l| text(l).contains("Ask agent about all…"));
@@ -1460,7 +1466,7 @@ fn the_ask_dialog_s_esc_cancels_and_the_effort_of_send_it_now_stops_at_either_en
     // Asked later, at low, from the dialog, each line set with →: the
     // comment's own menu, in the comments pane, then has Send it now, at
     // the effort it was batched at.
-    send(&["k Right -", "k Down -", "k Right -", "k Down -", "k Right -", "k Enter -"]);
+    send(&["k Right -", "k Down -", "k Right -", "k Down -", "k Right -", "k Down -", "k Right -", "k Enter -"]);
     until(&mut events, "batched", |l| text(l).contains("batched (answer only)"));
     send(&["k Right -", "k Right -", "k c 20 -"]);
     let sending = |l: &str, level: &str| {
@@ -2382,7 +2388,7 @@ fn at_max(db: &Path) {
             ..Default::default()
         };
         let before = append_turn("Was it so before?", Role::Agent, "It was.", Some("answer"));
-        let thread = append_agent(&append_turn(&before, Role::You, "Why shout?", None), "A shout.", "answer", Some("max"));
+        let thread = append_agent(&append_turn(&before, Role::You, "Why shout?", None), "A shout.", "answer", &stacked::thread::At::new(None, Some("max")));
         d.set_note(note(&first, "c-max", thread))?;
         d.set_note(note(&second, "c-bee", "Why add b?".into()))?;
         let ask = serde_json::json!({"way": "answer", "scope": {"patch": second.change}, "from": from, "notes": [{"label": "c1", "change": second.change, "id": "c-bee"}], "effort": "max"});
@@ -2515,6 +2521,7 @@ fn waiting_their_turn(db: &Path) {
             on: None,
             was: None,
             effort: None,
+            model: None,
             follow: false,
         };
         d.set_note(Note {
@@ -2818,7 +2825,7 @@ fn a_comment_on_a_patch_the_work_adds_sends_it_back_from_its_review_in_the_brows
     ask(port, &host, &input, "k Enter -\n");
     until(&mut events, "the ask dialog", |l| text(l).contains("send back the agent's work: a change of the stack"));
     until(&mut events, "its buttons", |l| text(l).contains("< Send Now >   < Cancel >"));
-    until(&mut events, "its note", |l| text(l).contains("Send Now is grayed until the permission and the effort are set."));
+    until(&mut events, "its note", |l| text(l).contains("Send Now is grayed until the permission, the model and the effort"));
 }
 
 #[test]

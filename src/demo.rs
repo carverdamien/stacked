@@ -259,6 +259,7 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                     tag: info.way.name().into(),
                     promote: promote.map(String::from),
                     effort: info.effort,
+                    model: info.model.clone(),
                     ..Default::default()
                 })
                 .collect()
@@ -732,18 +733,18 @@ impl Tour {
             Step::Comment => "Patch 4 is a mistake: O takes the bottom right corner, which lets X win at the bottom left in patch 5. Comment on patch 4, as in a review: press ← to go to the patches, ↓ to pick patch 4, → to read it, and ↓ to go to its + line. Then press Enter, write why it is a mistake, press Esc, and choose Save it.".into(),
             Step::Ask if Tour::landed(app).is_some() => "The agent answered that fixing O's mistake needs more than patch 4, as patch 5 has to change too. Its answer waits for your review: your comment's first line says so, and so does the banner at the top. Nothing the agent brings back is applied before you review it. Accepting this answer moves your comment to the stack's own comments, where the agent may change any patch: press Enter on your comment to accept it.".into(),
             Step::Ask if working => "The agent is working on your comment: the comment's first line says with the agent, and the last lines the agent writes show under it. Press Enter on your comment to open all it writes, as it writes, and Esc to fold it again. (In the tour, a stand-in for the agent answers, in memory. In your own stacks, claude answers, and makes its changes in a worktree of its own.)".into(),
-            Step::Ask if !self.asking(app).1 && !self.asking(app).0.is_empty() => "You asked the agent about patch 4 alone, and the agent says that fixing O's mistake needs more than patch 4: patch 5, X's win, has to change too. So your comment moved from patch 4 to the stack's own comments, and the cursor moved with it. Ask the agent from there, where it may change any patch: press Space and choose Ask agent…, press → on Permission until it says change stack, press ↓ and → to set Effort, then press ↓ to Ask Now, and Enter.".into(),
-            Step::Ask => "Ask the agent to fix O's mistake in patch 4. The fix changes patch 5 too, because X can no longer win where O blocks. So with the cursor on your comment on patch 4, press Space and choose Ask agent…: a dialog opens with nothing set, so that no ask goes as the last one did by mistake. Press → on Permission until it says change stack, so that the agent may change any patch, or press Enter there and pick change stack in the list that opens. Press ↓ and → to set Effort to low, which is enough here. Then press ↓ to Ask Now, and Enter.".into(),
+            Step::Ask if !self.asking(app).1 && !self.asking(app).0.is_empty() => "You asked the agent about patch 4 alone, and the agent says that fixing O's mistake needs more than patch 4: patch 5, X's win, has to change too. So your comment moved from patch 4 to the stack's own comments, and the cursor moved with it. Ask the agent from there, where it may change any patch: press Space and choose Ask agent…, press → on Permission until it says change stack, press ↓ and → to set Model, press ↓ and → to set Effort, then press ↓ to Ask Now, and Enter.".into(),
+            Step::Ask => "Ask the agent to fix O's mistake in patch 4. The fix changes patch 5 too, because X can no longer win where O blocks. So with the cursor on your comment on patch 4, press Space and choose Ask agent…: a dialog opens with nothing set, so that no ask goes as the last one did by mistake. Press → on Permission until it says change stack, so that the agent may change any patch, or press Enter there and pick change stack in the list that opens. Press ↓ and → to set Model: the tour's agent is a stand-in, so any model does. Press ↓ and → to set Effort to low, which is enough here. Then press ↓ to Ask Now, and Enter.".into(),
             Step::Review if app.screen == Screen::Review => "This is the review of the agent's work. On the left are its parts: the stack operations of its change, a line for each patch (patches 4 and 5 are modified), and its reply to your comment. On the right is what the part the cursor is on would be: the stack diff of the change, or the reply as the last turn of its thread. Press ↓ to go through the parts and Enter on each to accept it (Enter again puts it back to review; rejecting a part is in its menu, Space). Then press Esc and choose Close review: what you accepted is applied then.".into(),
             Step::Review if Tour::landed(app).is_some() => "The agent's work has landed, and nothing changed under you: it waits for your review, and the banner at the top says so. Nothing of it is applied before you review it, and the stack is not edited by hand meanwhile. Press Esc: the banner opens, a line for each piece of the agent's work, the landed one picked. Then press Enter to review the agent's work.".into(),
-            Step::Review => "You rejected the agent's change, so the stack is as it was. Ask the agent again: on your comment, press Space and choose Ask agent…, set Permission to change stack and Effort with → on each, then press Enter on Ask Now.".into(),
+            Step::Review => "You rejected the agent's change, so the stack is as it was. Ask the agent again: on your comment, press Space and choose Ask agent…, set Permission to change stack, Model and Effort with → on each, then press Enter on Ask Now.".into(),
             Step::Question if Tour::landed(app).is_some() => "The agent's answer has landed, and waits for your review: your comment's first line says so, and the comments pane marks the comment ◆. An answer changes nothing in the stack, so it can be accepted at once, without the review: press Enter on your comment to accept the answer.".into(),
             Step::Question if working => "The agent is answering your question. Asked that way, it reads the code and answers, and changes nothing.".into(),
             Step::Question => {
                 let moved = self.thread(app).is_some_and(|n| n.moved.is_some());
                 let place = if moved { "among the stack's own comments" } else { "on patch 4" };
                 format!(
-                    "The agent rewrote patches 4 and 5: now O blocks the diagonal, and X blocks O's left column. Its reply is the last turn of your comment's thread, {place}: the comments pane, on the right, marks the comment ✓, and the pane's header says 1 to read. Reply with a question: with the cursor on your comment (→ goes to the comments pane, and Enter there goes to the comment), press Enter, write \"Who is winning?\", press Esc and choose Ask agent…, set Permission to answer only and Effort with → on each, then press Enter on Ask Now. Asked that way, the agent answers, and changes nothing."
+                    "The agent rewrote patches 4 and 5: now O blocks the diagonal, and X blocks O's left column. Its reply is the last turn of your comment's thread, {place}: the comments pane, on the right, marks the comment ✓, and the pane's header says 1 to read. Reply with a question: with the cursor on your comment (→ goes to the comments pane, and Enter there goes to the comment), press Enter, write \"Who is winning?\", press Esc and choose Ask agent…, set Permission to answer only, Model and Effort with → on each, then press Enter on Ask Now. Asked that way, the agent answers, and changes nothing."
                 )
             }
             Step::Reading => "The agent answered your question, and changed nothing. Next, keep track of what you have read. Press 2 to switch to reading: each patch on the left then counts its changed lines read, as 0/2, and the bar at the top counts them too. In the list of patches (← from the middle), pick patch 1 and press → to read it. Then press Space: it marks the block of code at the cursor read and goes on to the next line not read, and Delete or Backspace marks it unread again. Mark patch 1 read.".into(),
@@ -761,7 +762,7 @@ impl Tour {
             Step::StackComment if app.screen == Screen::Review => "Accept the agent's change, which adds patch 6, and its reply: press Enter on each part, then press Esc and choose Close review.".into(),
             Step::StackComment if Tour::landed(app).is_some() => "The agent's work has landed: its change adds patch 6, O's next move, and it waits for your review. Review it as before: press Esc to open the banner, press Enter, accept each part with Enter, then press Esc and choose Close review.".into(),
             Step::StackComment if working => "The agent is working on the stack's comment. The stack's own comments show in the middle while the stack's header (≡ game) is picked, and this one says with the agent there.".into(),
-            Step::StackComment => "A comment on the stack is asked about the whole stack: there the agent may change any patch, and add new ones, as for a rebase. On the stack's header (≡ game), press Space and choose Comment on the stack…, write \"Play O's next move.\", press Esc and choose Ask agent…, set Permission to change stack and Effort with → on each, then press Enter on Ask Now.".into(),
+            Step::StackComment => "A comment on the stack is asked about the whole stack: there the agent may change any patch, and add new ones, as for a rebase. On the stack's header (≡ game), press Space and choose Comment on the stack…, write \"Play O's next move.\", press Esc and choose Ask agent…, set Permission to change stack, Model and Effort with → on each, then press Enter on Ask Now.".into(),
             Step::Runs => "The agent added patch 6: O blocks X's middle row. Runs… lists everything the agent was asked, newest first, and what came of each: press Space and choose Runs…, near the end of any menu. Enter on a run shows all the agent wrote, Esc goes back to the list, and Esc again comes back to the stack.".into(),
             Step::Help => "Press ? anywhere: it says what you can do where the cursor is, and where the arrows go from there. Read it, then press any key to close it. The keys are settings too: `stacked config` prints every setting in the form of stacked's settings file, ~/.stacked/config.toml, and its [keys] can make any key another.".into(),
             Step::End => "That is stacked. In a project of yours, `stacked import NAME main..HEAD` makes a stack of the commits on top of main, `stacked` opens the editor, `stacked web` opens the editor in a browser, and `stacked --help` lists the other commands. Next time, `stacked demo` starts on the list of its sections. Below is board.txt as the stack's patches leave it. Press Enter to leave the tour.".into(),
@@ -825,7 +826,7 @@ impl Tour {
                 if notes.is_empty() {
                     return;
                 }
-                match ask::queue(&path, STACK, &notes, Way::Change, on_patch, Effort::default()) {
+                match ask::queue(&path, STACK, &notes, Way::Change, on_patch, None, Effort::default()) {
                     Ok(()) => app.launch(),
                     Err(e) => fail(app, e),
                 }
@@ -850,7 +851,7 @@ impl Tour {
                     };
                     asked = Db::edit(&path, |db| db.set_note(note)).map(|_| ());
                 }
-                match asked.and_then(|_| ask::queue(&path, STACK, &[(n.change.clone(), n.id.clone())], Way::Answer, false, Effort::default())) {
+                match asked.and_then(|_| ask::queue(&path, STACK, &[(n.change.clone(), n.id.clone())], Way::Answer, false, None, Effort::default())) {
                     Ok(()) => app.launch(),
                     Err(e) => fail(app, e),
                 }
@@ -961,7 +962,7 @@ impl Tour {
                     ..Default::default()
                 };
                 let asked = (note.change.clone(), note.id.clone());
-                match Db::edit(&path, |db| db.set_note(note)).and_then(|_| ask::queue(&path, STACK, &[asked], Way::Change, false, Effort::default())) {
+                match Db::edit(&path, |db| db.set_note(note)).and_then(|_| ask::queue(&path, STACK, &[asked], Way::Change, false, None, Effort::default())) {
                     Ok(()) => app.launch(),
                     Err(e) => fail(app, e),
                 }

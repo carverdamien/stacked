@@ -79,7 +79,7 @@ fn failed_said(r: &Run) -> String {
     if crate::held::pulled(r) {
         return format!("the pull from Phabricator failed: {}", r.summary);
     }
-    let at = crate::thread::asked_at(ask::effort_said(r));
+    let at = crate::thread::asked_at(&ask::at_of(r));
     format!("the agent's {}{at} failed: {}", r.what, r.summary)
 }
 

@@ -273,7 +273,7 @@ fn asked_about_patch_4_alone_the_agent_sends_the_comment_to_the_stack() {
     // Asked to change patch 4 alone: it needs more than the patch, patch 5
     // too; the comment goes to the stack, nothing changed.
     let asked = (note.change.clone(), note.id.clone());
-    stacked::ask::queue(&app.path, "game", &[asked], stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
+    stacked::ask::queue(&app.path, "game", &[asked], stacked::db::Way::Change, false, None, stacked::db::Effort::High).unwrap();
     app.launch();
     // Its answer waits for review; accepted, the comment moves.
     until(&mut app, &mut tour, "an answer to review", |app, _| !stacked::held::queue(&app.db, "game").is_empty());

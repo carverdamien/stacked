@@ -48,7 +48,7 @@ pub(super) const PULL_WAITS: &str = "the comments pulled wait for your review: c
 pub(super) const SEND_BACK: &str = "Send it back to the agent…";
 
 /// How the work goes back, as the review's menu says under what you wrote.
-const SENT_HOW: &str = "Send it back to the agent… opens a dialog that sets what the agent may do, and its effort: a permission that changes the stack rejects this work, and the agent's new work lands in its place; one that only reads asks a follow-up, this work staying waiting for your review, and what the follow-up brings back comes into this review.";
+const SENT_HOW: &str = "Send it back to the agent… opens a dialog that sets what the agent may do, its model and its effort: a permission that changes the stack rejects this work, and the agent's new work lands in its place; one that only reads asks a follow-up, this work staying waiting for your review, and what the follow-up brings back comes into this review.";
 
 /// What the review's section of the answers made on the stack before the
 /// change is called, as its heading says it, and its line of what Esc says.
@@ -451,10 +451,21 @@ fn following_said(f: &ask::Following) -> &'static str {
     if f.run.is_some() { "with the agent" } else { "waiting its turn" }
 }
 
+/// The effort and the model a follow-up going is asked with, said after
+/// how it is asked: `, at max with claude-opus-5-5`; nothing for one with
+/// neither.
+fn following_at(f: &ask::Following) -> String {
+    match crate::thread::asked_at(&f.asked_with()) {
+        at if at.is_empty() => at,
+        at => format!(",{at}"),
+    }
+}
+
 /// What a follow-up going is, said, as the review's line of it says it:
-/// how it was asked and at what effort, then how many comments.
+/// how it was asked, at what effort and with what model, then how many
+/// comments.
 fn following_what(f: &ask::Following) -> String {
-    let at = f.effort.map_or(String::new(), |e| format!(", at {}", e.name()));
+    let at = following_at(f);
     let n = f.notes.len();
     format!("{}{at} · {n} comment{}", f.way.said(), if n == 1 { "" } else { "s" })
 }
@@ -1722,11 +1733,12 @@ impl App {
     }
 
     /// The work sent back to the agent, with what you wrote in its review:
-    /// another round, from it, in `way`, of the whole stack if `whole`, at
-    /// `effort`, as its dialog set them; the review left.
-    pub(super) fn review_send_back(&mut self, way: Way, whole: bool, effort: Effort) {
+    /// another round, from it, in `way`, of the whole stack if `whole`,
+    /// with `model` and at `effort`, as its dialog set them; the review
+    /// left.
+    pub(super) fn review_send_back(&mut self, way: Way, whole: bool, model: Model, effort: Effort) {
         let Some(rv) = self.reviewing.clone() else { return };
-        let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks, Some(effort), Some((way, whole)));
+        let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks, Some(model), Some(effort), Some((way, whole)));
         self.reload();
         match sent {
             Ok(said) => {
@@ -1739,12 +1751,12 @@ impl App {
     }
 
     /// A follow-up that only reads asked about what you wrote in the review,
-    /// in `way`, at `effort`, as its dialog set them: the work stays waiting
-    /// for your review, its marks as they are, and the review stays open,
-    /// what the follow-up brings back to come into it.
-    pub(super) fn review_follow_up(&mut self, way: Way, effort: Effort) {
+    /// in `way`, with `model` and at `effort`, as its dialog set them: the
+    /// work stays waiting for your review, its marks as they are, and the
+    /// review stays open, what the follow-up brings back to come into it.
+    pub(super) fn review_follow_up(&mut self, way: Way, model: Model, effort: Effort) {
         let Some(rv) = self.reviewing.clone() else { return };
-        let asked = ask::follow_up(&self.path, &self.stack, &rv.run, &rv.marks, way, effort);
+        let asked = ask::follow_up(&self.path, &self.stack, &rv.run, &rv.marks, way, Some(model), effort);
         self.reload();
         match asked {
             Ok(said) => {
@@ -2378,7 +2390,7 @@ impl App {
         fn said_in(lines: &mut Vec<Vec<(String, Style)>>, said: &str, w: usize, st: Style) {
             lines.extend(wrap(said, w).into_iter().map(|l| vec![(l, st)]));
         }
-        let at = f.effort.map_or(String::new(), |e| format!(", at {}", e.name()));
+        let at = following_at(f);
         said_in(&mut lines, &format!("The follow-up asks the agent about these comments, {}{at}:", f.way.said()), w, Style::new());
         for (c, i) in &f.notes {
             if let Some(n) = self.db.note(c, i) {
@@ -2440,7 +2452,7 @@ impl App {
         let (Some(t), Some(rv)) = (h.tools.get(k), self.reviewing.as_ref()) else { return (String::new(), vec![], 0..0) };
         let rule = crate::refusals::rule_of(t, &rv.marks, k).to_string();
         let why = if t.why.trim().is_empty() { "The agent did not say why it needed this tool." } else { t.why.as_str() };
-        let mut text = crate::thread::append_agent("", why, "tool", self.reviewed_at());
+        let mut text = crate::thread::append_agent("", why, "tool", &self.reviewed_at());
         if let Some(a) = &t.answer {
             text = append_turn(&text, Role::You, a, None);
         }
@@ -2558,7 +2570,7 @@ impl App {
     fn task_view(&self, h: &Work, k: usize, w: usize) -> View {
         let Some(t) = h.tasks.get(k) else { return (String::new(), vec![], 0..0) };
         let why = if t.why.trim().is_empty() { "The agent did not say why." } else { t.why.as_str() };
-        let mut text = crate::thread::append_agent("", why, "try", self.reviewed_at());
+        let mut text = crate::thread::append_agent("", why, "try", &self.reviewed_at());
         if let Some(a) = &t.answer {
             text = append_turn(&text, Role::You, a, None);
         }
@@ -2623,9 +2635,9 @@ impl App {
                 }
                 let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", r.request) };
                 let edited = if h.edits.is_empty() { String::new() } else { format!(" · then you {}", h.edits.join(", then ")) };
-                // The effort it was asked at, first, where the list's width
+                // The model and the effort it was asked with, first, where the list's width
                 // leaves it in sight.
-                let whose = crate::thread::named_at("the agent's work", ask::effort_said(r));
+                let whose = crate::thread::named_at("the agent's work", &ask::at_of(r));
                 format!(" {whose}: {left}{asked}{edited}")
             });
             put(buf, list, 0, 0, list_w, &fit(&title, list_w), color::header());
@@ -3768,13 +3780,13 @@ impl App {
         Some(out)
     }
 
-    /// The name of the effort the work reviewed was asked at, which heads
-    /// the agent's words the review shows as comments of its own (why it
-    /// selected a task, what it said of a tool it could not use): none for
-    /// work of before, nor for what is not the agent's.
-    fn reviewed_at(&self) -> Option<&'static str> {
-        let rv = self.reviewing.as_ref()?;
-        ask::effort_said(self.db.run(&rv.run)?)
+    /// The model and the effort the work reviewed was asked with, which
+    /// head the agent's words the review shows as comments of its own (why
+    /// it selected a task, what it said of a tool it could not use): none
+    /// for work of before, nor for what is not the agent's.
+    fn reviewed_at(&self) -> crate::thread::At {
+        let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
+        run.map(ask::at_of).unwrap_or_default()
     }
 
     /// A question before closing the review, the parts not marked as `rest`
