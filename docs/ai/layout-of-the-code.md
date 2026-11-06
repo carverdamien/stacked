@@ -236,6 +236,11 @@
   line of it;
   `tui/head_why.rs`, the view of why Move HEAD does not
   move HEAD, and what you can do in your checkout so that it can;
+  `tui/configure.rs`, the Configure screen, which the button `< stacked >`
+  of the top bar and the end of every menu open: every setting, what the
+  global file and the local file give it and what is in effect, each
+  written through `config::set` and its kin, and the test buttons of
+  stacked web's notices and bell;
   `tui/banner.rs`, the banner of the agent's work; `tui/notices.rs`, the
   notices of `stacked web`, what the editor learns of every stack as it
   reads the database again, said for the system's banners and kept for

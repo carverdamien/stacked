@@ -495,6 +495,9 @@ const t = {
     for (const f of document.getElementById('screen').listeners.mousedown || []) f({button: 0, clientX: x, clientY: y, preventDefault() {}});
   },
   away() { this.blur(); this.hide(); },
+  // A press of the mouse's button anywhere on the page, as the window
+  // hears it.
+  press() { fire(ofWindow, 'mousedown'); },
   // Banners allowed, made as the page asks, kept.
   allow() {
     window.Notification = class { constructor(title, o) { banners.push([title, o.body, o.tag]); } close() {} };
@@ -801,6 +804,90 @@ fn a_tab_looked_at_again_says_its_size_if_another_tab_s_was_said_since_and_never
         assert.deepStrictEqual(t.said(), []);
         "#,
     );
+}
+
+/// The page's audio, a stand-in for the Web Audio API that plays nothing
+/// but keeps the peak each partial of the bell is struck at, in `peaks`;
+/// made by a press of the mouse's button, as a browser lets it be.
+const AUDIO: &str = r#"
+const peaks = [];
+window.AudioContext = class {
+  constructor() { this.currentTime = 0; this.destination = {}; }
+  resume() { return Promise.resolve(); }
+  suspend() { return Promise.resolve(); }
+  createOscillator() { return {frequency: {}, connect() {}, start() {}, stop() {}}; }
+  createGain() { return {gain: {setValueAtTime() {}, linearRampToValueAtTime(v) { peaks.push(v); }, exponentialRampToValueAtTime() {}}, connect() {}}; }
+};
+t.press();
+await t.settle();
+"#;
+
+#[test]
+fn the_bell_s_strike_is_scaled_by_the_square_of_its_level_and_a_test_rings_while_the_page_is_looked_at() {
+    // Each partial's peak, the loudest's at 100, a quarter of it at 50, a
+    // hundredth at 10; none at 0, nor while the page is looked at, but for
+    // a test's.
+    for (level, looked, test, scale) in [
+        (100, false, "", Some(1.0)),
+        (50, false, "", Some(0.25)),
+        (10, false, "", Some(0.01)),
+        (0, false, "", None),
+        (100, true, "", None),
+        (40, true, "test", Some(0.16)),
+        (0, true, "test", None),
+    ] {
+        let want = match scale {
+            Some(s) => format!("[{}, {}, {}]", 0.15 * s, 0.045 * s, 0.015 * s),
+            None => "[]".into(),
+        };
+        in_the_page(&format!(
+            r#"{AUDIO}
+            const {{assert}} = t;
+            if ({looked}) t.look(); else t.away();
+            bell({level}, '{test}');
+            await t.settle();
+            const want = {want};
+            assert(peaks.length === want.length && peaks.every((p, i) => Math.abs(p - want[i]) < 1e-12), JSON.stringify([peaks, want]));
+            "#
+        ));
+    }
+}
+
+#[test]
+fn a_test_notice_is_a_banner_even_while_the_page_is_looked_at_counted_nowhere_the_permission_asked_first() {
+    let test = "notice('stacked-test', 'stacked', 'This is a test notice from stacked.', 'n stacked-test', 'test');";
+    // Allowed: its banner, the page looked at, and the tab's icon plain; a
+    // notice not a test's shows none then.
+    in_the_page(&format!(
+        r#"
+        const {{assert}} = t;
+        t.allow();
+        t.look();
+        notice('s', 'stacked: s', 'A run failed.', 'n 1');
+        {test}
+        await t.settle();
+        assert.deepStrictEqual(t.banners, [['stacked', 'This is a test notice from stacked.', 'stacked-test']]);
+        assert.deepStrictEqual(t.icons(), t.plain);
+        "#
+    ));
+    // Never given nor refused: asked, then shown once given; refused, none.
+    in_the_page(&format!(
+        r#"
+        const {{assert}} = t;
+        let asked = 0;
+        t.allow();
+        window.Notification.permission = 'default';
+        window.Notification.requestPermission = () => {{ asked++; window.Notification.permission = 'granted'; return Promise.resolve('granted'); }};
+        t.look();
+        {test}
+        await t.settle();
+        assert.deepStrictEqual([asked, t.banners.length], [1, 1]);
+        window.Notification.permission = 'denied';
+        {test}
+        await t.settle();
+        assert.deepStrictEqual([asked, t.banners.length], [1, 1]);
+        "#
+    ));
 }
 
 /// One editor of this process at a time submits to Phabricator: the
@@ -2899,9 +2986,9 @@ fn the_mouse_over_the_runs_marks_a_run_and_a_click_picks_it_in_the_browser_too()
     let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
     let mut events = events(port, &token, 120);
     until(&mut events, "the patches", |l| text(l).contains("Bug 2 - add b"));
-    // Runs…, the last item of the menu but Quit: the runs, the newest first,
-    // and picked.
-    ask(port, &host, &input, "k c 20 -\nk End -\nk Up -\nk Enter -\n");
+    // Runs…, the last item of the menu but Configure… and Quit: the runs,
+    // the newest first, and picked.
+    ask(port, &host, &input, "k c 20 -\nk End -\nk Up -\nk Up -\nk Enter -\n");
     let seen = until(&mut events, "the runs", |l| text(l).contains("said 2"));
     let (x, y) = cell_of(seen.last().unwrap(), "said 2");
     let row = format!("data: r {y} ");
@@ -3190,7 +3277,7 @@ fn is_notice(l: &str) -> bool {
 
 /// Whether event `l` is the bell.
 fn is_bell(l: &str) -> bool {
-    l == "data: b"
+    l.starts_with("data: b ")
 }
 
 /// How many times the bell is rung among the events `seen`.
@@ -3288,6 +3375,8 @@ fn what_lands_at_once_is_told_by_its_notices_then_one_bell_with_bell_true_in_the
     assert_eq!(told, [answer_notice("run-answer"), failure]);
     assert_eq!(bells(&seen), 1, "{seen:#?}");
     let bell = seen.iter().position(|l| is_bell(l)).unwrap();
+    // true, as a file of before says it: the loudest, 100.
+    assert_eq!(seen[bell], "data: b 100");
     assert!(seen.iter().enumerate().all(|(i, l)| !is_notice(l) || i < bell), "{seen:#?}");
     // The next landing, alone: its notice, then the bell again.
     answer_landed(&db, "run-next");
@@ -3316,10 +3405,42 @@ fn a_notice_comes_with_no_bell_with_bell_false_in_the_settings_in_the_browser() 
 }
 
 #[test]
-fn with_notifications_false_in_the_settings_no_notice_is_sent_but_the_bell_rings_for_each_landing_in_the_browser() {
+fn the_stacked_button_opens_configure_whose_test_buttons_send_a_test_notice_and_the_bell_in_the_browser() {
     let (tmp, db) = setup();
     let home = tmp.path().join("home");
-    settings_of(&home, "[web]\nnotifications = false\n");
+    settings_of(&home, "[web]\nbell = 40\n");
+    let s = served(&home, tmp.path(), &db, &[]);
+    let (host, input) = (format!("127.0.0.1:{}", s.port), format!("POST /input?t={}", s.token));
+    let mut events = events_with(s.port, &format!("t={}&cols=200&rows=120", s.token), "");
+    until(&mut events, "the patches", |l| text(l).contains("Bug 2 - add b"));
+    // A click on the button at the top left: its menu, Configure… in it.
+    ask(s.port, &host, &input, "m 3 0 l\n");
+    let seen = until(&mut events, "the button's menu", |l| text(l).contains("Configure…"));
+    let (x, y) = cell_of(seen.iter().rev().find(|l| text(l).contains("Configure…")).unwrap(), "Configure…");
+    ask(s.port, &host, &input, &format!("m {x} {y} l\n"));
+    // Its rows, sent from the top, then its bottom line.
+    let seen = until(&mut events, "the Configure screen", |l| text(l).contains("enter: change it · esc: back"));
+    // Its rows: the bell's level in the global file, in effect.
+    let bell_row = seen.iter().rev().find(|l| text(l).starts_with(" web.bell ")).unwrap().clone();
+    assert!(text(&bell_row).contains("│ 40"), "{}", text(&bell_row));
+    // The notice's test: a notice with the test flag, for the page to show
+    // even while it is looked at.
+    let row = seen.iter().rev().find(|l| text(l).starts_with(" web.notifications ")).unwrap().clone();
+    let (x, y) = cell_of(&row, "< Test >");
+    ask(s.port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the test notice", |l| l == "data: n stacked-test\u{1f}stacked\u{1f}This is a test notice from stacked.\u{1f}test");
+    // The bell's: rung once, at its level, with the test flag.
+    let (x, y) = cell_of(&bell_row, "< Test >");
+    ask(s.port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the test bell", |l| l == "data: b 40 test");
+    s.quit();
+}
+
+#[test]
+fn with_notifications_false_in_the_settings_no_notice_is_sent_but_the_bell_rings_at_its_level_for_each_landing_in_the_browser() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    settings_of(&home, "[web]\nnotifications = false\nbell = 50\n");
     going_on(&db, "run-answer", "s", "answer");
     going_on(&db, "run-change", "s", "change");
     let s = served(&home, tmp.path(), &db, &[]);
@@ -3327,12 +3448,13 @@ fn with_notifications_false_in_the_settings_no_notice_is_sent_but_the_bell_rings
     let seen = until(&mut events, "the banner", |l| text(l).contains("the agent works on 2 asks"));
     assert_eq!(bells(&seen), 0, "{seen:#?}");
     // Each said on the screen as ever, with no notice, a banner's, but the
-    // bell, the bell being on unless set: both would come before the screen
-    // that says what landed.
+    // bell, at its level: both would come before the screen that says what
+    // landed.
     answer_landed(&db, "run-answer");
     let seen = until(&mut events, "the landing", |l| text(l).contains("1 landed ask waits for your review"));
     assert!(notices(&seen).is_empty(), "{seen:#?}");
     assert_eq!(bells(&seen), 1, "{seen:#?}");
+    assert!(seen.iter().any(|l| l == "data: b 50"), "{seen:#?}");
     failed(&db, "run-change", "the agent failed (1): rate limited");
     let seen = until(&mut events, "the failure", |l| text(l).contains("the agent's change failed: the agent failed (1): rate limited"));
     assert!(notices(&seen).is_empty(), "{seen:#?}");

@@ -371,21 +371,30 @@ settings:
   unless set: the page is sent the editor's notices, of every stack, which
   it shows as the system's banners, and counts on the tab's icon, while it
   is not what you look at (In a browser, above); `false` sends none, the
-  icon counting nothing, the bell ringing all the same unless `bell` is
-  `false` too. Any other value, of any kind, is
+  icon counting nothing, the bell ringing all the same if `bell` is above
+  0. Any other value, of any kind, is
   said (`web.notifications: "off" is not true or false`), and `true` kept;
   `stacked config` refuses to write it (`web.notifications is true or
   false, not "off"`). The browser keeps its permission to show them for
   the page's address, its port included: with `port = "random"` it asks
-  at each launch, and with `"fixed-random"` or a port, once. `bell`,
-  `true` unless set: the page rings its bell for what the notices tell,
-  once for what the editor learned at once, while it is not what you look
-  at, whether `notifications` is `true` or `false`, and whether the
-  browser shows the banners or refused them (In a browser, above);
-  `false` rings none, and with both `false` the editor keeps no notice.
-  Any other value, of any kind, is said (`web.bell: "quiet" is not true or
-  false`), and `true` kept; `stacked config` refuses to write it
-  (`web.bell is true or false, not "quiet"`). `true`, the bell rings only
+  at each launch, and with `"fixed-random"` or a port, once. `bell`, how
+  loud the bell is, a number from 0 to 100, in percent of its loudest, `0`
+  unless set: at 0 the bell never rings, nothing is struck. Above 0, the
+  page rings its bell for what the notices tell, once for what the editor
+  learned at once, while it is not what you look at, whether
+  `notifications` is `true` or `false`, and whether the browser shows the
+  banners or refused them (In a browser, above), each partial's peak scaled
+  by the square of the level's fraction (100, as loud as the bell was
+  before the level; 50, a quarter of it, about half as loud to the ear).
+  A file of before saying `true` reads as 100, and `false` as 0, with no
+  complaint; `stacked config web.bell true` writes 100. Any other value,
+  of any kind, is said (`web.bell: 101 is not a number from 0 to 100, the
+  bell's loudness in percent`), and 0 kept; `stacked config` refuses to
+  write it (`web.bell is a number from 0 to 100, the bell's loudness in
+  percent, not "loud"`), and prints it as a number. The editor keeps the
+  notices in `stacked web` whatever these say, and the page is told as the
+  settings are each time, so that the Configure screen's changes count at
+  once (The editor). Above 0, the bell rings only
   once a click or a key reached the page, as a browser lets a page make
   sound only then. `editor`, where a terminal editor runs (the settings'
   `editor`, else `$VISUAL`, `$EDITOR`, vi): `"page"` (unless set), in the

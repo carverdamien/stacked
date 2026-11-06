@@ -14731,14 +14731,14 @@ fn an_empty_database() {
     assert_eq!(app.hint(), "enter or space: menu · 1: view · 2: read · 3: whole");
     assert!(!draw(&mut app).contains("what can I do here"));
     // Enter, with nothing else to do, is the menu: the ways to make a
-    // stack, or quit.
+    // stack, the settings, or quit.
     keys(&mut app, &[KeyCode::Enter]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     let mut want = vec!["Ask the agent to make a stack…", "Import from the workspace…"];
     if cfg!(feature = "moz-phab") {
         want.push("Pull from Phabricator…");
     }
-    assert_eq!(labels, [&want[..], &["", "Quit"]].concat());
+    assert_eq!(labels, [&want[..], &["", "Configure…", "", "Quit"]].concat());
     assert_eq!(choose(&mut app, "Quit"), Effect::Quit);
 }
 
@@ -16381,7 +16381,7 @@ fn the_top_bar_says_what_is_left_to_review() {
     let bar = first(&mut app, 120);
     assert!(bar.ends_with("   5/8 lines to review · 1 comment to close "), "{bar}");
     // With less room, less of it; with none, none.
-    let bar = first(&mut app, 80);
+    let bar = first(&mut app, 84);
     assert!(bar.ends_with("   5/8 lines · 1 comment ") && !bar.contains("to review"), "{bar}");
     let bar = first(&mut app, 50);
     assert!(!bar.contains("5/8 lines"), "{bar}");
@@ -27930,7 +27930,9 @@ fn the_change_side_by_side_on_a_pane_too_narrow_for_it_is_drawn_unified_and_that
     assert!(screen.lines().next().unwrap().trim_end().ends_with(" · change side-by-side: too narrow"), "{screen}");
     inter_view_at(&mut app, InterLayout::ChangeCompact, 100);
     assert_eq!(app.status, "the change is drawn side by side and compact where its pane has 60 columns: this pane has 59, so it is drawn unified until the pane is wider");
-    assert!(draw_sized(&mut app, 100, 40).lines().next().unwrap().trim_end().ends_with(" · change side-by-side, compact: too narrow"));
+    // The bar, past the button `< stacked >`, as far as 100 columns hold it.
+    let bar = draw_sized(&mut app, 100, 40).lines().next().unwrap().to_string();
+    assert!(bar.trim_end().ends_with(" · change side-by-side, compact: too narr"), "{bar}");
 }
 
 #[test]
@@ -29691,4 +29693,254 @@ fn the_bug_s_dialog_takes_a_number_or_a_link_and_cancel_esc_and_a_click_out_chan
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(app.status, "the title of patch 1 names a bug already: nothing changed");
     assert_eq!(patch_in(&db, 0).title(), "Bug 31337 - shout two");
+}
+
+/// The row of setting `key` on the Configure screen drawn as `screen`.
+fn setting_row(screen: &str, key: &str) -> String {
+    let at = format!(" {key} ");
+    screen.lines().find(|l| l.starts_with(&at)).unwrap_or_else(|| panic!("no row of {key}:\n{screen}")).to_string()
+}
+
+/// The cells of `row`, a row of the Configure screen: its name, the global
+/// file's, the local file's, what is in effect, and the test button's.
+fn cells(row: &str) -> Vec<String> {
+    row.split('│').map(|c| c.trim().to_string()).collect()
+}
+
+/// The cursor of the Configure screen put on the row of `key`, in `column`.
+fn to_setting(app: &mut App, key: &str, column: stacked::tui::Column) {
+    let c = app.configuring.as_mut().expect("the Configure screen");
+    c.sel = c.rows.iter().position(|r| r.key == key).unwrap_or_else(|| panic!("no {key}"));
+    c.column = column;
+}
+
+/// The editor on stack `s`, its global file a scratch `home/config.toml`
+/// saying `global`, its checkout's local file saying `local`, with the
+/// Configure screen opened from the menu of the button `< stacked >`, which
+/// a click opens. The editor, the global file and the local file.
+fn configuring(global: &str, local: &str) -> (tempfile::TempDir, Editor, PathBuf, PathBuf) {
+    let (tmp, db, src) = setup();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let (g, l) = (home.join("config.toml"), src.join(".stacked/local.toml"));
+    std::fs::write(&g, global).unwrap();
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(&l, local).unwrap();
+    let mut app = open(&db).unwrap();
+    app.config_file = g.clone();
+    app.checkout = src.clone();
+    // The button, at the top left of the top bar: a click there opens its
+    // menu next to it, titled stacked, Configure… in it.
+    let bar = draw(&mut app);
+    assert!(bar.starts_with(" < stacked > · db.jsonl"), "{bar}");
+    assert_eq!(app.spot_at(3, 0), Some(Spot::Stacked));
+    app.click(3, 0, false);
+    match &app.mode {
+        Mode::Menu(m) => assert_eq!((m.title.as_str(), m.at), ("stacked", Some((3, 0)))),
+        m => panic!("{m:?}"),
+    }
+    assert_eq!(items(&app), [("Configure…".to_string(), true)]);
+    choose(&mut app, "Configure…");
+    assert_eq!(app.screen, Screen::Configure);
+    (tmp, app, g, l)
+}
+
+#[test]
+fn the_stacked_button_opens_configure_which_shows_each_setting_in_each_file_and_in_effect() {
+    let global = "editor = \"hx\"\n[view]\nlayout = \"compact\"\nstream_lines = 5\n[reviews]\nurl = \"https://phab.example.com\"\ntoken = \"api-secret-123\"\n[web]\nbell = true\n";
+    let local = "[view]\nlayout = \"unified-split\"\n[lint]\ncommand = \"./lint.sh\"\n[web]\nbell = 10\n";
+    let (_tmp, mut app, g, l) = configuring(global, local);
+    let screen = draw_sized(&mut app, 200, 120);
+    // Each file named, and what is wrong with them said.
+    assert!(screen.contains(&format!(" Global: {}, the settings' file, which every checkout reads", g.display())), "{screen}");
+    assert!(screen.contains(&format!(" Local: {}, this checkout's own, read over the global file", l.display())), "{screen}");
+    assert!(screen.contains(&format!(" Wrong: {}: web.bell is read only from the settings' file", l.display())), "{screen}");
+    let row = |key: &str| cells(&setting_row(&screen, key));
+    // Global, local, in effect: the local file's over the global file's,
+    // else the default.
+    assert_eq!(row("view.layout")[1..4], ["\"compact\"", "\"unified-split\"", "\"unified-split\""]);
+    assert_eq!(row("editor")[1..4], ["\"hx\"", "not set", "\"hx\""]);
+    assert_eq!(row("view.stream_lines")[1..4], ["5", "not set", "5"]);
+    assert_eq!(row("view.split_width")[1..4], ["not set", "not set", "60"]);
+    assert_eq!(row("agent.ask_model")[1..4], ["not set", "not set", "not set"]);
+    assert_eq!(row("agent.ask_effort")[1..4], ["not set", "not set", "not set"]);
+    // One the global file alone is read for, and one the local file alone:
+    // the other column says so.
+    assert_eq!(row("web.bell")[1..4], ["true", "not read: global only", "100"]);
+    assert_eq!(row("lint.command")[1..4], ["not read: local only", "\"./lint.sh\"", "\"./lint.sh\""]);
+    // The token, never shown: only that it is set.
+    assert_eq!(row("reviews.token")[1..4], ["set, not shown", "not set", "set, not shown"]);
+    assert!(!screen.contains("api-secret"), "{screen}");
+    // The colours and the keys, last; the test buttons on the rows of the
+    // notifications and the bell, alone.
+    assert!(screen.find(" keys.up ").unwrap() > screen.find(" colors.added ").unwrap());
+    assert!(screen.find(" colors.added ").unwrap() > screen.find(" demo.seen ").unwrap());
+    assert_eq!(row("web.notifications")[4], "< Test >");
+    assert_eq!(row("web.bell")[4], "< Test >");
+    assert_eq!(row("web.editor")[4], "");
+    // Not applicable: the menu of that cell grays what would set it, and
+    // says why.
+    to_setting(&mut app, "web.bell", stacked::tui::Column::Local);
+    key(&mut app, KeyCode::Enter);
+    match &app.mode {
+        Mode::Menu(m) => {
+            assert_eq!(m.title, "web.bell in the local file");
+            assert_eq!((m.items[0].label.as_str(), m.items[0].enabled), ("Set it…", false));
+            assert!(m.note.as_deref().unwrap_or("").contains("web.bell is read only from the global file"), "{:?}", m.note);
+        }
+        m => panic!("{m:?}"),
+    }
+    key(&mut app, KeyCode::Esc);
+    // Esc: back to where it was opened from.
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::Main);
+}
+
+#[test]
+fn configure_writes_through_set_refuses_in_its_words_and_takes_out() {
+    let (_tmp, mut app, g, l) = configuring("[web]\nbell = true\n", "[view]\nlayout = \"unified-split\"\n");
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+    let clear = |app: &mut App| keys(app, &[KeyCode::Backspace, KeyCode::Backspace, KeyCode::Backspace, KeyCode::Backspace]);
+    // The bell's level, typed: 101 and loud refused as `stacked config`
+    // refuses them, the file as it was; 50 written.
+    to_setting(&mut app, "web.bell", stacked::tui::Column::Global);
+    choose(&mut app, "Type its value…");
+    let Mode::Prompt(p) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(p.ed.text(), "true");
+    assert!(draw_sized(&mut app, 200, 120).contains("web.bell in the global file: a number from 0 to 100, the bell's loudness in percent"));
+    for wrong in ["101", "loud"] {
+        clear(&mut app);
+        typed(&mut app, wrong);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.status, format!("web.bell is a number from 0 to 100, the bell's loudness in percent, not {wrong:?}"));
+        assert_eq!(read(&g), "[web]\nbell = true\n");
+    }
+    clear(&mut app);
+    typed(&mut app, "50");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.status, format!("web.bell written in {}", g.display()));
+    assert_eq!(read(&g), "[web]\nbell = 50\n");
+    // Read again: the screen says it, and stacked web's settings follow.
+    assert_eq!(cells(&setting_row(&draw_sized(&mut app, 200, 120), "web.bell"))[1..4], ["50", "not read: global only", "50"]);
+    assert_eq!(app.cfg.web.bell, 50);
+    // A choice, in the local file: the view, one before unified-split.
+    to_setting(&mut app, "view.layout", stacked::tui::Column::Local);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(items(&app)[0], ("Set it to".to_string(), true));
+    // Picked, nothing written yet, nor kept for the stack; Enter writes it.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(read(&l), "[view]\nlayout = \"unified-split\"\n");
+    assert_eq!(app.db.choice("s", "setting"), None);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, format!("view.layout written in {}", l.display()));
+    assert_eq!(read(&l), "[view]\nlayout = \"compact\"\n");
+    // In the global file, the local file said to be the one used.
+    to_setting(&mut app, "view.layout", stacked::tui::Column::Global);
+    key(&mut app, KeyCode::Enter);
+    keys(&mut app, &[KeyCode::Left, KeyCode::Enter]);
+    assert_eq!(app.status, format!("view.layout written in {}: {} sets it too, and is the one used in this checkout", g.display(), l.display()));
+    assert!(read(&g).contains("[view]\nlayout = \"side-by-side\"\n"), "{}", read(&g));
+    // Delete takes it out of the file the cursor is in; there no more,
+    // said so.
+    to_setting(&mut app, "view.layout", stacked::tui::Column::Local);
+    key(&mut app, KeyCode::Delete);
+    assert_eq!(app.status, format!("view.layout taken out of {}", l.display()));
+    assert_eq!(read(&l), "[view]\n");
+    key(&mut app, KeyCode::Delete);
+    assert_eq!(app.status, "view.layout is not set in the local file");
+    // Taken out from its menu too.
+    to_setting(&mut app, "web.bell", stacked::tui::Column::Global);
+    choose(&mut app, "Take it out of this file");
+    assert_eq!(app.status, format!("web.bell taken out of {}", g.display()));
+    assert_eq!(cells(&setting_row(&draw_sized(&mut app, 200, 120), "web.bell"))[1..4], ["not set", "not read: global only", "0"]);
+    // A token typed: drawn as dots, never as it is, and written.
+    to_setting(&mut app, "reviews.url", stacked::tui::Column::Global);
+    choose(&mut app, "Type its value…");
+    typed(&mut app, "https://phab.example.com");
+    key(&mut app, KeyCode::Enter);
+    to_setting(&mut app, "reviews.token", stacked::tui::Column::Global);
+    choose(&mut app, "Type its value…");
+    typed(&mut app, "api-new-secret");
+    let screen = draw_sized(&mut app, 200, 120);
+    assert!(!screen.contains("api-new-secret") && screen.contains("••••••••••••••"), "{screen}");
+    key(&mut app, KeyCode::Enter);
+    assert!(read(&g).contains("token = \"api-new-secret\""), "{}", read(&g));
+    assert!(!draw_sized(&mut app, 200, 120).contains("api-new-secret"));
+}
+
+#[test]
+fn configure_s_test_buttons_are_grayed_with_why_where_no_page_shows_them() {
+    use stacked::tui::{Column, Host, Tested};
+    let (_tmp, mut app, _g, _l) = configuring("[web]\nbell = 40\n", "");
+    draw_sized(&mut app, 200, 120);
+    // In the terminal: grayed, why said, nothing sent.
+    to_setting(&mut app, "web.notifications", Column::Test);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.status.starts_with("No page shows the test notice here: this is stacked in a terminal"), "{}", app.status);
+    assert!(app.hint().starts_with("No page shows the test notice here"), "{}", app.hint());
+    assert!(app.take_tests().is_empty());
+    // In StackED: so too.
+    app.host = Host::Window;
+    to_setting(&mut app, "web.bell", Column::Test);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.status.starts_with("StackED rings no bell"), "{}", app.status);
+    // stacked web with no page: grayed.
+    app.host = Host::Web { pages: 0 };
+    to_setting(&mut app, "web.notifications", Column::Test);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.status, "No stacked web page is open, so there is nothing to show the notice in.");
+    assert!(app.take_tests().is_empty());
+    // With a page: the test notice, and the bell at the level in effect,
+    // each for stacked web to send with the test flag.
+    app.host = Host::Web { pages: 1 };
+    key(&mut app, KeyCode::Enter);
+    to_setting(&mut app, "web.bell", Column::Test);
+    key(&mut app, KeyCode::Enter);
+    let notice = stacked::tui::Notice { run: "stacked-test".into(), title: "stacked".into(), body: "This is a test notice from stacked.".into() };
+    assert_eq!(app.take_tests(), [Tested::Notice(notice), Tested::Bell(40)]);
+    // A click on the bell's while its level is typed: at that level, the
+    // line typed staying.
+    to_setting(&mut app, "web.bell", Column::Global);
+    let screen = draw_sized(&mut app, 200, 120);
+    let (y, line) = screen.lines().enumerate().find(|(_, l)| l.starts_with(" web.bell ")).unwrap();
+    let x = line[..line.find("< Test >").unwrap()].chars().count() + 2;
+    choose(&mut app, "Type its value…");
+    keys(&mut app, &[KeyCode::Backspace, KeyCode::Backspace]);
+    typed(&mut app, "75");
+    draw_sized(&mut app, 200, 120);
+    app.click(x as u16, y as u16, false);
+    assert_eq!(app.take_tests(), [Tested::Bell(75)]);
+    assert!(matches!(app.mode, Mode::Prompt(_)), "{:?}", app.mode);
+    // At 0, the bell never rings: grayed.
+    keys(&mut app, &[KeyCode::Backspace, KeyCode::Backspace]);
+    typed(&mut app, "0");
+    key(&mut app, KeyCode::Enter);
+    to_setting(&mut app, "web.bell", Column::Test);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.status, "The bell's level is 0, so it never rings: set web.bell above 0 first.");
+    assert!(app.take_tests().is_empty());
+}
+
+#[test]
+fn configure_is_at_the_end_of_every_menu_but_its_own_screen_s() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    key(&mut app, KeyCode::Char(' '));
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels[labels.len() - 3..], ["Configure…", "", "Quit"]);
+    choose(&mut app, "Configure…");
+    assert_eq!(app.screen, Screen::Configure);
+    key(&mut app, KeyCode::Char(' '));
+    assert!(!items(&app).iter().any(|(l, _)| l == "Configure…"), "{:?}", items(&app));
+    key(&mut app, KeyCode::Esc);
+    // The button's menu there: Configure… grayed.
+    draw(&mut app);
+    app.click(3, 0, false);
+    assert_eq!(items(&app), [("Configure…".to_string(), false)]);
+    // ? says what the screen is, in sentences.
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Char('?'));
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines[0].starts_with("This screen shows every setting of stacked, a row each"), "{lines:?}");
 }

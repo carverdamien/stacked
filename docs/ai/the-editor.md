@@ -309,8 +309,53 @@ the comments on the stack). Scrolled past, a patch's title stays on the
 middle's first line, the rest under it, in every view of the code; a click
 on it goes back to it. The right pane lists the comments the middle
 shows, under a header of its own; with none, it is not there. The top bar
-names the file and the stack, and on its right says how far the stack's
-review is (Reading, below, says how).
+starts with a button, `< stacked >`, then names the file and the stack,
+and on its right says how far the stack's review is (Reading, below, says
+how). In stacked web and StackED, the button is underlined while the mouse
+is over it, as a line the mouse marks is, and a click on it, with either
+button, opens its menu next to it, titled `stacked`: `Configure…`, grayed on
+the Configure screen itself. The terminal has no mouse: there, and from the
+keyboard everywhere, `Configure…` is at the end of every menu Space opens,
+before Quit (no key of its own).
+
+The Configure screen shows every setting there is, a row each, in the order
+`stacked config` prints them, the colours' and the keys' last. On top, what
+it is, then `Global: PATH, the settings' file, which every checkout reads`
+(found as `stacked config` finds it), `Local: PATH, this checkout's own,
+read over the global file` (or `Local: none, as …`, outside a checkout or
+with a local file git tracks), and a line `Wrong: …` for each thing wrong
+with either file. Then the columns: the setting's name; what the global file
+gives it; what the local file gives it; what is in effect here, the local
+file's over the global file's, else the default; and a test button. A file's
+cell shows the value as the file writes it (`"hx"`, `5`, `["-v"]`), or `not
+set`, dim; a setting the file is never read for says so plainly, dim: the
+local file's column of stacked web's settings, `not read: global only`, and
+the global file's of the linter's, `not read: local only`. A secret, as
+`reviews.token`, is never shown, in any column: only `set, not shown`, and
+typed again, each character is drawn as a dot. ↑↓ (pgup pgdn home end) go
+from row to row, ← → from the global file to the local file and to a row's
+test button; Enter or Space opens the menu of the cell the cursor is in,
+titled `web.bell in the global file`, which a click on the picked cell
+opens too: a setting of a few values has `Set it to` and its values as
+radio buttons (a dropdown drawn as one, `Value [interdiff]`, for more than
+three), on the one the file gives, else the one in effect, ← → to pick and
+Enter to write it; another has `Type its value…`, a line to type it in, from
+what the file gives, else what is in effect (a list as the file writes it,
+`["one", "two"]`), what it writes said as it is typed, or why it is refused;
+and every one `Take it out of this file`, grayed when the file does not set
+it. Delete takes it out too. On a cell never read, the menu grays all and
+says why. Each write goes through `config::set`, `unset`, `set_local` and
+`unset_local`, refused in `stacked config`'s words (`web.bell is a number
+from 0 to 100, the bell's loudness in percent, not "101"`), the bottom line
+saying `web.bell written in PATH`, or `taken out of PATH`, and, written in
+the global file while the local file sets it too, that the local file is the
+one used in this checkout. The screen reads both files again after each
+write. stacked web's notifications and bell follow at once; the agent's
+settings count from its next ask, as ever; the others from the next time
+stacked opens. The rows of `web.notifications` and `web.bell` have `< Test
+>` (In a browser, above, says what each does, and when it is grayed and
+why). Esc goes back to the screen it was opened from; `?` says what the cell
+the cursor is in holds and does, in sentences.
 
 The place the cursor is in, while it holds more than it shows (lines above
 the first it shows, or below the last), has a scroll bar on its right
@@ -652,7 +697,8 @@ the help then names those:
   works on it, open what it is writing; in the comments pane, go to the
   comment. Elsewhere it is the menu.
 - Space is the menu: all that can be done where the cursor is, then undo,
-  redo, `Runs…` and quit, which every menu ends with. The stack's items
+  redo, `Runs…`, `Configure…` (but on the Configure screen) and quit,
+  which every menu ends with. The stack's items
   (comment on it, ask about all, `Filter comments…`, the stack as a list,
   the tree, the history, Phabricator, `Move HEAD…`, switch, delete) are on
   the left header only, but `Filter comments…`, which a patch's menu has
@@ -680,7 +726,8 @@ the help then names those:
 - `?` says what can be done where the cursor is, as `Press Enter to create a
   comment on this line.`, and where the arrows go. The next key closes it
   and does what it does, so the key it names can be pressed straight away.
-  With no stack, it says nothing: the menu has nothing but Quit.
+  With no stack, it says nothing: the menu has nothing but the ways to make
+  one, `Configure…` and Quit.
 - Esc goes back: out of a menu, a list, a stream. In the panes, it goes to
   the banner first, when there is one (while a comment is open, or work
   waits), from wherever the cursor is; Esc there comes back where it was.

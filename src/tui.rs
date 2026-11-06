@@ -58,6 +58,8 @@ pub mod bug_dialog;
 pub use bug_dialog::BugDialog;
 mod change;
 mod compared;
+pub mod configure;
+pub use configure::{Column, Configuring, Host, Tested};
 pub mod finding;
 pub use finding::Find;
 pub mod head_why;
@@ -759,6 +761,13 @@ pub enum Spot {
     /// Open the form again or Cancel, which a click presses.
     BugField,
     BugButton(usize),
+    /// The button `< stacked >` at the top left of the screen, whose menu a
+    /// click opens: `Configure…`.
+    Stacked,
+    /// Row `i` of the Configure screen, in column `0`, a file's or the test
+    /// button's, which a click there picks; its name or what is in effect,
+    /// None, which picks the row alone.
+    Setting(usize, Option<Column>),
 }
 
 impl Spot {
@@ -771,11 +780,22 @@ impl Spot {
     /// own, the tree's, the stacks', the runs', the versions' and
     /// History…'s, a record's comments with it; the review's list, what the
     /// search found, and the list of the view of why Move HEAD does not move
-    /// HEAD. Another list goes so by its spot here.
+    /// HEAD. Another list goes so by its spot here. And the button `<
+    /// stacked >`, underlined while the mouse is over it, which a click
+    /// presses.
     fn marked(&self) -> bool {
         matches!(
             self,
-            Spot::Patch(_) | Spot::File(_) | Spot::HeadRow | Spot::NotesHead | Spot::Note(_) | Spot::Pick(_) | Spot::ReviewLine(_) | Spot::Found(_) | Spot::WhyLine(_)
+            Spot::Patch(_)
+                | Spot::File(_)
+                | Spot::HeadRow
+                | Spot::NotesHead
+                | Spot::Note(_)
+                | Spot::Pick(_)
+                | Spot::ReviewLine(_)
+                | Spot::Found(_)
+                | Spot::WhyLine(_)
+                | Spot::Stacked
         )
     }
 }
@@ -936,6 +956,9 @@ pub enum Screen {
     /// Why Move HEAD does not move HEAD from where it is, and what you can
     /// do in your checkout so that it can: only to read.
     HeadWhy,
+    /// Every setting, what the global file and the local file give it, and
+    /// what is in effect: each to change (`configure`).
+    Configure,
 }
 
 /// The item of the menus that picks which comments both panes show, as
@@ -1145,12 +1168,16 @@ pub enum Asking {
     /// A revision of Phabricator, to import with those it stacks on.
     #[cfg(feature = "moz-phab")]
     Revision,
+    /// The value of a setting, in a file, on the Configure screen: which,
+    /// its screen says (`Configuring::typing`).
+    Setting,
 }
 
 impl Asking {
     /// What its box says on its top: what to type.
     fn title(self) -> &'static str {
         match self {
+            Asking::Setting => "the value of a setting",
             Asking::Range => "a range of the workspace, to import: main..HEAD, or main for main..HEAD",
             Asking::ImportName => "the name of the stack it makes",
             Asking::AgentName => "the name of the stack the agent makes",
@@ -1167,6 +1194,7 @@ impl Asking {
             Asking::AgentName => "make it, empty, then say what it should hold",
             #[cfg(feature = "moz-phab")]
             Asking::Revision => "pull it, with the revisions it stacks on and those stacked on it",
+            Asking::Setting => "write it in the file",
         }
     }
 }
@@ -1696,6 +1724,17 @@ pub enum Action {
     /// What was changed of a comment written again thrown away.
     ThrowChanges,
     KeepWriting,
+    /// The Configure screen opened: every setting, to change.
+    Configure,
+    /// On the Configure screen: setting `0` written in the file of column
+    /// `1`, set to `2`; its value typed there; taken out of it.
+    SetSetting(String, Column, String),
+    EditSetting(String, Column),
+    UnsetSetting(String, Column),
+    /// On the Configure screen: a test notice sent to stacked web's pages;
+    /// their bell rung once.
+    TestNotice,
+    TestBell,
     Quit,
 }
 
@@ -2009,6 +2048,14 @@ fn about(action: &Action) -> String {
         Action::ThrowAway => "throw what you wrote away".into(),
         Action::ThrowChanges => "throw your changes away: the comment stays as it was".into(),
         Action::KeepWriting => "go back to writing".into(),
+        Action::Configure => {
+            "open the Configure screen: every setting, what the global file and this checkout's local file give it, and what is in effect, each to change there".into()
+        }
+        Action::SetSetting(key, column, value) => format!("write {key} = {value} in {}", column.file()),
+        Action::EditSetting(key, column) => format!("type the value of {key}, to write it in {}", column.file()),
+        Action::UnsetSetting(key, column) => format!("take {key} out of {}: what is in effect is then the other file's, else the default", column.file()),
+        Action::TestNotice => "send stacked web's page a test notice, shown as the system's banner even while you look at the page".into(),
+        Action::TestBell => "have stacked web's page ring its bell once, at the level in effect, even while you look at the page".into(),
         Action::Quit => "quit: the agent's asks carry on".into(),
     }
 }
@@ -2334,6 +2381,14 @@ pub struct App {
     pub submitting: Option<Box<Submitting>>,
     /// The view of why Move HEAD does not move HEAD, open.
     pub head_why: Option<Box<HeadWhy>>,
+    /// The Configure screen, open; the global file it reads and writes,
+    /// the settings' file as `stacked config` finds it (`config::path`);
+    /// where the editor runs, for its test buttons; and those pressed, for
+    /// `stacked web` to send its pages.
+    pub configuring: Option<Box<Configuring>>,
+    pub config_file: PathBuf,
+    pub host: Host,
+    tested: Vec<Tested>,
     /// The search open, and the searches made before, newest first: kept
     /// for as long as the editor runs.
     pub searching: Option<Searching>,
@@ -3011,6 +3066,10 @@ impl App {
             #[cfg(feature = "moz-phab")]
             submitting: None,
             head_why: None,
+            configuring: None,
+            config_file: crate::config::path(),
+            host: Host::Terminal,
+            tested: Vec::new(),
             searching: None,
             searches: Vec::new(),
             finds: Vec::new(),
@@ -4434,7 +4493,9 @@ impl App {
             Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
             Spot::Found(i) => self.searching.as_ref().is_some_and(|s| s.sel == i),
             Spot::WhyLine(i) => self.on_why_line(i),
-            Spot::Item(_)
+            Spot::Setting(i, column) => self.on_setting(i, column),
+            Spot::Stacked
+            | Spot::Item(_)
             | Spot::Choice(..)
             | Spot::Box
             | Spot::Editor
@@ -4664,6 +4725,14 @@ impl App {
             }
             // Lines being named, or a line typed, in a box or in the bottom
             // bar (the search of the middle): a click out of it goes back.
+            // But a test button of the Configure screen, pressed, the line
+            // typed staying: the bell's rings at the level being typed.
+            Mode::Prompt(_) if matches!(spot, Some(Spot::Setting(_, Some(Column::Test)))) => {
+                if let Some(Spot::Setting(i, _)) = spot {
+                    self.click_test(i);
+                }
+                return Effect::None;
+            }
             Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) => {
                 if !matches!(spot, Some(Spot::Box)) {
                     return press(self, KeyCode::Esc);
@@ -4731,6 +4800,16 @@ impl App {
             return Effect::None;
         }
         let Some(spot) = spot else { return Effect::None };
+        // The button `< stacked >`, pressed by either button: its menu, next
+        // to the click; a test button of the Configure screen, pressed.
+        if spot == Spot::Stacked {
+            self.mode = Mode::Menu(self.stacked_menu());
+            return Effect::None;
+        }
+        if let Spot::Setting(i, Some(Column::Test)) = spot {
+            self.click_test(i);
+            return Effect::None;
+        }
         let was = self.on(spot);
         if !self.pick_spot(spot) {
             return Effect::None;
@@ -4964,7 +5043,9 @@ impl App {
                 self.hist_focus = HistFocus::Diff;
                 self.hist_cursor = i;
             }
-            Spot::Item(_)
+            Spot::Setting(i, column) => self.pick_setting(i, column),
+            Spot::Stacked
+            | Spot::Item(_)
             | Spot::Choice(..)
             | Spot::Box
             | Spot::Editor
@@ -5473,6 +5554,7 @@ impl App {
                 Effect::None
             }
             Screen::HeadWhy => self.head_why_key(k),
+            Screen::Configure => self.configure_key(k),
             _ => {
                 self.list_key(k);
                 Effect::None
@@ -6546,6 +6628,7 @@ impl App {
                 Focus::Diff | Focus::Notes => self.comment_deleting(&self.picked()?),
             },
             Screen::Review => self.review_deleting(),
+            Screen::Configure => self.setting_deleting(),
             Screen::Runs => {
                 let r = *self.runs_newest().get(self.pick)?;
                 // A reconcile with HEAD waiting its turn: dropped; and a pull
@@ -6637,6 +6720,7 @@ impl App {
             Action::CloseAsking(..) => "close it with the review",
             Action::AskTakeYoursBack => "take it back",
             Action::AskRejectWork(_) => "reject all remaining",
+            Action::UnsetSetting(..) => "take it out of the file",
             _ => return None,
         };
         Some(format!("delete: {said}"))
@@ -6687,6 +6771,10 @@ impl App {
                                 "{keys} to pick the model the agent is asked with, by its full id as claude's --model takes it: {}. The model picked is this item's alone, and kept for no other ask.",
                                 Model::listed()
                             ),
+                            configure::SETTING => {
+                                let each: Vec<&str> = c.list.iter().map(|ch| ch.shown.as_str()).collect();
+                                format!("{keys} to pick its value: {}. Enter writes the one picked in the file; nothing is written before.", each.join(", "))
+                            }
                             _ => {
                                 let each: Vec<String> = c.list.iter().map(|ch| format!("{}, {}", ch.shown, ch.said)).collect();
                                 format!("{keys} to pick {}: {}. What is picked is kept for this stack.", c.what, each.join("; "))
@@ -7038,6 +7126,7 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Screen::Submit => out.extend(self.submit_help()),
             Screen::HeadWhy => out.extend(self.head_why_help()),
+            Screen::Configure => out.extend(self.configure_help()),
         }
         // On a line of a commit message: the key that opens its links, said
         // after Enter in the middle, and here elsewhere.
@@ -7793,7 +7882,7 @@ impl App {
         // Nothing is edited from History…, nor from a review, nor from what
         // a submit sends, nor from why Move HEAD does not move HEAD, only
         // looked at.
-        let edits = !matches!(self.screen, Screen::History | Screen::Review | Screen::HeadWhy) && !self.on_submit();
+        let edits = !matches!(self.screen, Screen::History | Screen::Review | Screen::HeadWhy | Screen::Configure) && !self.on_submit();
         if edits && (self.current().is_some() || self.db.names().contains(&self.stack.as_str())) {
             if let Some((_, op)) = self.db.undo_target(&self.stack) {
                 items.push(Item::new(format!("Undo: {op}"), Action::Undo).when(h));
@@ -7811,6 +7900,11 @@ impl App {
                 n => format!("Runs… (agent ●{n})"),
             };
             items.push(Item::new(label, Action::Runs));
+        }
+        // The settings, everywhere, as the button `< stacked >` has them;
+        // but on their own screen.
+        if self.screen != Screen::Configure {
+            items.push(Item::new("Configure…", Action::Configure));
         }
         items.push(Item::line());
         items.push(Item::new("Quit", Action::Quit));
@@ -7895,7 +7989,8 @@ impl App {
         match of {
             "asking" => self.mark_all_asking(pick == "close"),
             "head" => self.head_stays(pick == "stay"),
-            EFFORT | MODEL => {}
+            // A setting's value, written once Enter does the item.
+            EFFORT | MODEL | configure::SETTING => {}
             _ => self.pick_choice(of, pick),
         }
     }
@@ -7934,7 +8029,14 @@ impl App {
         let mut tool_why: Option<String> = None;
         // Why Reconcile with HEAD is grayed, if it is.
         let mut reconcile_why: Option<String> = None;
+        // Why a setting's item of the Configure screen is grayed, if one is.
+        let mut setting_why: Option<String> = None;
         match (self.screen, self.focus) {
+            // The cell the cursor is on: what sets it, and takes it out of its
+            // file; or its test.
+            (Screen::Configure, _) => {
+                (title, setting_why) = self.setting_items(&mut items);
+            }
             // What landed, to review; the comments open, to go to.
             (Screen::Main, _) if self.on_banner => {
                 title = "what waits on you".into();
@@ -8141,6 +8243,7 @@ impl App {
         why.extend(lint_why);
         why.extend(tool_why);
         why.extend(reconcile_why);
+        why.extend(setting_why);
         // An edit by hand in this checkout grayed: why.
         if items.iter().any(|i| i.enabled && i.choices.iter().any(|c| c.of == "edit" && c.list.iter().any(|ch| !ch.enabled))) {
             why.extend(self.here_edits_why().map(|w| format!("Editing in this checkout (pwd) is grayed: {w}.")));
@@ -9135,6 +9238,12 @@ impl App {
                     self.mode = Mode::Edit(Box::new(e));
                 }
             }
+            Action::Configure => self.open_configure(),
+            Action::SetSetting(key, column, value) => self.write_setting(&key, column, Some(vec![value])),
+            Action::EditSetting(key, column) => self.type_setting(&key, column),
+            Action::UnsetSetting(key, column) => self.write_setting(&key, column, None),
+            Action::TestNotice => self.press_test(false),
+            Action::TestBell => self.press_test(true),
             Action::Quit => return Effect::Quit,
         }
         Effect::None
@@ -9713,6 +9822,7 @@ impl App {
                 },
                 None => ("give a revision: D123, or its link".into(), false),
             },
+            Asking::Setting => self.setting_said(text),
         }
     }
 
@@ -9726,10 +9836,14 @@ impl App {
                 Asking::AgentName => self.mode = Mode::Normal,
                 #[cfg(feature = "moz-phab")]
                 Asking::Revision => self.mode = Mode::Normal,
+                Asking::Setting => self.setting_untyped(),
             },
+            // A setting's value, as it is typed: written in its file.
+            KeyCode::Enter if p.ok && p.asking == Asking::Setting => self.setting_typed(&p.ed.text()),
             KeyCode::Enter if p.ok => {
                 let text = p.ed.text().trim().to_string();
                 match p.asking {
+                    Asking::Setting => {}
                     Asking::Range => return self.perform(Action::ImportRange(text)),
                     Asking::ImportName => {
                         if let Some(planned) = &mut self.planned {
@@ -9770,7 +9884,21 @@ impl App {
             true => format!("{} · enter: {} · esc: back", p.said, p.asking.does()),
             false => format!("{} · esc: back", p.said),
         };
-        Some(p.ed.draw(buf, area, x, y, bw, 3, p.asking.title(), &foot))
+        let title = match p.asking {
+            Asking::Setting => self.setting_title(),
+            a => a.title().to_string(),
+        };
+        let cursor = p.ed.draw(buf, area, x, y, bw, 3, &title, &foot);
+        // A secret's: each character typed drawn as a dot, never as it is.
+        if p.asking == Asking::Setting && self.typing_secret() {
+            for col in x + 1..(x + bw).saturating_sub(1) {
+                let (cx, cy) = (area.x + col as u16, area.y + y as u16 + 1);
+                if buf.area.contains(ratatui::layout::Position::new(cx, cy)) && buf[(cx, cy)].symbol() != " " {
+                    buf[(cx, cy)].set_symbol("•");
+                }
+            }
+        }
+        Some(cursor)
     }
 
     /// The lines, or the web link, being named, in a box over the screen;
@@ -11104,6 +11232,7 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Screen::Submit => self.draw_submit(buf, body),
             Screen::HeadWhy => self.draw_head_why(buf, body),
+            Screen::Configure => self.draw_configure(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
                 let (left, (right, _)) = self.columns(buf, body, (body.width as usize / 4).clamp(20, 40), 0);
                 let left = left.unwrap();
@@ -11416,7 +11545,7 @@ impl App {
     fn draw_bar(&self, buf: &mut Buffer, area: Rect) {
         let w = area.width as usize;
         let file = self.path.file_name().unwrap_or_default().to_string_lossy();
-        let mut text = format!(" stacked · {file}");
+        let mut text = format!(" {} · {file}", configure::STACKED);
         match self.db.head(&self.stack) {
             Some((rev, s)) => {
                 let n = s.patches.len();
@@ -11492,6 +11621,13 @@ impl App {
             st = color::warn();
         }
         put(buf, area, 0, 0, w, &fit(&text, w), st);
+        // The button `< stacked >`, a click on it its menu: underlined while
+        // the mouse is over it, as a line the mouse marks is.
+        let button = configure::STACKED.chars().count();
+        if self.hovered == Some(Spot::Stacked) {
+            put(buf, area, 1, 0, button, configure::STACKED, st.add_modifier(Modifier::UNDERLINED));
+        }
+        spot_in(&self.spots, area, (1, 0, button, 1), Spot::Stacked);
         // On the right, how far the review of the stack is: as much of it
         // as the rest leaves room for.
         let used = text.chars().count();
@@ -11566,6 +11702,7 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Mode::Normal if self.screen == Screen::Submit => self.submit_hint(),
             Mode::Normal if self.screen == Screen::HeadWhy => self.head_why_hint(),
+            Mode::Normal if self.screen == Screen::Configure => self.configure_hint(),
             // On the Phabricator line, Space shows what differs, on a screen
             // of its own, reading or not; Enter opens the menu, as Space
             // does not.

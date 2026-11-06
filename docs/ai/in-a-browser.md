@@ -363,18 +363,22 @@ alone. A browser that draws no icon a page changes, as Safari may, shows
 the plain icon; nothing else says the count. There is no setting for it.
 
 With what the notices tell, while the page is not what you look at, as for
-the banners, the page rings a bell: one soft strike of a small bell, about
+the banners, the page rings a bell, once `web.bell` (Settings, below) gives
+it a level above 0: unless set, it is 0, and the bell never rings. At 100,
+the bell is one soft strike of a small bell, about
 a second long, which the page makes itself with the browser's Web Audio
 API, from no sound file. Its partials are a thin hemispherical shell's, as
 a desk bell's are: A5, 880 Hz, and 2.828 and 5.423 times it (2489 and 4772
 Hz), at 0.15, 0.045 and 0.015 of full scale, each struck in 4 ms, then
 dying away by 60 dB in 1.2, 0.6 and 0.3 seconds, the higher the sooner; at
-its loudest, −14 dBFS. What the editor learned at once rings it once,
+its loudest, −14 dBFS. At a lower level each peak is scaled by the square of
+the level's fraction, as loudness is heard: 50 strikes at a quarter of
+those peaks, 12 dB under them, about half as loud to the ear; 10 at a
+hundredth, faint. What the editor learned at once rings it once,
 however many notices it makes; and a bell still sounding, for 1.2 seconds,
 is not struck again. It rings whether the page shows the banners or not:
 refused by the browser, in a browser without notifications, or with
-`web.notifications = false`. `web.bell = false` (Settings, below) silences
-it; with both false, the editor keeps no notice. The notice of a tab come
+`web.notifications = false`. `web.bell = 0` silences it. The notice of a tab come
 back, `stacked web is running again: click to switch to this tab.`
 (above), rings nothing, as it tells nothing the editor learned. A browser
 lets a page make sound only once a click or a key reached it: the page
@@ -391,14 +395,36 @@ as one may until the page is shown again, is not struck once it comes more
 than a second late, nor once the page is looked at. Nothing in StackED or
 in the terminal rings.
 
+The Configure screen (The editor) has a test button, `< Test >`, on the
+rows of `web.notifications` and `web.bell`. In the page, the first sends
+the pages a test notice, `This is a test notice from stacked.`, titled
+`stacked`, which each page shows as the system's banner even while you look
+at it, counted on no icon; if the browser was never asked whether the page
+may show banners, it is asked then, and the banner shown once you allow
+it; refused, nothing shows. The second has the pages ring the bell once, at
+the level in effect, or at the one being typed for `web.bell` when it is
+clicked while that line is open, even while you look at the page. Each is
+grayed, and Enter or a click on it says why on the bottom line: in the
+terminal and in StackED, which show no notices and ring no bell (`No page
+shows the test notice here: this is stacked in a terminal, …`, `StackED
+shows no notices: they are stacked web's, shown in its page. …`); with no
+page open (`No stacked web page is open, so there is nothing to show the
+notice in.`); and, for the bell, at the level 0, which never rings (`The
+bell's level is 0, so it never rings: set web.bell above 0 first.`). The
+server reads its settings as they are each time it tells the pages
+something, so that a change written on the Configure screen counts at once.
+
 The server runs the editor as the terminal does, drawn into a buffer of the
 page's size, and sends the page the rows that changed (server-sent events),
 after the notices of what it learned meanwhile (`tui/notices.rs`), then,
-once for them all, the bell (`b`, a line of its own), so that a page sent
-the screen that says what landed was sent its notice and told to ring: the
-notices' lines unless `web.notifications` is false, the bell unless
-`web.bell` is false, and the notices kept by the editor while either is
-true. The server decides, and the page does as told. A page
+once for them all, the bell (`b LEVEL`, a line of its own, its level from
+1 to 100), so that a page sent the screen that says what landed was sent
+its notice and told to ring: the notices' lines unless `web.notifications`
+is false, the bell unless `web.bell` is 0, the settings read as they are
+each time. A test button's press is a notice's line or the bell's with
+`test` last (`n RUN US TITLE US BODY US test`, `b LEVEL test`), which the
+page shows or rings even while it is looked at. The server decides, and
+the page does as told. A page
 that comes is sent none of what the editor learns as it comes, the
 database read first, its notices sent to the pages there before. While
 `$EDITOR` runs in the page, the editor's thread runs the editor's

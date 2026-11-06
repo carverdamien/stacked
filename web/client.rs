@@ -9,10 +9,13 @@
 //! 0 to 15, or #rrggbb; MODS ratatui's modifiers, and CURSOR where the
 //! cursor is); `bye`, the editor gone; `n RUN US TITLE US BODY`, a notice of
 //! what the editor learned of run RUN, for the page to show as the system's
-//! banner while it is not what you look at; `b`, the bell, once for what the
-//! editor learned at once, after its notices, or alone when they are not
-//! sent, for the page to ring while it is not what you look at, whether it
-//! shows the banners or not; `e PROGRAM`, `$EDITOR` running PROGRAM where
+//! banner while it is not what you look at; `b LEVEL`, the bell, at LEVEL,
+//! from 1 to 100, in percent of its loudest, once for what the editor
+//! learned at once, after its notices, or alone when they are not sent, for
+//! the page to ring while it is not what you look at, whether it shows the
+//! banners or not; either with `test` last (after a US for the notice),
+//! pressed on the Configure screen, shown or rung even while the page is
+//! looked at; `e PROGRAM`, `$EDITOR` running PROGRAM where
 //! `stacked web` was started, or in a window of its own, for the page to
 //! say over its screen until the next screen comes; `t`, after a screen's
 //! size, the screen that comes the editor's own, run in the page in a
@@ -76,8 +79,9 @@ const PIXELS: u32 = 0;
 /// `row Y`, and on the next line the row's HTML; `bye`; `notice`, and on
 /// the next lines what `notice` makes of it; `editing`, and on the next
 /// lines what to say over the screen (`editing`); `version` and what it
-/// keeps of the stacked serving it (`version`); `bell`, for `b` alone;
-/// `terminal`, for `t` alone; else nothing.
+/// keeps of the stacked serving it (`version`); `bell LEVEL`, for `b
+/// LEVEL`, and `bell LEVEL test` for a test (`bell`); `terminal`, for `t`
+/// alone; else nothing.
 pub fn screen(msg: &str) -> String {
     if let Some(n) = msg.strip_prefix("n ") {
         return notice(n);
@@ -88,13 +92,32 @@ pub fn screen(msg: &str) -> String {
     if let Some(v) = msg.strip_prefix("v ") {
         return version(v);
     }
+    if let Some(b) = msg.strip_prefix("b ") {
+        return bell(b);
+    }
     let mut parts = msg.splitn(3, ' ');
     match (parts.next(), parts.next(), parts.next()) {
         (Some("s"), Some(cols), Some(rows)) => format!("size {cols} {rows}"),
         (Some("r"), Some(y), runs) => format!("row {y}\n{}", row_html(runs.unwrap_or(""))),
         (Some("bye"), ..) => "bye".into(),
-        (Some("b"), None, _) => "bell".into(),
         (Some("t"), None, _) => "terminal".into(),
+        _ => String::new(),
+    }
+}
+
+/// The bell of the server's, `LEVEL` or `LEVEL test`: `bell LEVEL`, or
+/// `bell LEVEL test`, for the page to ring at that level, from 1 to 100.
+/// Nothing for a level that is not one, as 0, which never rings, or for
+/// anything more.
+fn bell(b: &str) -> String {
+    let fields: Vec<&str> = b.split(' ').collect();
+    let (level, test) = match fields[..] {
+        [level] => (level, false),
+        [level, "test"] => (level, true),
+        _ => return String::new(),
+    };
+    match level.parse::<u8>() {
+        Ok(n @ 1..=100) if level.bytes().all(|c| c.is_ascii_digit()) => format!("bell {n}{}", if test { " test" } else { "" }),
         _ => String::new(),
     }
 }
@@ -103,16 +126,23 @@ pub fn screen(msg: &str) -> String {
 /// shows as the system's banner: its tag, which a banner of the same run
 /// takes the place of, as when two pages show it; its title; its body; and
 /// the line for the server once it is clicked, `n RUN`, each on a line of
-/// its own. Nothing for one short of a field, or whose run is empty or
-/// holds a space, which the line for the server could not say.
+/// its own; then `test`, for a test's (`… US test`), which the page shows
+/// even while it is looked at. Nothing for one short of a field, or with
+/// one more that is not `test`, or whose run is empty or holds a space,
+/// which the line for the server could not say.
 fn notice(n: &str) -> String {
     let mut fields = n.split('\u{1f}');
     let (Some(run), Some(title), Some(body)) = (fields.next(), fields.next(), fields.next()) else { return String::new() };
+    let test = match (fields.next(), fields.next()) {
+        (None, _) => false,
+        (Some("test"), None) => true,
+        _ => return String::new(),
+    };
     if run.is_empty() || run.contains(char::is_whitespace) {
         return String::new();
     }
     let line = |s: &str| s.replace(['\n', '\r'], " ");
-    format!("notice\n{run}\n{}\n{}\nn {run}", line(title), line(body))
+    format!("notice\n{run}\n{}\n{}\nn {run}{}", line(title), line(body), if test { "\ntest" } else { "" })
 }
 
 /// What the page keeps of the stacked serving it, `BUILD LAUNCH KEPT`:
@@ -610,18 +640,27 @@ mod tests {
         assert_eq!(screen("n run-1\u{1f}stacked: s"), "");
         assert_eq!(screen("n \u{1f}stacked: s\u{1f}Done."), "");
         assert_eq!(screen("n a run\u{1f}stacked: s\u{1f}Done."), "");
+        // A test's: `test` after the line its click sends; any other field
+        // more, nothing.
+        let n = "n stacked-test\u{1f}stacked\u{1f}This is a test notice from stacked.\u{1f}test";
+        assert_eq!(screen(n), "notice\nstacked-test\nstacked\nThis is a test notice from stacked.\nn stacked-test\ntest");
+        assert_eq!(screen("n r\u{1f}t\u{1f}b\u{1f}tested"), "");
+        assert_eq!(screen("n r\u{1f}t\u{1f}b\u{1f}test\u{1f}test"), "");
     }
 
     #[test]
-    fn the_bell_is_a_line_of_its_own_for_the_page_to_ring() {
-        // `b` alone, after notices or with none: the page rings its bell.
-        assert_eq!(screen("b"), "bell");
-        // The editor gone is still that; `b` with more, or another word,
-        // nothing.
+    fn the_bell_is_a_line_of_its_own_with_its_level_for_the_page_to_ring() {
+        // `b LEVEL`, after notices or with none: the page rings its bell at
+        // that level; a test's, even while it is looked at.
+        assert_eq!(screen("b 100"), "bell 100");
+        assert_eq!(screen("b 1"), "bell 1");
+        assert_eq!(screen("b 35 test"), "bell 35 test");
+        // The editor gone is still that; `b` alone, at 0, which never
+        // rings, past 100, or with anything else, nothing.
         assert_eq!(screen("bye"), "bye");
-        assert_eq!(screen("b 1"), "");
-        assert_eq!(screen("b "), "");
-        assert_eq!(screen("bell"), "");
+        for nothing in ["b", "b ", "b 0", "b 101", "b +5", "b loud", "b 5 tested", "b 5 test more", "bell"] {
+            assert_eq!(screen(nothing), "", "{nothing}");
+        }
     }
 
     #[test]

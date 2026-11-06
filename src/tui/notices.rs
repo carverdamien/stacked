@@ -12,9 +12,9 @@
 //! landed since: what was there before is never told. Its title names its
 //! stack, and its body says what it is in a sentence, in the words of the
 //! banner and of the bottom line. They are kept only once `stacked web`
-//! asks for them (`keep_notices`), as `web.notifications` and `web.bell`
-//! say, while either is true; a click on one in the page goes to what it
-//! tells (`noticed`).
+//! asks for them (`keep_notices`), as it does whatever `web.notifications`
+//! and `web.bell` say, sending them or their bell as those say each time; a
+//! click on one in the page goes to what it tells (`noticed`).
 
 use super::*;
 use crate::db::Run;

@@ -134,6 +134,7 @@ impl App {
             Screen::Submit => Wheeled::Submit,
             Screen::HeadWhy if self.head_why.as_ref().is_some_and(|v| v.in_main) => Wheeled::WhyMain,
             Screen::HeadWhy => Wheeled::WhyList,
+            Screen::Configure => Wheeled::Settings,
         })
     }
 

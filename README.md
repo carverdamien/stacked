@@ -342,9 +342,12 @@ keys.
   when work of any stack lands for your review, a run fails or a try push
   is done, if you let the browser show them when it asks, once
   (`web.notifications = false` turns them off), and rings a soft bell,
-  once you have clicked or typed in the page (`web.bell = false` turns it
-  off). The tab's icon counts those notices in a red badge until you look
-  at the page again.
+  once you have clicked or typed in the page, if you give it a level:
+  `web.bell` is its loudness from 0 to 100, and 0, silent, unless you set
+  it (`stacked config web.bell 50`). The tab's icon counts those notices in
+  a red badge until you look at the page again. The Configure screen has a
+  `< Test >` button for each, which shows a test notice, or rings the bell
+  once, even while you look at the page.
   A terminal `$EDITOR` opens in the page itself, in a terminal of `stacked
   web`'s own that gets every key you type there but those with ⌘
   (`web.editor = "terminal"` opens it in the terminal where you started
@@ -516,6 +519,13 @@ stacked config editor               # read one
 stacked config --unset editor       # take it out
 stacked config --local editor vim   # write one in this checkout's own settings
 ```
+
+In the editor, the button `< stacked >` at the top left (a click in
+stacked web and StackED), or `Configure…` at the end of every menu, opens
+the Configure screen: every setting, a row each, with what the global file
+and this checkout's local file give it and what is in effect. Pick a row
+and a file, and Enter changes it there, as `stacked config` would, or takes
+it out of the file; Delete takes it out too. A token is never shown.
 
 The main ones:
 

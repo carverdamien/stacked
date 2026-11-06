@@ -649,6 +649,27 @@ fn move_head_says_why_it_does_not_move_head_in_the_window_too() {
 }
 
 #[test]
+fn the_stacked_button_opens_configure_whose_test_buttons_say_stacked_shows_no_notices_in_the_window_too() {
+    let (tmp, db) = setup();
+    let s = Session::open(&db, &tmp.path().join("src")).unwrap();
+    s.send(Input::Size(200, 120));
+    screen(&s, "the patches", |b| text(b).contains("Bug 2 - add b") && row(b, 0).starts_with(" < stacked > · "));
+    // A click on the button: its menu, Configure… in it; clicked, the
+    // Configure screen.
+    s.send(Input::Click { x: 3, y: 0, right: false });
+    let menu = screen(&s, "the button's menu", |b| find(b, "Configure…").is_some());
+    let (x, y) = find(&menu, "Configure…").unwrap();
+    s.send(Input::Click { x, y, right: false });
+    let buf = screen(&s, "the Configure screen", |b| find(b, " web.notifications ").is_some());
+    // The notice's test button, dim: clicked, why said.
+    let (_, y) = find(&buf, " web.notifications ").unwrap();
+    let x = (0..buf.area.width).find(|&x| row(&buf, y)[..].chars().skip(x as usize).collect::<String>().starts_with("< Test >")).unwrap();
+    assert!(buf[(x, y)].modifier.contains(Modifier::DIM), "{}", row(&buf, y));
+    s.send(Input::Click { x: x + 2, y, right: false });
+    screen(&s, "why it is grayed", |b| text(b).contains("StackED shows no notices: they are stacked web's, shown in its page."));
+}
+
+#[test]
 fn the_stack_s_lint_is_offered_on_its_menu_in_the_window_too() {
     let (tmp, db) = setup();
     let src = tmp.path().join("src");

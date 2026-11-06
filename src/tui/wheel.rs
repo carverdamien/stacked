@@ -56,6 +56,8 @@ pub(super) enum Wheeled {
     /// on the right.
     WhyList,
     WhyMain,
+    /// The rows of the Configure screen.
+    Settings,
     Menu,
     /// What `?` says.
     Help,
@@ -83,7 +85,8 @@ impl Wheeled {
             | Wheeled::ReviewList
             | Wheeled::ReviewMain
             | Wheeled::Found
-            | Wheeled::WhyList => Some(self),
+            | Wheeled::WhyList
+            | Wheeled::Settings => Some(self),
             #[cfg(feature = "moz-phab")]
             Wheeled::Submit => Some(self),
             Wheeled::Stream | Wheeled::Text | Wheeled::Transcript | Wheeled::WhyMain | Wheeled::Menu | Wheeled::Help | Wheeled::Preview | Wheeled::Editor => None,

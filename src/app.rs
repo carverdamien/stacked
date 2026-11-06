@@ -323,6 +323,9 @@ fn work(mut app: App, inputs: &Receiver<Input>, outputs: &Sender<Output>, wake: 
     let mut size = None;
     let mut shown: Option<Output> = None;
     let mut launched = Instant::now();
+    // In a window of StackED's, which shows no notices and rings no bell:
+    // the Configure screen's test buttons say so.
+    app.host = crate::tui::Host::Window;
     'run: loop {
         let first = match inputs.recv_timeout(TICK) {
             Ok(i) => Some(i),

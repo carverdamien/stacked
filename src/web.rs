@@ -5,9 +5,12 @@
 //! say otherwise (`notifications`), the notices of what the editor learns
 //! of every stack (`tui::notices`), which the page shows as the system's
 //! banners, and counts on its tab's icon, while it is not what you look
-//! at; and, unless they say
-//! otherwise (`bell`), a line after those learned at once, banners or not,
-//! for the page to ring its bell then. Its half is wasm
+//! at; and, once they give the bell a level above 0 (`bell`), a line after
+//! those learned at once, banners or not, for the page to ring its bell
+//! then, at that level. The settings are read as they are each time, so
+//! that what the Configure screen writes counts at once; its test buttons
+//! send a notice, or the bell, flagged as a test, which the page shows or
+//! rings even while it is looked at (`test_line`). Its half is wasm
 //! (web/client.rs, built by the build script), carried by a little JS
 //! (web/index.html).
 //!
@@ -56,7 +59,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::config::{Port, Web, WebEditor, own_window, program};
 use crate::db::{Error, Result};
 use crate::pty::{Pty, Screen};
-use crate::tui::{App, Effect, Notice};
+use crate::tui::{App, Effect, Host, Notice, Tested};
 
 const PAGE: &str = include_str!("../web/index.html");
 const CLIENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/client.wasm"));
@@ -599,7 +602,8 @@ fn running_again() -> Notice {
     }
 }
 
-/// The editor, as the terminal runs it: what the browsers send done, its
+/// The editor, as the terminal runs it, told it runs in `stacked web` and
+/// how many pages it has (`Host::Web`): what the browsers send done, its
 /// screen drawn after, the rows that changed sent them, after the notices
 /// of what it learned meanwhile and their bell, as the settings say
 /// (`told`); while a terminal `$EDITOR` runs in the page, its screen sent
@@ -614,11 +618,10 @@ fn running_again() -> Notice {
 fn run(path: &Path, rx: Receiver<Input>, output: Sender<Input>, coming: &Arc<Mutex<Coming>>, answering: &Answering) -> Result<()> {
     let mut app = App::new(path)?;
     // What it learns, told the browsers, for their banners, their bell or
-    // both, unless the settings say neither.
-    let web = app.cfg.web.clone();
-    if web.notifications || web.bell {
-        app.keep_notices();
-    }
+    // both, as the settings say each time (`told`): those the Configure
+    // screen writes count at once (`App::configured`).
+    app.keep_notices();
+    app.host = Host::Web { pages: 0 };
     // Opened: on StackED's File → Open Recent too.
     crate::state::opened_in_editor(path);
     app.launch();
@@ -654,6 +657,10 @@ fn run(path: &Path, rx: Receiver<Input>, output: Sender<Input>, coming: &Arc<Mut
         let mut whole = false;
         let mut ran = false;
         for input in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
+            // The settings as they are now, and how many pages the editor
+            // has, for the Configure screen's test buttons.
+            let web = app.cfg.web.clone();
+            app.host = Host::Web { pages: browsers.len() };
             match input {
                 Input::Join(id, cols, rows, again) => {
                     let Some(tx) = came(coming, id) else { continue };
@@ -760,13 +767,16 @@ fn run(path: &Path, rx: Receiver<Input>, output: Sender<Input>, coming: &Arc<Mut
             app.launch();
             launched = Instant::now();
         }
+        app.host = Host::Web { pages: browsers.len() };
         let mut buf = Buffer::empty(Rect::new(0, 0, size.0, size.1));
         let cursor = app.draw(&mut buf);
         let now = rows(&buf, cursor);
         let whole = whole || now.len() != shown.len();
         // The notices first, and their bell: a page sent the screen that
-        // says what landed was sent its notice, and told to ring.
-        let mut sent = told(&app.take_notices(), &web);
+        // says what landed was sent its notice, and told to ring. Then what
+        // the Configure screen's test buttons asked for.
+        let mut sent = told(&app.take_notices(), &app.cfg.web);
+        sent.extend(app.take_tests().iter().map(test_line));
         if whole {
             sent.push(format!("s {} {}", size.0, size.1));
         }
@@ -1024,20 +1034,36 @@ fn notice(n: &Notice) -> String {
     format!("n {}\u{1f}{}\u{1f}{}", plain(&n.run), plain(&n.title), plain(&n.body))
 }
 
-/// The line that tells a browser to ring its bell, as web/client.rs reads
-/// it: `b`, once for the notices learned at once.
-const BELL: &str = "b";
+/// The line that tells a browser to ring its bell at `level`, from 1 to
+/// 100, as web/client.rs reads it: `b LEVEL`, once for the notices learned
+/// at once.
+fn bell(level: u8) -> String {
+    format!("b {level}")
+}
 
 /// What the browsers are told of `learned`, the notices the editor learned
 /// at once, as the settings' `[web]` say (`web`): each notice's line, for
 /// its banner, unless `notifications` is false; then the bell's, once for
-/// them all, unless `bell` is false. Nothing for no notice.
+/// them all, at its level, unless that is 0, which never rings. Nothing
+/// for no notice.
 fn told(learned: &[Notice], web: &Web) -> Vec<String> {
     let mut lines: Vec<String> = if web.notifications { learned.iter().map(notice).collect() } else { Vec::new() };
-    if web.bell && !learned.is_empty() {
-        lines.push(BELL.into());
+    if web.bell > 0 && !learned.is_empty() {
+        lines.push(bell(web.bell));
     }
     lines
+}
+
+/// What the browsers are told for a press of a test button of the
+/// Configure screen, as web/client.rs reads it, the test flag last: the
+/// test notice's line, `n RUN US TITLE US BODY US test`, shown as a banner
+/// even while the page is looked at; or the bell's, `b LEVEL test`, rung
+/// even then.
+fn test_line(t: &Tested) -> String {
+    match t {
+        Tested::Notice(n) => format!("{}\u{1f}test", notice(n)),
+        Tested::Bell(level) => format!("{} test", bell(*level)),
+    }
 }
 
 /// The line that tells a browser `$EDITOR` runs `program`, as web/client.rs
@@ -1560,26 +1586,41 @@ mod tests {
     }
 
     #[test]
-    fn the_notices_learned_at_once_are_told_for_their_banners_then_one_bell_as_the_settings_say() {
+    fn the_notices_learned_at_once_are_told_for_their_banners_then_one_bell_at_its_level_as_the_settings_say() {
         let learned = [
             Notice { run: "run-1".into(), title: "stacked: s".into(), body: "Done.".into() },
             Notice { run: "run-2".into(), title: "stacked: t".into(), body: "Failed.".into() },
         ];
         let web = |notifications, bell| Web { notifications, bell, ..Web::default() };
         let (first, second) = ("n run-1\u{1f}stacked: s\u{1f}Done.", "n run-2\u{1f}stacked: t\u{1f}Failed.");
-        // Each notice's line, for its banner, then the bell, once for both.
-        assert_eq!(told(&learned, &web(true, true)), [first, second, BELL]);
-        // Without the bell, the notices' lines alone; without the banners,
-        // the bell alone; with neither, nothing.
-        assert_eq!(told(&learned, &web(true, false)), [first, second]);
-        assert_eq!(told(&learned, &web(false, true)), [BELL]);
-        assert!(told(&learned, &web(false, false)).is_empty());
+        // Each notice's line, for its banner, then the bell, once for both,
+        // at its level.
+        assert_eq!(told(&learned, &web(true, 100)), [first, second, "b 100"]);
+        assert_eq!(told(&learned, &web(true, 35)), [first, second, "b 35"]);
+        // At 0, as unless set, no bell: the notices' lines alone; without
+        // the banners, the bell alone; with neither, nothing.
+        assert_eq!(told(&learned, &web(true, 0)), [first, second]);
+        assert_eq!(told(&learned, &web(false, 60)), ["b 60"]);
+        assert!(told(&learned, &web(false, 0)).is_empty());
+        assert_eq!(Web::default().bell, 0);
         // Nothing learned: no bell.
-        assert!(told(&[], &web(true, true)).is_empty());
-        // As the client reads them: a banner for each, then the bell.
-        let read: Vec<String> = told(&learned, &web(true, true)).iter().map(|l| client::screen(l)).collect();
+        assert!(told(&[], &web(true, 100)).is_empty());
+        // As the client reads them: a banner for each, then the bell at its
+        // level.
+        let read: Vec<String> = told(&learned, &web(true, 40)).iter().map(|l| client::screen(l)).collect();
         assert!(read[0].starts_with("notice\nrun-1\n") && read[1].starts_with("notice\nrun-2\n"), "{read:?}");
-        assert_eq!(read[2], "bell");
+        assert_eq!(read[2], "bell 40");
+    }
+
+    #[test]
+    fn a_test_button_s_press_is_a_notice_or_a_bell_with_the_test_flag_last() {
+        let n = Notice { run: "stacked-test".into(), title: "stacked".into(), body: "This is a test notice from stacked.".into() };
+        let line = test_line(&Tested::Notice(n));
+        assert_eq!(line, "n stacked-test\u{1f}stacked\u{1f}This is a test notice from stacked.\u{1f}test");
+        assert_eq!(client::screen(&line), "notice\nstacked-test\nstacked\nThis is a test notice from stacked.\nn stacked-test\ntest");
+        let line = test_line(&Tested::Bell(25));
+        assert_eq!(line, "b 25 test");
+        assert_eq!(client::screen(&line), "bell 25 test");
     }
 
     #[test]

@@ -605,6 +605,20 @@ fn port_of(v: &toml::Value) -> Option<u16> {
 /// What `web.port` is told it is not, when it names no port.
 const NOT_A_PORT: &str = "\"random\", \"fixed-random\" or a port from 1 to 65535";
 
+/// What `web.bell` is told it is not, when it names no level.
+const NOT_A_LEVEL: &str = "a number from 0 to 100, the bell's loudness in percent";
+
+/// The bell's level `v` says, as the file writes it: a number from 0 to
+/// 100; or, as a file of before wrote it, true, the loudest, or false,
+/// silent. None for anything else.
+fn level_of(v: &toml::Value) -> Option<u8> {
+    match v {
+        toml::Value::Boolean(on) => Some(if *on { 100 } else { 0 }),
+        toml::Value::Integer(n) => u8::try_from(*n).ok().filter(|n| *n <= 100),
+        _ => None,
+    }
+}
+
 /// Where `stacked web` runs a terminal editor: in the page itself, in a
 /// terminal of stacked web's own, which the page shows and sends its keys
 /// to (`Page`, unless set); or in the terminal `stacked web` was started
@@ -654,12 +668,13 @@ pub struct Web {
     /// (`tui::notices`), to show as the system's banners while the page is
     /// not what you look at: unless set, they are; false, none is sent.
     pub notifications: bool,
-    /// Its pages are told to ring their bell with the notices, once for
-    /// those learned at once, while the page is not what you look at,
-    /// whether they show the notices as banners or not: unless set, they
-    /// are; false, none rings. With neither this nor `notifications`, the
-    /// editor keeps no notice.
-    pub bell: bool,
+    /// How loud its pages ring their bell with the notices, once for those
+    /// learned at once, while the page is not what you look at, whether
+    /// they show the notices as banners or not: a level from 0 to 100, in
+    /// percent of the page's loudest strike. Unless set, 0: silent, the
+    /// bell never rung, nor struck. A file of before saying true reads as
+    /// 100, and false as 0.
+    pub bell: u8,
     /// Where a terminal editor runs: in the page, unless set; or in the
     /// terminal `stacked web` was started from.
     pub editor: WebEditor,
@@ -671,7 +686,7 @@ impl Default for Web {
             port: Port::default(),
             kept_port: None,
             notifications: true,
-            bell: true,
+            bell: 0,
             editor: WebEditor::default(),
         }
     }
@@ -1091,9 +1106,9 @@ impl Config {
             }
         }
         if let Some(v) = w.web.bell {
-            match v {
-                toml::Value::Boolean(on) => c.web.bell = on,
-                v => wrong.push(format!("web.bell: {v} is not true or false")),
+            match level_of(&v) {
+                Some(l) => c.web.bell = l,
+                None => wrong.push(format!("web.bell: {v} is not {NOT_A_LEVEL}")),
             }
         }
         if let Some(v) = w.web.editor {
@@ -1425,9 +1440,10 @@ impl Config {
             );
             out.push_str(&format!("notifications = {}\n", self.web.notifications));
             out.push_str(
-                "# A bell the page rings for what those notices tell while it is not what you look at,\n\
-                 # once for all that comes at once, whether notifications is true or false: one soft\n\
-                 # strike of a small bell, which the page makes itself. false rings none. The bell rings\n\
+                "# How loud the bell is that the page rings for what those notices tell while it is not\n\
+                 # what you look at, once for all that comes at once, whether notifications is true or\n\
+                 # false: one soft strike of a small bell, which the page makes itself. A number from 0\n\
+                 # to 100, in percent of its loudest; at 0, as unless set, the bell never rings. It rings\n\
                  # only after the page's first click or key: a browser lets a page make sound only then.\n",
             );
             out.push_str(&format!("bell = {}\n", self.web.bell));
@@ -1520,6 +1536,9 @@ enum Kind {
     Model,
     /// An effort of the ask dialog's, by its name.
     Effort,
+    /// The bell's loudness, in percent: a number from 0 to 100; true and
+    /// false taken for 100 and 0, as a file of before says them.
+    Level,
 }
 
 /// Every setting there is, as the file names it, and what it holds; the
@@ -1567,7 +1586,7 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("web.port", Kind::Port),
     ("web.kept_port", Kind::PortNumber),
     ("web.notifications", Kind::Flag),
-    ("web.bell", Kind::Flag),
+    ("web.bell", Kind::Level),
     ("web.editor", Kind::WebEditor),
     ("lint.command", Kind::Text),
     ("demo.seen", Kind::Flag),
@@ -1665,6 +1684,15 @@ fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
             parse_color(v).map_err(|e| format!("{key}: {e}"))?;
             toml::Value::String(v.to_string()).to_string()
         }
+        // As a file of before says it, true or false, written as its level.
+        Kind::Level => match one()? {
+            "true" => "100".into(),
+            "false" => "0".into(),
+            v => match v.parse::<u8>() {
+                Ok(n) if n <= 100 => n.to_string(),
+                _ => return Err(format!("{key} is {NOT_A_LEVEL}, not {v:?}")),
+            },
+        },
     })
 }
 
@@ -1782,8 +1810,12 @@ fn only_global(key: &str) -> String {
 /// The settings' file's settings, and what is wrong with it: a checkout's
 /// own setting it sets passed over, and said.
 fn global() -> (Config, Vec<String>) {
-    let p = path();
-    let (mut c, mut wrong) = Config::load(&p);
+    global_at(&path())
+}
+
+/// The settings of the settings' file at `p`, as `global` reads them.
+fn global_at(p: &Path) -> (Config, Vec<String>) {
+    let (mut c, mut wrong) = Config::load(p);
     if c.lint.command.take().is_some() {
         wrong.push(format!(
             "{}: lint.command is a checkout's own setting, read only from its .stacked/local.toml (`stacked setup lint` writes it there): here it is passed over",
@@ -2236,6 +2268,105 @@ pub fn mark_local(text: &str, local: &[String]) -> String {
         out.push('\n');
     }
     out
+}
+
+// -- the editor's Configure screen ------------------------------------- //
+
+/// Every setting there is, as `stacked config` names them, in the order
+/// `stacked config` prints them: those of the tables, then the colours',
+/// then the keys'.
+pub fn every_key() -> Vec<String> {
+    let mut out: Vec<String> = SETTINGS.iter().map(|(k, _)| k.to_string()).collect();
+    out.extend(Paint::ALL.iter().map(|p| format!("colors.{}", p.name())));
+    out.extend(Key::ALL.iter().map(|k| format!("keys.{}", k.name())));
+    out
+}
+
+/// How a setting's value is given: one of a few, each as the file writes
+/// it; typed, what it is said; or a list, typed as the file writes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Given {
+    OneOf(&'static [&'static str]),
+    Typed(&'static str),
+    List,
+}
+
+/// How `key`'s value is given, refused for a setting there is not.
+pub fn given(key: &str) -> Result<Given, String> {
+    Ok(match (kind_of(key)?, key) {
+        (Kind::Flag, _) => Given::OneOf(&["true", "false"]),
+        (Kind::Patches, _) => Given::OneOf(&["expanded", "files", "hidden"]),
+        (Kind::Pane, _) => Given::OneOf(&["expanded", "compact", "hidden"]),
+        (Kind::Workspace, _) => Given::OneOf(&["ondemand", "precreate"]),
+        (Kind::WebEditor, _) => Given::OneOf(&["page", "terminal"]),
+        (Kind::Model, _) => Given::OneOf(&crate::db::Model::IDS),
+        (Kind::Effort, _) => Given::OneOf(&crate::db::Effort::NAMES),
+        (Kind::Text, "reviews.source") => Given::OneOf(&["phabricator", "none"]),
+        (Kind::Text, "view.layout") => Given::OneOf(&["unified", "side-by-side", "compact", "unified-split"]),
+        (Kind::Text, "view.interdiff") => {
+            Given::OneOf(&["interdiff", "columns", "side-by-side", "change-unified", "change-side-by-side", "change-compact"])
+        }
+        (Kind::Text, "view.interdiff_lines") => Given::OneOf(&["every", "changed"]),
+        (Kind::List, _) => Given::List,
+        (Kind::Text, _) => Given::Typed("any text"),
+        (Kind::Count, _) => Given::Typed("a number"),
+        (Kind::Color, _) => Given::Typed(
+            "a colour, as git writes one: a foreground, then a background, each a name, a number from 0 to 255 or #rrggbb, then any of bold, dim, italic, ul, blink, reverse, strike",
+        ),
+        (Kind::Port, _) => Given::Typed("random, fixed-random or a port from 1 to 65535"),
+        (Kind::PortNumber, _) => Given::Typed("a port from 1 to 65535"),
+        (Kind::Level, _) => Given::Typed(NOT_A_LEVEL),
+    })
+}
+
+/// The values of `key` that `text`, typed, says: of a list, as the file
+/// writes one, `["one", "two"]`; of any other, `text` as it is, its one
+/// value.
+pub fn typed(key: &str, text: &str) -> Result<Vec<String>, String> {
+    if given(key)? != Given::List {
+        return Ok(vec![text.to_string()]);
+    }
+    let wrong = || format!("{key} is a list, written as the file writes one: [\"one\", \"two\"], or [] for none");
+    let t: toml::Table = toml::from_str(&format!("v = {text}")).map_err(|_| wrong())?;
+    match t.get("v") {
+        Some(toml::Value::Array(all)) => all.iter().map(|v| v.as_str().map(String::from).ok_or_else(wrong)).collect(),
+        _ => Err(wrong()),
+    }
+}
+
+/// What `set` writes for `key` = `values`, in the file's form; or why it
+/// refuses them, in its words.
+pub fn check(key: &str, values: &[String]) -> Result<String, String> {
+    if let Some(why) = gone_key(key) {
+        return Err(format!("{why}; nothing written"));
+    }
+    literal(key, kind_of(key)?, values)
+}
+
+/// What the settings' file `text` gives `key`, as it writes it, if it sets
+/// it and reads as TOML.
+pub fn written(text: &str, key: &str) -> Option<toml::Value> {
+    let t = toml::from_str::<toml::Table>(text).ok()?;
+    match key.split_once('.') {
+        Some((table, name)) => t.get(table)?.as_table()?.get(name).cloned(),
+        None => t.get(key).cloned(),
+    }
+}
+
+/// Whether `key` holds a secret, as a token is: never shown, only whether
+/// it is set.
+pub fn secret(key: &str) -> bool {
+    key.rsplit('.').next().is_some_and(|name| name.contains("token"))
+}
+
+/// The settings in effect in the checkout `dir` is in, the settings' file
+/// being the one at `global`, as `of` reads them, both files read now; and
+/// what is wrong with either.
+pub fn in_effect(global: &Path, dir: &Path) -> (Config, Vec<String>) {
+    let (base, mut wrong) = global_at(global);
+    let (c, more) = with_local(&base, dir);
+    wrong.extend(more);
+    (c, wrong)
 }
 
 #[cfg(test)]
@@ -3026,47 +3157,93 @@ mod tests {
     }
 
     #[test]
-    fn stacked_web_s_bell_rings_unless_set_false_whatever_the_notifications_and_any_other_value_is_said() {
-        // Rung unless set, the notifications as they are.
+    fn stacked_web_s_bell_is_a_level_from_0_to_100_silent_unless_set_true_and_false_read_as_100_and_0() {
+        // Silent unless set, the notifications as they are.
         let d = Config::default();
-        assert!(d.web.bell);
-        assert_eq!(value_of(&d, "web.bell"), Ok(vec!["true".to_string()]));
-        for (written, on) in [("true", true), ("false", false)] {
+        assert_eq!(d.web.bell, 0);
+        assert_eq!(value_of(&d, "web.bell"), Ok(vec!["0".to_string()]));
+        // A level from 0 to 100; true and false, as a file of before says
+        // them, 100 and 0, with no complaint.
+        for (written, level) in [("0", 0), ("50", 50), ("100", 100), ("true", 100), ("false", 0)] {
             let (c, wrong) = Config::parse(&format!("[web]\nnotifications = false\nbell = {written}\n")).unwrap();
             assert!(wrong.is_empty(), "{written}: {wrong:?}");
-            assert_eq!((c.web.bell, c.web.notifications), (on, false), "{written}");
+            assert_eq!((c.web.bell, c.web.notifications), (level, false), "{written}");
         }
-        // Any other value, of any kind: said, and rung all the same, the
-        // rest of the file read.
-        for written in ["\"false\"", "\"quiet\"", "0", "[false]"] {
+        // Any other value, of any kind: said with the values there are, and
+        // silent all the same, the rest of the file read.
+        for written in ["101", "-1", "\"loud\"", "\"50\"", "50.5", "[false]"] {
             let (c, wrong) = Config::parse(&format!("editor = \"hx\"\n[web]\nbell = {written}\n")).unwrap();
-            assert_eq!((c.web.bell, c.editor.as_deref()), (true, Some("hx")), "{written}");
-            assert_eq!(wrong, [format!("web.bell: {written} is not true or false")]);
+            assert_eq!((c.web.bell, c.editor.as_deref()), (0, Some("hx")), "{written}");
+            assert_eq!(wrong, [format!("web.bell: {written} is not a number from 0 to 100, the bell's loudness in percent")]);
         }
         // Written as any setting is, beside the notifications, the rest of
-        // the file as it was; any other value refused, the file as it was.
+        // the file as it was, as a number; true and false written as their
+        // levels; any other value refused, the file as it was.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("settings.toml");
         let read = || std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, "# mine\n[web]\nnotifications = false\n").unwrap();
-        set(&path, "web.bell", &["false".to_string()]).unwrap();
-        assert_eq!(read(), "# mine\n[web]\nnotifications = false\nbell = false\n");
-        assert_eq!(set(&path, "web.bell", &["quiet".to_string()]), Err("web.bell is true or false, not \"quiet\"".to_string()));
-        assert_eq!(read(), "# mine\n[web]\nnotifications = false\nbell = false\n");
+        set(&path, "web.bell", &["50".to_string()]).unwrap();
+        assert_eq!(read(), "# mine\n[web]\nnotifications = false\nbell = 50\n");
+        set(&path, "web.bell", &["true".to_string()]).unwrap();
+        assert_eq!(read(), "# mine\n[web]\nnotifications = false\nbell = 100\n");
+        for wrong in ["101", "loud", "-3", ""] {
+            let refused = format!("web.bell is a number from 0 to 100, the bell's loudness in percent, not {wrong:?}");
+            assert_eq!(set(&path, "web.bell", &[wrong.to_string()]), Err(refused));
+        }
+        assert_eq!(read(), "# mine\n[web]\nnotifications = false\nbell = 100\n");
+        set(&path, "web.bell", &["35".to_string()]).unwrap();
         let (c, wrong) = Config::load(&path);
         assert!(wrong.is_empty(), "{wrong:?}");
-        assert!(!c.web.bell && !c.web.notifications);
-        assert_eq!(value_of(&c, "web.bell"), Ok(vec!["false".to_string()]));
+        assert!(c.web.bell == 35 && !c.web.notifications);
+        assert_eq!(value_of(&c, "web.bell"), Ok(vec!["35".to_string()]));
         // Printed with its comment, after the notifications', built with
         // stacked web, and read back the same.
         let text = c.render();
         if cfg!(feature = "web") {
-            let said = "# once for all that comes at once, whether notifications is true or false: one soft\n";
-            assert!(text.contains(said) && text.contains("make sound only then.\nbell = false\n"), "{text}");
+            let said = "# How loud the bell is that the page rings for what those notices tell while it is not\n";
+            assert!(text.contains(said) && text.contains("make sound only then.\nbell = 35\n"), "{text}");
             assert!(text.find("\nnotifications = false\n").unwrap() < text.find(said).unwrap(), "{text}");
             assert_eq!(Config::parse(&text), Ok((c, vec![])));
-            assert!(Config::default().render().contains("\nbell = true\n"));
+            assert!(Config::default().render().contains("\nbell = 0\n"));
         }
+    }
+
+    #[test]
+    fn the_configure_screen_gives_each_setting_as_its_kind_is_and_checks_it_as_set_does() {
+        let all = every_key();
+        assert_eq!(all[0], "file");
+        assert!(all.contains(&"web.bell".to_string()) && all.contains(&"colors.added".to_string()) && all.last().unwrap().starts_with("keys."));
+        assert!(all.iter().all(|k| given(k).is_ok()), "{all:?}");
+        assert_eq!(given("view.reading"), Ok(Given::OneOf(&["true", "false"])));
+        assert_eq!(given("view.interdiff_lines"), Ok(Given::OneOf(&["every", "changed"])));
+        assert_eq!(given("web.bell"), Ok(Given::Typed(NOT_A_LEVEL)));
+        assert_eq!(given("agent.args"), Ok(Given::List));
+        // Every value offered as a choice, taken by `set`.
+        for k in &all {
+            if let Ok(Given::OneOf(values)) = given(k) {
+                for v in values {
+                    let lit = check(k, &[v.to_string()]).unwrap();
+                    let (_, wrong) = Config::parse(&with_setting("", k, Some(&lit))).unwrap();
+                    assert!(wrong.is_empty(), "{k} = {v}: {wrong:?}");
+                }
+            }
+        }
+        // A list typed as the file writes one; anything else is its value.
+        assert_eq!(typed("agent.args", "[\"-v\", \"x y\"]"), Ok(vec!["-v".to_string(), "x y".to_string()]));
+        assert_eq!(typed("agent.args", "[]"), Ok(vec![]));
+        let not_a_list = "agent.args is a list, written as the file writes one: [\"one\", \"two\"], or [] for none";
+        assert_eq!(typed("agent.args", "-v"), Err(not_a_list.to_string()));
+        assert_eq!(typed("agent.args", "[1]"), Err(not_a_list.to_string()));
+        assert_eq!(typed("editor", "hx {file}"), Ok(vec!["hx {file}".to_string()]));
+        // Checked in `set`'s words.
+        assert_eq!(check("web.bell", &["50".into()]), Ok("50".into()));
+        assert_eq!(check("web.bell", &["loud".into()]), Err("web.bell is a number from 0 to 100, the bell's loudness in percent, not \"loud\"".into()));
+        assert_eq!(check("view.stream_lines", &["x".into()]), Err("view.stream_lines is a number, not \"x\"".into()));
+        // What a file writes, as it writes it; the secrets.
+        assert_eq!(written("[web]\nbell = 7\n", "web.bell"), Some(toml::Value::Integer(7)));
+        assert_eq!(written("[web]\nbell = 7\n", "web.port"), None);
+        assert!(secret("reviews.token") && !secret("reviews.url") && !secret("web.kept_port"));
     }
 
     #[test]
@@ -3092,11 +3269,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("settings.toml");
         let read = || std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, "# mine\neditor = \"vim\"\n[web]\nbell = false\n").unwrap();
+        std::fs::write(&path, "# mine\neditor = \"vim\"\n[web]\nbell = 20\n").unwrap();
         set(&path, "web.editor", &["terminal".to_string()]).unwrap();
-        assert_eq!(read(), "# mine\neditor = \"vim\"\n[web]\nbell = false\neditor = \"terminal\"\n");
+        assert_eq!(read(), "# mine\neditor = \"vim\"\n[web]\nbell = 20\neditor = \"terminal\"\n");
         assert_eq!(set(&path, "web.editor", &["window".to_string()]), Err("web.editor is \"page\" or \"terminal\", not \"window\"".to_string()));
-        assert_eq!(read(), "# mine\neditor = \"vim\"\n[web]\nbell = false\neditor = \"terminal\"\n");
+        assert_eq!(read(), "# mine\neditor = \"vim\"\n[web]\nbell = 20\neditor = \"terminal\"\n");
         let (c, wrong) = Config::load(&path);
         assert!(wrong.is_empty(), "{wrong:?}");
         assert_eq!((c.web.editor, c.editor.as_deref()), (WebEditor::Terminal, Some("vim")));
@@ -3107,7 +3284,7 @@ mod tests {
         if cfg!(feature = "web") {
             let said = "# Where a terminal editor runs, the one named at the top of this file, else $VISUAL,\n";
             assert!(text.contains(said) && text.contains("opens that window either way.\neditor = \"terminal\"\n"), "{text}");
-            assert!(text.find("\nbell = false\n").unwrap() < text.find(said).unwrap(), "{text}");
+            assert!(text.find("\nbell = 20\n").unwrap() < text.find(said).unwrap(), "{text}");
             assert_eq!(Config::parse(&text), Ok((c, vec![])));
             assert!(Config::default().render().contains("\n[web]\n") && Config::default().render().contains("either way.\neditor = \"page\"\n"));
         }
@@ -3130,7 +3307,7 @@ mod tests {
         .unwrap();
         let (c, mut wrong) = with_local(&base, &top);
         assert_eq!((&c.web, c.editor.as_deref()), (&base.web, Some("hx")));
-        assert!(c.web.notifications && c.web.bell && c.web.editor == WebEditor::Page);
+        assert!(c.web.notifications && c.web.bell == 0 && c.web.editor == WebEditor::Page);
         wrong.sort();
         let at = local.display();
         let passed = "is read only from the settings' file, never from a checkout's own .stacked/local.toml: here it is passed over";

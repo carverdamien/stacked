@@ -1546,12 +1546,12 @@ agent failed (1): rate limited.`, each alone, and the answer's clicked
 what was there as `stacked web` started (work waiting for review, a
 failure), the next landing alone, and a second page, come after it, told
 none of it, but the landing after, which the first page is told too; and,
-in `stacked web` runs for real, the bell (`b`) as the settings say:
+in `stacked web` runs for real, the bell (`b LEVEL`) as the settings say:
 `web.bell = true`, an answer and a failure landed at once, in one edit,
-told by their two notices, then by one bell after both, before the screen
-that says them, then the next landing alone by its notice and one bell;
-`web.bell = false`, the notice alone; `web.notifications = false`, the
-bell on unless set, no notice but one bell for each landing, the landing
+told by their two notices, then by one bell after both, at 100, before the
+screen that says them, then the next landing alone by its notice and one
+bell; `web.bell = false`, the notice alone; `web.notifications = false`
+and `web.bell = 50`, no notice but one bell at 50 for each landing, the landing
 and the failure said on the screen all the same; both false, neither, the
 landing and the failure said on the screen all the same; and, with the
 `try-push` feature, a try push followed by the editor
@@ -1603,9 +1603,10 @@ and
 `web.rs` tests the rows and the lines both ways, the line a page's events
 start with as the client reads it, its build the same each time, the page
 going (`g`) alone, the notices learned at once told as the settings say
-(each notice's line, then one bell; the notices' lines alone without the
-bell; the bell alone without the banners; nothing with neither, nor for
-no notice), as the client reads them, the screen of the editor run in the
+(each notice's line, then one bell at its level; the notices' lines alone
+at the level 0; the bell alone without the banners; nothing with neither,
+nor for no notice), as the client reads them, a test button's press with
+the test flag last, the screen of the editor run in the
 page sent whole, its size, then `t`, then its rows, as the client reads
 them, the keys the client makes while the screen is the editor's made the
 bytes xterm sends (F5, ↑ in the cursor keys' application mode, ctrl-c,
@@ -1642,8 +1643,9 @@ browser sends the click before the focus or after; and a notice made what
 the page shows of it, its tag, its title, its body and the line its click
 sends the server, each on a line of its own, a new line in its title or
 its body a space, and nothing for one short of a field, or whose run is
-empty or holds a space; the bell's line, `b` alone, the bell, `bye` still
-the editor gone, `b` with more nothing; `$EDITOR` running made the words said over
+empty or holds a space, and a test's with `test` last; the bell's line, `b
+LEVEL`, the bell at that level, `b LEVEL test` a test's, `bye` still the
+editor gone, `b` alone, at 0, past 100 or with anything else nothing; `$EDITOR` running made the words said over
 the screen, by the program it runs, `the editor` when none is named; `t`
 alone, the screen the editor's own, the next size stacked's again, `t`
 with more nothing; F1 to F12 and Insert the browser's, but while the
@@ -2614,3 +2616,30 @@ dialog of the views of the interdiffs its short name, side by side among
 the views of the two diffs and of the code alike, the line under each
 short enough for one row of the dialog, and its words for `?` longer than
 that line.
+
+The Configure screen's tests, in `tests/tui.rs`, read and write scratch
+files alone, a global file in the test's own `home/` (`App::config_file`)
+and its checkout's `.stacked/local.toml`, never the settings of whoever runs
+them: the button `< stacked >` clicked opens its menu next to it, titled
+stacked, Configure… in it, which opens the screen; each row shows the
+global file's value, the local file's and what is in effect, the default
+where neither sets it; a setting of the global file alone and one of the
+local file alone say so in the other column, and their menu there grays
+all and says why; the token shows only that it is set, and typed is drawn
+as dots; the bell's level typed, 101 and loud refused in `stacked config`'s
+words, the file as it was, and 50 written, the screen and stacked web's
+settings following; a choice written in the local file, then in the global
+file, said to be overridden by the local file; Delete and the menu taking
+it out. The test buttons send nothing and say why in the terminal, in
+StackED and in a stacked web with no page; with a page, the test notice and
+the bell at its level, at the level typed when clicked while it is typed,
+and none at 0. `Configure…` ends every menu but the screen's own, and is
+grayed in the button's menu there. `tests/web.rs` clicks the button and its
+test buttons in a `stacked web` run for real with `web.bell = 40`, which
+sends the test notice and `b 40 test`; in node, the page scales each
+partial's peak by the square of the level (1, a quarter at 50, a hundredth
+at 10), strikes nothing at 0 nor while looked at, but a test's, and shows a
+test's banner while looked at, counted nowhere, asking the browser first
+when it never asked, nothing once refused. `tests/app.rs` opens the screen
+from the button in StackED's window, whose notice test is dim and says that
+StackED shows no notices.
