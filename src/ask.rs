@@ -33,9 +33,10 @@
 //! one, on the files it changes (`lint::Linter::rule`), and its prompt
 //! says so. An answer works in `.stacked/NAME/answer-only-agent`, made and
 //! taken as a change's is, and is let run nothing that changes anything; so
-//! does the selection of a try push's tasks, whose wrapper first lists the
-//! tasks mach can push from the stack, in a worktree for pushes, before
-//! its agent starts (`try_push::list`). A build and test works in
+//! does a bug's draft (`bug`), and the selection of a try push's tasks,
+//! whose wrapper first lists the tasks mach can push from the stack, in a
+//! worktree for pushes, before its agent starts (`try_push::list`). A
+//! build and test works in
 //! `.stacked/NAME/build`: kept for the next build to build on, what a build
 //! made there left as it is.
 //!
@@ -441,14 +442,32 @@ pub fn can_try(db: &Db, n: &Note) -> bool {
 pub const TRY_OF_A_PATCH: &str = "A try push is asked of a patch as a whole or of the stack, not of a line or a file: \
 comment on the patch's title or on the stack.";
 
+/// Whether `n` may be asked to draft a bug (`bug`): a comment on a patch, on
+/// it as a whole or on one of its lines, whose title names no bug as
+/// moz-phab reads one (`bug::names_none`); never one on the stack, nor on
+/// the stack's history.
+#[cfg(feature = "moz-phab")]
+pub fn can_bug(db: &Db, n: &Note) -> bool {
+    n.about.is_none() && !n.on_stack() && db.latest_version(&n.change).is_some_and(|p| crate::bug::names_none(p.title()))
+}
+
+/// Why a comment is not asked to draft a bug, as every way of asking one
+/// says it.
+#[cfg(feature = "moz-phab")]
+pub const BUG_OF_A_PATCH: &str = "A bug is drafted for a patch whose title names none, from a comment on that patch: \
+not from the stack's comments, nor once the title names a bug.";
+
 /// Whether `n` may be asked in `way`, of those the comment's own choices
 /// have: a build and test, and a try push, on the stack or a patch as a
-/// whole, a try push not on the history.
+/// whole, a try push not on the history; a bug's draft, on a patch whose
+/// title names none.
 pub fn fits_way(db: &Db, n: &Note, way: Way) -> bool {
     match way {
         Way::Test => can_test(db, n),
         #[cfg(feature = "try-push")]
         Way::Try => can_try(db, n),
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => can_bug(db, n),
         _ => true,
     }
 }
@@ -617,14 +636,16 @@ pub fn with_agent(db: &Db) -> HashMap<(String, String), (Way, String)> {
     out
 }
 
-/// Whether what is asked in `way` only reads: an answer, or a try push's
-/// selection. Such asks run together, and alongside the changes when
-/// chained.
+/// Whether what is asked in `way` only reads: an answer, a try push's
+/// selection, or a bug's draft. Such asks run together, and alongside the
+/// changes when chained.
 pub fn reads(way: Way) -> bool {
     match way {
         Way::Answer => true,
         #[cfg(feature = "try-push")]
         Way::Try => true,
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => true,
         _ => false,
     }
 }
@@ -1414,6 +1435,10 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
     if whole && way == Way::Try {
         return err("a try push is not asked of the whole stack: a comment on the stack pushes all of its patches");
     }
+    #[cfg(feature = "moz-phab")]
+    if whole && way == Way::Bug {
+        return err("a bug is drafted for a patch, not asked of the whole stack");
+    }
     let batch = format!("b{}", crate::db::unique());
     let busy = with_agent(db);
     let mut scope = None;
@@ -1444,6 +1469,10 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
         #[cfg(feature = "try-push")]
         if way == Way::Try && !can_try(db, &n) {
             return err(TRY_OF_A_PATCH);
+        }
+        #[cfg(feature = "moz-phab")]
+        if way == Way::Bug && !can_bug(db, &n) {
+            return err(BUG_OF_A_PATCH);
         }
         let reach = if whole { Scope::Stack } else { scope_of(&n) };
         match &scope {
@@ -1511,12 +1540,15 @@ pub fn batched_effort(db: &Db, name: &str, way: Way) -> Option<Effort> {
 
 /// Whether what is asked in `way` goes from the batch each comment in an
 /// ask of its own, whatever is picked: a build and test, of its own place;
-/// a try push, of the patches up to its own place.
+/// a try push, of the patches up to its own place; a bug's draft, of its
+/// own patch, a bug each.
 pub fn each_on_its_own(way: Way) -> bool {
     match way {
         Way::Test => true,
         #[cfg(feature = "try-push")]
         Way::Try => true,
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => true,
         _ => false,
     }
 }
@@ -1545,7 +1577,8 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Op
         // A try push of a line, batched as an older stacked let it be: out
         // of the batch as it goes, a comment still, its ask failed saying
         // why; the rest go.
-        #[cfg_attr(not(feature = "try-push"), allow(unused_mut))]
+        // So is a bug's draft for a patch whose title names a bug by now.
+        #[cfg_attr(not(any(feature = "try-push", feature = "moz-phab")), allow(unused_mut))]
         let mut refused: Refused = Vec::new();
         if fan || each_on_its_own(way) {
             for (at, whole) in &all {
@@ -1555,6 +1588,14 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Op
                 {
                     db.set_note(Note { queued: None, failed: Some(TRY_OF_A_PATCH.into()), ..n })?;
                     refused.push((at.clone(), TRY_OF_A_PATCH.into()));
+                    continue;
+                }
+                #[cfg(feature = "moz-phab")]
+                if way == Way::Bug
+                    && let Some(n) = db.note(&at.0, &at.1).filter(|n| !can_bug(db, n)).cloned()
+                {
+                    db.set_note(Note { queued: None, failed: Some(BUG_OF_A_PATCH.into()), ..n })?;
+                    refused.push((at.clone(), BUG_OF_A_PATCH.into()));
                     continue;
                 }
                 let at_effort = effort.or(own(db, at));
@@ -2013,6 +2054,15 @@ fn claim(db: &mut Db) -> Result<Claimed> {
                 }
                 go
             }
+            // A bug's draft, which reads only too.
+            #[cfg(feature = "moz-phab")]
+            Way::Bug => {
+                let go = st.chain || (!st.change && !st.change_waits);
+                if go {
+                    st.answers += 1;
+                }
+                go
+            }
             // A build and test, while no change runs on its stack, and no
             // other build and test anywhere: of the stack as it is.
             Way::Test => {
@@ -2296,7 +2346,9 @@ fn linter_told(command: &str) -> String {
 /// `answer_accepted`, `test_accepted`, `try_accepted`), then what they add
 /// for every ask (`tools`). A build and test runs what the project needs:
 /// Bash at large, and every ask's. A try push's selection is given what an
-/// answer is: it reads only, and is not given the linter.
+/// answer is: it reads only, and is not given the linter. So is a bug's
+/// draft, with `./mach file-info bugzilla-component` besides
+/// (`bug::MACH_RULE`), and the answers' lists of the settings.
 pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent, linter: &Linter) -> String {
     let (mut tools, own): (String, &[String]) = match way {
         Way::Change => (change_given(cmd, linter), &agent.change_tools),
@@ -2304,6 +2356,10 @@ pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent, linter: &Lin
         Way::Test => (format!("Bash,{}", allowed_tools()), &[]),
         #[cfg(feature = "try-push")]
         Way::Try => (answer_given(cmd), &agent.try_tools),
+        // A bug's draft: what an answer is given, and mach's component of a
+        // file, which only reads.
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => (format!("{},{}", answer_given(cmd), crate::bug::MACH_RULE), &agent.answer_tools),
     };
     // Its answer given as structured output: with the tool claude gives it
     // with.
@@ -2498,6 +2554,11 @@ fn before(db: &Db, i: &Info, was: &str, name: &str, cmd: &str) -> String {
                      accepted; what was selected then is below. Select the tasks again on the stack \
                      as it is now: keep what still holds, and say what the edit changes."
             .to_string(),
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => " This was asked before, on the stack as it was before an edit of it was \
+                     accepted; what was answered then is below. Draft the bug again on the stack \
+                     as it is now: keep what still holds, and say what the edit changes."
+            .to_string(),
         _ => format!(
             " This was asked before, going on from an edit that was then dropped; what was \
              made then is below, and `{cmd} export {name} --work {was}` prints the stack it \
@@ -2674,6 +2735,20 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
             // task graph, beside them.
             crate::try_push::prompt(&what, &here, web, &try_labels(i, Ok(()), curl))
         }
+        // A bug drafted for the patch, by the rules of Firefox's own skill:
+        // its form opened, filled in, once the user reviews the draft, by
+        // stacked.
+        #[cfg(feature = "moz-phab")]
+        (Way::Bug, _) => {
+            let what = format!("patch {} of {n}, \"{}\"", k.map_or(0, |k| k + 1), k.and_then(|k| s.patches.get(k)).map_or("", |p| db.patch(p).title()));
+            let here = format!(
+                "The current directory is a git worktree made for you: the commits {}..HEAD are the stack up to \
+                 that patch, the patch itself at HEAD; `git show` to read it; `{export}` prints the whole stack. Of \
+                 mach, you may run `./mach file-info bugzilla-component` there, and nothing else.",
+                i.base
+            );
+            crate::bug::prompt(&what, &here, web)
+        }
     };
     // A follow-up: what it brought back waits for the user's review as it
     // is, the stack it makes in the worktree. What it changed, and the
@@ -2794,6 +2869,8 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
         ),
         #[cfg(feature = "try-push")]
         Way::Try => crate::try_push::answer_said(end),
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => crate::bug::answer_said(end),
     });
     p.push_str(REFS);
     p.push_str(&not_allowed(said));
@@ -2920,6 +2997,12 @@ fn answer_schema(i: &Info, s: &Stack) -> Value {
             for (key, schema) in crate::try_push::schema(&written) {
                 props.insert(key.into(), schema);
             }
+        }
+        // A bug's draft: its fields.
+        #[cfg(feature = "moz-phab")]
+        (Way::Bug, _) => {
+            let (key, schema) = crate::bug::schema();
+            props.insert(key.into(), schema);
         }
     }
     json!({"type": "object", "properties": props, "required": ["replies"], "additionalProperties": false})
@@ -3448,6 +3531,8 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         Way::Test => BUILD,
         #[cfg(feature = "try-push")]
         Way::Try => ANSWERING,
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => ANSWERING,
     };
     let dir = agents_dir(&repo, &s.name, agent.worktrees.as_deref())?;
     let cwd = take_slot(db_path, id, &dir, kind)?;
@@ -3793,6 +3878,10 @@ fn allow_more(way: Way) -> &'static str {
         Way::Try => {
             "the review of its work lists each, to allow for this work or from now on; agent.try_tools lets the asks that select a try push's tasks use more, and `stacked setup agent` sets it; your claude settings can allow more too"
         }
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => {
+            "the review of its work lists each, to allow for this work or from now on; agent.answer_tools lets answer-only asks, and the asks that draft a bug, use more, and `stacked setup agent` sets it; your claude settings can allow more too"
+        }
     }
 }
 
@@ -4118,6 +4207,14 @@ fn file(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<Landed> {
                 ..Default::default()
             }))
         }
+        // The bug it drafted, found whatever prose is around its answer, to
+        // read; its form opened once the review closes.
+        #[cfg(feature = "moz-phab")]
+        (Way::Bug, _) => Ok(Landed::held(Held {
+            replies: held_replies(db, i, &replies),
+            bug: crate::bug::draft_of(last_object(result).as_ref()).map(Box::new),
+            ..Default::default()
+        })),
     }
 }
 

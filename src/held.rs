@@ -72,11 +72,15 @@ pub struct Held {
     #[cfg(feature = "try-push")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebuild: Option<u32>,
+    /// A bug's draft's: the bug the agent drafted, to read, its form opened
+    /// in your browser as the review closes (`bug`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bug: Option<Box<crate::bug::Draft>>,
     /// A lint job's: what the linter did, patch by patch, and what it
     /// reported that it did not fix, its own lines; shown in the review, to
     /// read. With no change of the stack, it is all the work holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lint: Option<crate::lint::Report>,
+    pub lint: Option<Box<crate::lint::Report>>,
     /// The tools the agent could not use, each refused, allowed for this
     /// work or allowed from now on, as the review marks it: with them, work
     /// lands for review though the agent failed or brought nothing back.
@@ -633,7 +637,7 @@ impl Held {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.stack.is_none() && self.replies.is_empty() && self.opened.is_empty() && self.no_tasks() && self.lint.is_none()
+        self.stack.is_none() && self.replies.is_empty() && self.opened.is_empty() && self.no_tasks() && self.lint.is_none() && self.bug.is_none()
     }
 
     /// Whether it holds no task of a try push's: it never does, built
@@ -675,6 +679,10 @@ impl Held {
         #[cfg(feature = "try-push")]
         if !self.tasks.is_empty() {
             out.insert(0, count(self.tasks.len(), "task to push to try", "tasks to push to try"));
+        }
+        // A bug's draft first too, as it is what it brings.
+        if self.bug.is_some() {
+            out.insert(0, "a bug to file".to_string());
         }
         // What the linter reported that it did not fix, and what a build
         // and test asked as a follow-up found, last: to read.

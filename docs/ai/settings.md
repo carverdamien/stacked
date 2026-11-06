@@ -41,7 +41,9 @@ settings:
   change the stack: nothing unless set. `answer_tools`, for answer-only
   asks: `["Bash(curl *)", "Bash(jq *)"]` unless set, which answers could
   always run before there were lists; taken out, an answer is no longer
-  told it may read the web with curl. `try_tools` (built with the
+  told it may read the web with curl. The asks that draft a bug (`file a
+  bug`, with the `moz-phab` feature) take `answer_tools` and
+  `answer_accepted` too: there is no list of their own. `try_tools` (built with the
   `try-push` feature; read either way, so one file serves both builds),
   for the asks that select a try push's tasks: `["Bash(curl *)", "Bash(jq
   *)"]` unless set, as for answers. `tools`, for every ask, builds and

@@ -210,6 +210,8 @@ The ask dialog sets two things every time. The permission is one of:
   builds, and says what it found; it changes nothing in the stack.
 - **try push**, with the `try-push` feature: it selects tasks of Firefox's
   CI for a try push (below).
+- **file a bug**, with the `moz-phab` feature, on a patch whose title
+  names no bug: it drafts the bug (Filing a bug, below).
 
 The dialog offers only those that fit where the comment is. The effort is
 claude's `--effort`: low, medium, high, xhigh or max. `Ask Later`, in
@@ -440,6 +442,20 @@ run with `--no-push` has checked that mach selects exactly those. The
 push's link comes back as a reply to the comment, stacked follows the push
 on Lando and Treeherder, and a summary of its results lands for your
 review once its tasks are done.
+
+## Filing a bug
+
+With the `moz-phab` feature, a comment on a patch whose title names no bug
+can be asked with the `file a bug` permission. The agent drafts the bug as
+Firefox's own bug-filing skill does: its product and component from `./mach
+file-info bugzilla-component`, its type, a summary and a description by the
+skill's rules. It files nothing and opens nothing. The draft waits for your
+review, to read. Closing the review opens Bugzilla's form to file the bug,
+filled in, in your browser, and a dialog asks for the bug's number once you
+have submitted the form: type it, or paste the link to the bug, and `Put it
+in the title` makes the patch's title `Bug N - title`, a new version of the
+patch. The next submit to Phabricator sends the bug. `Cancel` changes
+nothing.
 
 ## Linting
 

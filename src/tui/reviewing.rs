@@ -339,6 +339,9 @@ pub(super) struct Line {
     /// Of a reconcile with HEAD's work, stacked's comment: what to run in
     /// your checkout should you reject it, to read.
     stacked: bool,
+    /// A bug's draft's: the bug the agent drafted, to read, its form
+    /// opened as the review closes.
+    bug: bool,
     /// A tool the agent could not use, by its place among those the work
     /// holds: refused, or allowed for this work or from now on.
     tool: Option<usize>,
@@ -376,6 +379,7 @@ impl Line {
             yours: None,
             report: None,
             stacked: false,
+            bug: false,
             tool: None,
             answer: None,
             following: None,
@@ -395,6 +399,7 @@ impl Line {
             || self.yours.is_some()
             || self.report.is_some()
             || self.stacked
+            || self.bug
             || self.tool.is_some()
             || self.answer.is_some()
             || self.following.is_some()
@@ -418,6 +423,7 @@ impl Line {
             (_, _, _, _, _, Some(k), _) => format!("following {k}"),
             (_, _, _, _, _, _, Some(f)) => format!("found {f:?}"),
             _ if self.stacked => "stacked".to_string(),
+            _ if self.bug => "bug".to_string(),
             _ => {
                 let k = self.noted?;
                 format!("noted {k}")
@@ -595,6 +601,43 @@ fn stacked_view(job: &crate::reconcile::Job, w: usize) -> View {
     }
     let n = lines.len();
     (" stacked's comment: if you reject it, what to run in your checkout".into(), lines, 0..n)
+}
+
+/// What the review of work holding a bug's draft says of it, as its close
+/// opens the form to file it.
+pub(super) const BUG_ON_CLOSE: &str =
+    "the bug to file: to read, nothing to accept or reject; closing the review opens Bugzilla's form to file it, filled in, in your browser";
+
+/// The bug drafted, `b`, as the right pane shows it, `w` wide: each field
+/// the form is filled in with, the description last, as written, folded
+/// between words. All of it is the part.
+fn bug_view(b: &crate::bug::Draft, w: usize) -> View {
+    let mut lines: Vec<Vec<(String, Style)>> = Vec::new();
+    let mut field = |name: &str, value: &str| {
+        for (k, l) in wrap(&format!("{name}: {value}"), w.max(20)).into_iter().enumerate() {
+            lines.push(vec![(if k == 0 { l } else { format!("  {l}") }, Style::new())]);
+        }
+    };
+    field("Product", &b.product);
+    field("Component", &b.component);
+    if !b.bug_type.is_empty() {
+        field("Type", &b.bug_type);
+    }
+    field("Summary", &b.short_desc);
+    for (k, v) in &b.more {
+        field(k, v);
+    }
+    lines.push(vec![(String::new(), Style::new())]);
+    lines.push(vec![("Description:".to_string(), Style::new())]);
+    for para in b.comment.lines() {
+        let folded = wrap(para, w.max(20));
+        if folded.is_empty() {
+            lines.push(vec![(String::new(), Style::new())]);
+        }
+        lines.extend(folded.into_iter().map(|l| vec![(l, Style::new())]));
+    }
+    let n = lines.len();
+    (" the bug the agent drafted: closing the review opens its form, filled in, in your browser".into(), lines, 0..n)
 }
 
 /// What a run of the linter of the lint job's work `l` reported and did
@@ -902,6 +945,7 @@ impl App {
                     && l.yours.is_none()
                     && l.report.is_none()
                     && !l.stacked
+                    && !l.bug
                     && l.tool.is_none()
                     && l.answer.is_none()
                     && l.following.is_none()
@@ -2020,6 +2064,16 @@ impl App {
                 });
             }
         }
+        // A bug's draft's: the bug drafted, to read, its form opened as the
+        // review closes.
+        if let Some(b) = &h.bug {
+            out.push(title(" the bug to file, to read"));
+            let kind = if b.bug_type.is_empty() { String::new() } else { format!(" · {}", b.bug_type) };
+            out.push(Line {
+                bug: true,
+                ..line(format!("   {} :: {}{kind} · {}", b.product, b.component, b.short_desc), Style::new())
+            });
+        }
         // A reconcile with HEAD's: stacked's comment, what to run in your
         // checkout should you reject it, to read.
         if self.work(&rv.run).is_some_and(|(r, _)| r.reconcile.is_some()) {
@@ -2108,6 +2162,12 @@ impl App {
             && let Some(e) = line.report.and_then(|k| l.errors.get(k))
         {
             return report_view(l, e, w);
+        }
+        // The bug drafted: its fields, to read.
+        if line.bug
+            && let Some(b) = &h.bug
+        {
+            return bug_view(b, w);
         }
         // Stacked's comment on a reconcile with HEAD: its sentences, to read.
         if line.stacked
@@ -3094,6 +3154,9 @@ impl App {
         if line.stacked {
             return "enter: nothing, stacked's comment is to read";
         }
+        if line.bug {
+            return "enter: nothing, the bug drafted is to read: closing the review opens its form";
+        }
         if let Some(k) = line.following {
             return match self.review_following().get(k).is_some_and(|f| f.run.is_some()) {
                 true => "enter: nothing, the follow-up runs",
@@ -3204,6 +3267,9 @@ impl App {
         }
         if self.work(&rv.run).is_some_and(|(r, _)| r.reconcile.is_some()) {
             out.push(vec![("stacked's comment: to read, nothing to accept or reject".to_string(), rest)]);
+        }
+        if self.work(&rv.run).is_some_and(|(_, h)| h.bug.is_some()) {
+            out.push(vec![(BUG_ON_CLOSE.to_string(), rest)]);
         }
         if let Some((_, h)) = self.work(&rv.run).filter(|(_, h)| !h.tools.is_empty()) {
             let of = |a: Allow| h.tools.iter().enumerate().filter(|(k, t)| t.offered() && crate::refusals::state(&rv.marks, *k) == a).count();
@@ -4236,6 +4302,13 @@ impl App {
             .work(&rv.run)
             .map(|(_, h)| (crate::held::accepted_tasks(h, &rv.marks, rest), h.rebuild))
             .unwrap_or_default();
+        // A bug's draft: its form opened once the review is closed, and the
+        // dialog that takes the bug's number, for the patch it was drafted
+        // for.
+        let bug = self.work(&rv.run).and_then(|(r, h)| match ask::info(r)?.scope {
+            Scope::Patch(change) => Some((h.bug.clone()?, change)),
+            Scope::Stack => None,
+        });
         #[allow(unused_mut)]
         let mut marks = rv.marks.clone();
         #[cfg(feature = "try-push")]
@@ -4284,6 +4357,9 @@ impl App {
             }
             // What waited on the review may go.
             self.launch();
+            if let Some((draft, change)) = bug {
+                self.file_bug(*draft, change);
+            }
         } else if moving {
             // Not closed: HEAD stays where it is.
             self.bg.doing.retain(|d| *d != MOVING_HEAD);

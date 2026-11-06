@@ -170,7 +170,7 @@ impl App {
             Mode::Edit(_) => alone(Wheeled::Editor),
             Mode::Stream { .. } => alone(Wheeled::Middle).map(|(_, area)| (Wheeled::Stream, area)),
             Mode::Moving { .. } | Mode::MovingHead { .. } => alone(Wheeled::Patches),
-            Mode::Ask(_) | Mode::Views(_) | Mode::Protected(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) => None,
+            Mode::Ask(_) | Mode::Views(_) | Mode::Protected(_) | Mode::Bug(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) => None,
         }
     }
 

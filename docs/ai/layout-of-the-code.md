@@ -93,6 +93,11 @@
   Conduit called by curl, the token on its standard input, what
   Phabricator answered said, and its refusals of this machine (HTTP 429)
   an error of their own.
+- `bug.rs`: a bug filed for a patch whose title names none, as Firefox's
+  bug-filing skill files one: what an ask drafting it is told and answers
+  with (`Way::Bug`, with the `moz-phab` feature), the draft read from its
+  answer, the link of Bugzilla's form filled in with it, the bug's number
+  read from what is typed, and the number put in the patch's title.
 - `try_push.rs`: the try push, built with the `try-push` feature (on by
   default): what an ask of a try push is told and answers with, its tasks
   read from its answer, and what a round asked again is told of them; the
@@ -220,6 +225,10 @@
   is typed, then Change them or Cancel; what is done again once it is
   typed, as it was asked; and the edits by hand in $EDITOR asked about
   before the editor opens;
+  `tui/bug_dialog.rs`, the dialog that takes the number of the bug the
+  agent drafted once its review closed and its form opened, laid out as
+  that one: a field for the number or a link to the bug, then Put it in
+  the title, Open the form again or Cancel;
   `tui/change.rs`, the change from one version to another as a patch of
   its own in the views of the code there, the lines the change of base
   made left out with only what the patches changed, what each screen

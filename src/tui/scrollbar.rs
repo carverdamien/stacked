@@ -113,7 +113,7 @@ impl App {
             Mode::Edit(_) => return Some(Wheeled::Editor),
             Mode::Stream { .. } => return Some(Wheeled::Stream),
             Mode::Moving { .. } | Mode::MovingHead { .. } => return Some(Wheeled::Patches),
-            Mode::Ask(_) | Mode::Views(_) | Mode::Protected(_) | Mode::Lines(_) | Mode::Prompt(_) => return None,
+            Mode::Ask(_) | Mode::Views(_) | Mode::Protected(_) | Mode::Bug(_) | Mode::Lines(_) | Mode::Prompt(_) => return None,
             Mode::Normal | Mode::Find(_) => {}
         }
         Some(match self.screen {

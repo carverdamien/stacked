@@ -1545,6 +1545,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     Way::Test,
                     #[cfg(feature = "try-push")]
                     Way::Try,
+                    #[cfg(feature = "moz-phab")]
+                    Way::Bug,
                 ];
                 for way in ways {
                     let sent = ask::batched(&db, &name, way);
@@ -1763,6 +1765,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 for f in ask::follow_ups_going(&db, &r.id) {
                     let at = if f.run.is_some() { "with the agent" } else { "waiting its turn" };
                     println!("  following\t{}\t{at}\t{} comment{}", f.way.said(), f.notes.len(), if f.notes.len() == 1 { "" } else { "s" });
+                }
+                // The bug the agent drafted, to read: its form opens as the
+                // editor's review of it closes.
+                if let Some(b) = &h.bug {
+                    println!("  bug\t{} :: {}\t{}\t{}", b.product, b.component, b.bug_type, b.short_desc);
                 }
                 // What the linter reported and did not fix, to read: where
                 // each run of it that did ran, then its lines.

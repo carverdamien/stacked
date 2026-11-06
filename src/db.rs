@@ -764,7 +764,10 @@ pub enum Way {
     /// Answer only: read-only. Built without the `try-push` feature, an ask
     /// that a stacked built with it made a try push's is read as one of
     /// these, which changes nothing either: the database reads all the same.
+    /// Built without the `moz-phab` feature, an ask that drafted a bug is
+    /// read as one too.
     #[cfg_attr(not(feature = "try-push"), serde(alias = "try"))]
+    #[cfg_attr(not(feature = "moz-phab"), serde(alias = "bug"))]
     Answer,
     /// Build and test, in the stack's build worktree; changes nothing in
     /// the stack.
@@ -774,12 +777,19 @@ pub enum Way {
     /// once you accept them.
     #[cfg(feature = "try-push")]
     Try,
+    /// A bug drafted for a patch whose title names none, built with the
+    /// `moz-phab` feature (`bug`): it changes nothing, and the draft waits
+    /// for your review; closing the review opens Bugzilla's form, filled
+    /// in with it.
+    #[cfg(feature = "moz-phab")]
+    Bug,
 }
 
 impl Way {
     /// Every way of asking, as each kind of ask is said: a change, an
     /// answer, a build and test, and, with the `try-push` feature, a try
-    /// push's selection.
+    /// push's selection. Not a bug's draft, which is let use what an
+    /// answer is, from the answers' lists (`Agent::accepted`).
     pub const ALL: &'static [Way] = &[
         Way::Change,
         Way::Answer,
@@ -795,6 +805,8 @@ impl Way {
             Way::Test => "test",
             #[cfg(feature = "try-push")]
             Way::Try => "try",
+            #[cfg(feature = "moz-phab")]
+            Way::Bug => "bug",
         }
     }
 
@@ -806,6 +818,8 @@ impl Way {
             Way::Test => "build and test",
             #[cfg(feature = "try-push")]
             Way::Try => "try push",
+            #[cfg(feature = "moz-phab")]
+            Way::Bug => "file a bug",
         }
     }
 }

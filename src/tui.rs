@@ -54,6 +54,8 @@ pub mod ask_dialog;
 pub use ask_dialog::{AskDialog, AskOf, Button, Permission};
 pub mod banner;
 pub use banner::BannerLine;
+pub mod bug_dialog;
+pub use bug_dialog::BugDialog;
 mod change;
 mod compared;
 pub mod finding;
@@ -752,6 +754,11 @@ pub enum Spot {
     /// Change them or Cancel, which a click presses.
     ProtectedField,
     ProtectedButton(usize),
+    /// The field of the dialog that takes the number of the bug drafted,
+    /// where a click puts the cursor; button `k` of it, Put it in the title,
+    /// Open the form again or Cancel, which a click presses.
+    BugField,
+    BugButton(usize),
 }
 
 impl Spot {
@@ -1081,6 +1088,10 @@ pub enum Mode {
     /// changed, as Phabricator has them Accepted or Landed: accept to type,
     /// then Change them or Cancel.
     Protected(Box<ProtectedDialog>),
+    /// The dialog that takes the number of the bug the agent drafted, once
+    /// the form to file it opened: the number to type, then Put it in the
+    /// title, Open the form again or Cancel.
+    Bug(Box<BugDialog>),
     /// A comment being written, inline.
     Edit(Box<Edit>),
     /// The patch at `from` being moved, now at `to`: ↑↓ to place it.
@@ -1422,6 +1433,11 @@ pub enum Action {
     /// 0, wrapped at the width the settings give (`view.message_width`):
     /// their new versions land for your review, as an edit by hand does.
     WrapMessages(Vec<usize>),
+    /// Bug `1` put in the title of the patch of change `0`, as moz-phab
+    /// writes it (`Bug N - title`), from the dialog that takes the number of
+    /// the bug the agent drafted: a new version of the patch, its message
+    /// alone changed, written at once.
+    PutBug(String, u64),
     /// The stack linted with its checkout's linter, patch by patch, away
     /// from the screen: what it fixes lands for your review.
     Lint,
@@ -1732,6 +1748,7 @@ fn about(action: &Action) -> String {
             "drop this patch's changes to {file}: the patch without them lands for your review, as an edit by hand does, once the patches after it are seen to still apply on it"
         ),
         Action::DropFile(_) => "drop them".into(),
+        Action::PutBug(_, n) => format!("put bug {n} in the patch's title, as moz-phab writes it: a new version of the patch, its message alone changed"),
         Action::WrapMessages(at) => {
             let (messages, lands) = match at.len() {
                 1 => ("message", "the patch's new version lands"),
@@ -1882,6 +1899,10 @@ fn about(action: &Action) -> String {
         #[cfg(feature = "try-push")]
         Action::SendBatch(Way::Try, _) => {
             "send each batched try push, each an ask of its own: the agent selects its CI tasks, which wait for your review".into()
+        }
+        #[cfg(feature = "moz-phab")]
+        Action::SendBatch(Way::Bug, _) => {
+            "send each batched bug to draft, each an ask of its own: the agent drafts the bug, which waits for your review".into()
         }
         Action::Toggle(..) => "put this comment in the batch, to be sent with it, or take it out".into(),
         Action::OpenStream => "read what the agent is writing".into(),
@@ -4411,7 +4432,9 @@ impl App {
             | Spot::ViewsButton(_)
             | Spot::ViewsOption(_)
             | Spot::ProtectedField
-            | Spot::ProtectedButton(_) => false,
+            | Spot::ProtectedButton(_)
+            | Spot::BugField
+            | Spot::BugButton(_) => false,
         }
     }
 
@@ -4446,6 +4469,7 @@ impl App {
             mode => matches!(mode, Mode::Ask(_)),
         };
         let protecting = matches!(self.mode, Mode::Protected(_));
+        let filing = matches!(self.mode, Mode::Bug(_));
         let e = self.click_on(x, y, right);
         // Another menu than that one: opened by the click, next to it.
         if let Mode::Menu(m) = &mut self.mode
@@ -4462,6 +4486,13 @@ impl App {
         }
         if let Mode::Protected(d) = &mut self.mode
             && !protecting
+        {
+            d.at = Some((x, y));
+        }
+        // And the dialog that takes the number of the bug drafted, opened as
+        // the review closed under the click.
+        if let Mode::Bug(d) = &mut self.mode
+            && !filing
         {
             d.at = Some((x, y));
         }
@@ -4581,6 +4612,24 @@ impl App {
                     Some(Spot::ProtectedButton(b)) => {
                         (d.line, d.button) = (protected_dialog::BUTTONS_LINE, b);
                         press(self, KeyCode::Enter)
+                    }
+                    Some(Spot::Box) => Effect::None,
+                    _ => press(self, KeyCode::Esc),
+                };
+            }
+            // The dialog that takes the number of the bug drafted, as that
+            // one: a click in its field puts the cursor there; on a button,
+            // presses it, Put it in the title doing nothing while the field
+            // holds no bug's number; out of the box, Esc, which cancels.
+            Mode::Bug(d) => {
+                return match spot {
+                    Some(Spot::BugField) => {
+                        d.line = bug_dialog::FIELD_LINE;
+                        Effect::None
+                    }
+                    Some(Spot::BugButton(b)) => {
+                        let d = (**d).clone();
+                        self.bug_press(BugDialog { line: bug_dialog::BUTTONS_LINE, button: b, ..d })
                     }
                     Some(Spot::Box) => Effect::None,
                     _ => press(self, KeyCode::Esc),
@@ -4750,6 +4799,14 @@ impl App {
                 }
                 _ => {}
             },
+            // The dialog that takes the number of the bug drafted, as that
+            // one: over its field, the cursor there; over a button that can
+            // be pressed, there.
+            Mode::Bug(d) => match spot {
+                Spot::BugField => d.line = bug_dialog::FIELD_LINE,
+                Spot::BugButton(b) if d.pressable(b) => (d.line, d.button) = (bug_dialog::BUTTONS_LINE, b),
+                _ => {}
+            },
             Mode::Moving { to, .. } => {
                 if let Spot::Patch(Some(at)) = spot {
                     *to = at;
@@ -4807,6 +4864,8 @@ impl App {
                 | Spot::ViewsOption(_)
                 | Spot::ProtectedField
                 | Spot::ProtectedButton(_)
+                | Spot::BugField
+                | Spot::BugButton(_)
         ) {
             let banner = matches!(spot, Spot::Banner | Spot::BannerLine(_));
             if banner && !self.on_banner {
@@ -4902,7 +4961,9 @@ impl App {
             | Spot::ViewsButton(_)
             | Spot::ViewsOption(_)
             | Spot::ProtectedField
-            | Spot::ProtectedButton(_) => return false,
+            | Spot::ProtectedButton(_)
+            | Spot::BugField
+            | Spot::BugButton(_) => return false,
         }
         true
     }
@@ -5233,10 +5294,11 @@ impl App {
 
     /// Whether the keys are typed as text, as they are: in the comment
     /// editor, the lines named to attach, a line typed for a prompt, the
-    /// search of the middle, the search's own screen, and the dialog where
-    /// accept is typed before patches that should not change are changed.
+    /// search of the middle, the search's own screen, the dialog where
+    /// accept is typed before patches that should not change are changed,
+    /// and the one where the number of the bug drafted is typed.
     fn typing(&self) -> bool {
-        matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) | Mode::Protected(_))
+        matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) | Mode::Protected(_) | Mode::Bug(_))
             || (self.screen == Screen::Search && matches!(self.mode, Mode::Normal))
     }
 
@@ -5279,7 +5341,7 @@ impl App {
                 return Effect::None;
             }
         } else if k.code == KeyCode::Char('?')
-            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) | Mode::Protected(_))
+            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) | Mode::Protected(_) | Mode::Bug(_))
             && (self.helps() || self.mode != Mode::Normal)
         {
             self.mode = Mode::Help {
@@ -5296,6 +5358,7 @@ impl App {
             Mode::Ask(d) => return self.ask_key(*d, k),
             Mode::Views(d) => return self.views_key(*d, k),
             Mode::Protected(d) => return self.protected_key(*d, k),
+            Mode::Bug(d) => return self.bug_key(*d, k),
             Mode::Preview(p) => return self.preview_key(*p, k),
             Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Lines(l) => return self.lines_key(*l, k),
@@ -6619,6 +6682,7 @@ impl App {
             Mode::Ask(d) => return self.ask_help(d),
             Mode::Views(d) => return self.views_help(d),
             Mode::Protected(d) => return self.protected_help(d),
+            Mode::Bug(d) => return self.bug_help(d),
             Mode::Moving { to, .. } => {
                 out.push(format!("Press Enter to put {} there, at {}.", self.patch_title(), to + 1));
                 out.push("Press ↑↓ to place it elsewhere, Esc to leave it where it was.".into());
@@ -8430,6 +8494,7 @@ impl App {
                     self.status = e.0;
                 }
             },
+            Action::PutBug(change, n) => self.put_bug(&change, n),
             Action::WrapMessages(places) => match ops::wrap_messages(&self.path, &name, &places, self.cfg.view.message_width) {
                 Ok(done) => self.edited(done, None, None),
                 Err(e) => {
@@ -9998,6 +10063,8 @@ impl App {
             (Way::Test, _) => format!("{n} build{} and test{}, each on its own", plural(n), plural(n)),
             #[cfg(feature = "try-push")]
             (Way::Try, _) => format!("{n} try push{}, each on its own", if n == 1 { "" } else { "es" }),
+            #[cfg(feature = "moz-phab")]
+            (Way::Bug, _) => format!("{n} bug{} to draft, each on its own", plural(n)),
             (_, true) => format!("{n} question{}, an agent each", plural(n)),
             _ => format!("{n} comment{} to a single agent", plural(n)),
         };
@@ -11027,6 +11094,7 @@ impl App {
         self.draw_ask(buf, body);
         self.draw_views(buf, body);
         let cursor = self.draw_protected(buf, body).or(cursor);
+        let cursor = self.draw_bug(buf, body).or(cursor);
         self.draw_help(buf, body);
         self.draw_ref_preview(buf, body);
         let cursor = self.draw_lines(buf, body).or(cursor);
@@ -11412,6 +11480,7 @@ impl App {
             Mode::Ask(d) => App::ask_hint(d),
             Mode::Views(d) => App::views_hint(d),
             Mode::Protected(d) => App::protected_hint(d),
+            Mode::Bug(d) => App::bug_hint(d),
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
             Mode::MovingHead { .. } => "↑↓ to place HEAD · enter: move your checkout there · esc: leave it where it was".into(),
             // What was closed here, taller than its box: ↑↓ scroll it. Whole

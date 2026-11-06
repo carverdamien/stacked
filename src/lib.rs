@@ -11,6 +11,7 @@
 pub mod app;
 pub mod ask;
 pub mod blocks;
+pub mod bug;
 #[cfg(feature = "app")]
 pub mod bundle;
 pub mod change;

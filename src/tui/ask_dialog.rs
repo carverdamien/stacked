@@ -40,6 +40,10 @@ pub enum Permission {
     Test,
     #[cfg(feature = "try-push")]
     Try,
+    /// A bug drafted for the patch, whose title names none, built with the
+    /// `moz-phab` feature (`bug`).
+    #[cfg(feature = "moz-phab")]
+    Bug,
 }
 
 impl Permission {
@@ -52,6 +56,8 @@ impl Permission {
             Permission::Test => "build and test",
             #[cfg(feature = "try-push")]
             Permission::Try => "try push",
+            #[cfg(feature = "moz-phab")]
+            Permission::Bug => "file a bug",
         }
     }
 
@@ -63,6 +69,8 @@ impl Permission {
             Permission::Test => Way::Test,
             #[cfg(feature = "try-push")]
             Permission::Try => Way::Try,
+            #[cfg(feature = "moz-phab")]
+            Permission::Bug => Way::Bug,
         }
     }
 
@@ -81,6 +89,10 @@ impl Permission {
             #[cfg(feature = "try-push")]
             (Permission::Try, _) => {
                 "The agent selects the CI tasks the comment asks for, for a try push, each with why: it pushes nothing and changes nothing, and the tasks wait for your review."
+            }
+            #[cfg(feature = "moz-phab")]
+            (Permission::Bug, _) => {
+                "The agent drafts a bug for this patch, whose title names none: it files nothing and changes nothing, and the draft waits for your review. Closing the review opens Bugzilla's form, filled in, in your browser, and you give the bug's number once you file it there."
             }
         }
     }
@@ -115,6 +127,9 @@ impl Permission {
             (Permission::Try, _) => {
                 "This work stays waiting for your review: the agent selects the CI tasks the comments ask for, for a try push of the stack this work makes, and pushes nothing; the tasks come into this review, to accept or reject."
             }
+            // Never offered to send work back (`sent_ways`).
+            #[cfg(feature = "moz-phab")]
+            (Permission::Bug, _) => "This work stays waiting for your review: the agent drafts a bug for the patch, and files nothing.",
         };
         match n {
             1 => format!("{what} 1 comment goes back to the agent."),
@@ -147,6 +162,8 @@ impl Permission {
             Permission::Test => "to build and test",
             #[cfg(feature = "try-push")]
             Permission::Try => "for a try push",
+            #[cfg(feature = "moz-phab")]
+            Permission::Bug => "to draft a bug",
         }
     }
 }
@@ -468,8 +485,10 @@ impl App {
     /// whole stack; the stack's, the stack; the stack's and a patch's as a
     /// whole, to build and test, and, built with the `try-push` feature, to
     /// select the CI tasks of a try push (not in the tour, whose game has
-    /// no CI to push to); a question on the history, to answer alone. None
-    /// if what it asks about is gone.
+    /// no CI to push to); a patch's comment, the patch's title naming no
+    /// bug, built with the `moz-phab` feature, to draft one (not in the tour
+    /// either); a question on the history, to answer alone. None if what it
+    /// asks about is gone.
     fn asking_of(&self, about: &AskOf) -> Option<Opened> {
         let ways = |patch: bool, test: bool| {
             let mut out = vec![Permission::Answer];
@@ -493,7 +512,13 @@ impl App {
                     return Some((format!("ask the agent about the question on @{rev}"), true, vec![(Permission::Answer, None)]));
                 }
                 let title = format!("ask the agent about the comment on {}", where_on(&self.db, &self.stack, n));
-                Some((title, n.on_stack(), ways(!n.on_stack(), ask::can_test(&self.db, n))))
+                #[cfg_attr(not(feature = "moz-phab"), allow(unused_mut))]
+                let mut all = ways(!n.on_stack(), ask::can_test(&self.db, n));
+                #[cfg(feature = "moz-phab")]
+                if !self.in_memory() && ask::can_bug(&self.db, n) {
+                    all.push((Permission::Bug, None));
+                }
+                Some((title, n.on_stack(), all))
             }
             AskOf::Listed { test } => {
                 let place = if self.on_stack { "the stack".to_string() } else { format!("patch {}", self.sel + 1) };
@@ -514,7 +539,13 @@ impl App {
                     return Some((title, true, vec![(Permission::Answer, None)]));
                 }
                 let (patch, test) = self.written_ways(&e.target);
-                Some((title, !patch, ways(patch, test)))
+                #[cfg_attr(not(feature = "moz-phab"), allow(unused_mut))]
+                let mut all = ways(patch, test);
+                #[cfg(feature = "moz-phab")]
+                if patch && self.written_bug(&e.target) {
+                    all.push((Permission::Bug, None));
+                }
+                Some((title, !patch, all))
             }
             // A pull's change holding patches whose conflicts it marked: a
             // change of them, the comment that hands them over on the patch,
@@ -611,6 +642,19 @@ impl App {
             _ => false,
         };
         (patch, test)
+    }
+
+    /// Of a comment written for `t`, on a patch: whether it may be asked to
+    /// draft a bug, as the patch's title names none (`ask::can_bug`); not
+    /// in the tour, whose game has no bug to file.
+    #[cfg(feature = "moz-phab")]
+    fn written_bug(&self, t: &Target) -> bool {
+        let change = match t {
+            Target::Patch(change) | Target::Line { change, .. } => change,
+            Target::Reply { change, .. } | Target::Edit { change, .. } | Target::Turn { change, .. } | Target::Rewind { change, .. } => change,
+            _ => return false,
+        };
+        !self.in_memory() && self.db.latest_version(change).is_some_and(|p| crate::bug::names_none(p.title()))
     }
 
     /// What the dialog says on its top of a comment written for `t`: saved

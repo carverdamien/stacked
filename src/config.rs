@@ -351,7 +351,8 @@ pub struct Agent {
 
 impl Agent {
     /// What the reviews of the agent's work allowed from now on, for the
-    /// asks made in `way`.
+    /// asks made in `way`: a bug's draft, which only reads, from the
+    /// answers' list.
     pub fn accepted(&self, way: crate::db::Way) -> &[String] {
         use crate::db::Way;
         match way {
@@ -360,12 +361,15 @@ impl Agent {
             Way::Test => &self.test_accepted,
             #[cfg(feature = "try-push")]
             Way::Try => &self.try_accepted,
+            #[cfg(feature = "moz-phab")]
+            Way::Bug => &self.answer_accepted,
         }
     }
 }
 
 /// The setting that holds what the reviews of the agent's work allowed from
-/// now on, for the asks made in `way`: `agent.answer_accepted`.
+/// now on, for the asks made in `way`: `agent.answer_accepted`, for a bug's
+/// draft too.
 pub fn accepted_key(way: crate::db::Way) -> &'static str {
     use crate::db::Way;
     match way {
@@ -374,6 +378,8 @@ pub fn accepted_key(way: crate::db::Way) -> &'static str {
         Way::Test => "agent.test_accepted",
         #[cfg(feature = "try-push")]
         Way::Try => "agent.try_accepted",
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => "agent.answer_accepted",
     }
 }
 

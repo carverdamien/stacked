@@ -60,6 +60,8 @@ pub(super) fn ask_said(q: &crate::db::Queued) -> &'static str {
         Way::Test => "build and test ask",
         #[cfg(feature = "try-push")]
         Way::Try => "try push ask",
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => "ask to draft a bug",
     }
 }
 
@@ -584,6 +586,14 @@ impl App {
                 out.push(Item::new(label, Action::SendBatch(Way::Try, true)).when(w).with(effort(Way::Try)));
             }
         }
+        #[cfg(feature = "moz-phab")]
+        {
+            let bugs = count(Way::Bug);
+            if bugs > 0 {
+                let label = format!("Send {bugs} bug{} to draft, each on its own", plural(bugs));
+                out.push(Item::new(label, Action::SendBatch(Way::Bug, true)).when(w).with(effort(Way::Bug)));
+            }
+        }
         let asks = self.asks_list();
         if !out.is_empty() && !asks.is_empty() {
             out.push(Item::line());
@@ -624,11 +634,16 @@ impl App {
         let tries = count(Way::Try);
         #[cfg(not(feature = "try-push"))]
         let tries = 0;
+        #[cfg(feature = "moz-phab")]
+        let bugs = count(Way::Bug);
+        #[cfg(not(feature = "moz-phab"))]
+        let bugs = 0;
         for (n, one, many) in [
             (count(Way::Change), "edit", "edits"),
             (count(Way::Answer), "answer only", "answers only"),
             (count(Way::Test), "build and test", "builds and tests"),
             (tries, "try push", "try pushes"),
+            (bugs, "bug to draft", "bugs to draft"),
         ] {
             if n > 0 {
                 parts.push(format!("{n} {}", if n == 1 { one } else { many }));

@@ -794,6 +794,9 @@ pub fn kind_said(way: Way) -> &'static str {
         Way::Test => "builds and tests",
         #[cfg(feature = "try-push")]
         Way::Try => "the asks that select a try push's tasks",
+        // Saved in the answers' list (`Agent::accepted`).
+        #[cfg(feature = "moz-phab")]
+        Way::Bug => "answer-only asks and the asks that draft a bug",
     }
 }
 

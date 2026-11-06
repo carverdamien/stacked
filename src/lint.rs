@@ -714,7 +714,7 @@ fn landed(db: &mut Db, r: &Run, done: std::result::Result<Linted, String>, needs
             }),
             opened,
             edits: vec![op.clone()],
-            lint: Some(l.report),
+            lint: Some(Box::new(l.report)),
             ..Default::default()
         };
         let needs = crate::held::needs_filed(db, r, &held, needs);
@@ -724,7 +724,7 @@ fn landed(db: &mut Db, r: &Run, done: std::result::Result<Linted, String>, needs
         let summary = format!("the linter fixed nothing, and reported what it did not fix: {}", l.report.errors_said());
         let held = Held {
             at: now(),
-            lint: Some(l.report),
+            lint: Some(Box::new(l.report)),
             ..Default::default()
         };
         return Ok((summary, Some(held)));

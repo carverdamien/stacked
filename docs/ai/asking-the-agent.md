@@ -182,6 +182,47 @@ and Ask Now and Ask Later are grayed while none can be.
   (`agent.try_tools`); it pushes nothing and changes nothing. What it
   selects waits for your review, and stacked pushes what you accept (Try
   push, below).
+- `file a bug`, built with the `moz-phab` feature, on a patch's comments
+  (as a whole or on a line) when the patch's title names no bug as
+  moz-phab reads one (`links::bug_in`), never on the stack's comments, the
+  history, nor in the tour; absent from the list otherwise. It drafts the
+  bug the patch is for as Firefox's own bug-filing skill does, its rules
+  in the prompt in stacked's words: the product and the component from
+  `./mach file-info bugzilla-component FILE` (the closest sensible one for
+  `UNKNOWN`); the type, `defect`, `enhancement` or `task`; the summary
+  shaped to the type (the symptom, the capability wanted, the action to
+  take), in ordinary words, no counts, no coined terms; the description
+  with identifiers in backticks, and the test's dashboard link
+  (`https://tests.firefox.dev/test.html?test=PATH`) for a test failure. It
+  reads as an answer reads, where an answer works, given what an answer is
+  given and `Bash(./mach file-info bugzilla-component *)` besides, the
+  answers' lists of the settings (`agent.answer_tools`,
+  `agent.answer_accepted`) its own; it files nothing, runs no
+  `file-bug.py`, opens nothing. It answers with its replies and `bug`:
+  `product`, `component`, `bug_type`, `short_desc`, `comment`, and, when
+  the bug needs them, `blocked`, `dependson`, `see_also`. The draft lands
+  for your review, a section `the bug to file, to read`, its fields on the
+  right; nothing to accept or reject. Closing the review opens Bugzilla's
+  form to file it (`enter_bug.cgi` on `reviews.bugzilla`, each field
+  percent-encoded, as the skill's `file-bug.py` makes it) in your browser
+  as a link opens (`$STACKED_OPEN`, else the system's opener): from the
+  terminal, from `stacked web` (a new tab of your browser) and from
+  StackED alike. Its link is long and never shown. Then a dialog, laid out
+  as the dialog for patches that should not change: `The form to file the
+  bug is open in your browser: Core :: Networking, “…”.`, `Review it there
+  and submit it on Bugzilla, then give the bug's number here, or paste the
+  link to the bug.`, a field, and `< Put it in the title >` (grayed until
+  the field holds a number: `123`, `#123`, `bug 123`, a `show_bug.cgi?id=`
+  link or one ending in the number), `< Open the form again >` and `<
+  Cancel >`; Esc, Cancel or a click out of it change nothing, the form
+  staying open in the browser. The keys go to the field as typed, `?`
+  too. Put in the title, the patch's title becomes `Bug N - title`, as
+  moz-phab writes it: a new version of the patch, its message alone
+  changed, written at once as any change of the stack, refused while the
+  agent changes the stack or once the title names a bug, and asked about
+  first by the dialog for patches that should not change (`Db::guard`).
+  The next submit sends the bug. `stacked review` lists the draft (`bug`)
+  but opens no form; only the editor's review does.
 
 How hard the agent works on an ask is its effort, as claude's `--effort`
 takes it: `low`, `medium`, `high`, `xhigh` or `max`, the dialog's second
