@@ -4,7 +4,8 @@
 //! back its keys and clicks. It is sent too, unless the settings' `[web]`
 //! say otherwise (`notifications`), the notices of what the editor learns
 //! of every stack (`tui::notices`), which the page shows as the system's
-//! banners while it is not what you look at; and, unless they say
+//! banners, and counts on its tab's icon, while it is not what you look
+//! at; and, unless they say
 //! otherwise (`bell`), a line after those learned at once, banners or not,
 //! for the page to ring its bell then. Its half is wasm
 //! (web/client.rs, built by the build script), carried by a little JS

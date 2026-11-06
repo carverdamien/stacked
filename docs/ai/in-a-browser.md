@@ -346,6 +346,22 @@ Refused, or in a browser without notifications, nothing is shown, and the
 page works as ever. `web.notifications = false` (Settings, below) sends
 none.
 
+The tab's icon counts the notices that came while the page was not what you
+look at, whether the browser showed their banners or not: StackED's icon
+with a red badge in its top right corner, the count in white, `9+` past 9,
+so that it stays legible on a tab. The page draws it on a canvas from the
+plain icon, at both of the icon's sizes, 32 and 64 pixels, the badge's
+circle five eighths of the icon wide, ringed with the page's background,
+`#1e1e1e`, to stand apart from the icon's white sheets; its red is
+`#d32f2f`. The notice of a tab come back (above) counts too. A notice that
+comes while you look at the page counts nothing. Once you look at the page
+again, shown in the window that has the focus, the count is 0 and the plain
+icon comes back. An installed app of the page has its own badge where the
+browser has one (`navigator.setAppBadge`): it says the count too, and is
+cleared with it; a browser without one, such as Firefox, has the tab's icon
+alone. A browser that draws no icon a page changes, as Safari may, shows
+the plain icon; nothing else says the count. There is no setting for it.
+
 With what the notices tell, while the page is not what you look at, as for
 the banners, the page rings a bell: one soft strike of a small bell, about
 a second long, which the page makes itself with the browser's Web Audio

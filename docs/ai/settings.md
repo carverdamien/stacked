@@ -348,9 +348,10 @@ settings:
   kept or given, is said in a line, `port 8080 of 127.0.0.1 is in use`,
   and `stacked web` exits with 1, trying no other. `notifications`, `true`
   unless set: the page is sent the editor's notices, of every stack, which
-  it shows as the system's banners while it is not what you look at (In a
-  browser, above); `false` sends none, the bell ringing all the same
-  unless `bell` is `false` too. Any other value, of any kind, is
+  it shows as the system's banners, and counts on the tab's icon, while it
+  is not what you look at (In a browser, above); `false` sends none, the
+  icon counting nothing, the bell ringing all the same unless `bell` is
+  `false` too. Any other value, of any kind, is
   said (`web.notifications: "off" is not true or false`), and `true` kept;
   `stacked config` refuses to write it (`web.notifications is true or
   false, not "off"`). The browser keeps its permission to show them for

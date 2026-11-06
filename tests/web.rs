@@ -305,6 +305,260 @@ fn the_page_s_tab_has_stacked_s_icon_asked_for_with_the_token_as_all_else_is() {
     assert_eq!(ask(port, &host, "GET /favicon.ico", "").0, "HTTP/1.1 403 Forbidden");
 }
 
+/// A stand-in for a browser, for node to run the page's own scripts in, as
+/// web/index.html has them, then `$STACKED_SCENARIO`, which drives them
+/// through `t` and checks them with node's `assert`: the page's tab, two
+/// icons as its links say, the page not looked at; a canvas that draws
+/// nothing but writes what it was asked to draw in its data URL, for `t`
+/// to read back; pictures that load at once, from nowhere; no server, no
+/// network and no window. An exception, an assertion failed or a promise
+/// rejected that nothing handles fails it.
+const BROWSER: &str = r#"
+const vm = require('vm'), fs = require('fs'), assert = require('assert');
+process.on('unhandledRejection', e => { console.error('unhandled:', e); process.exit(1); });
+const page = fs.readFileSync(process.env.STACKED_PAGE, 'utf8');
+const scripts = Array.from(page.matchAll(/<script>([\s\S]*?)<\/script>/g), m => m[1]);
+const on = all => (type, f) => { (all[type] ||= []).push(f); };
+const off = all => (type, f) => { all[type] = (all[type] || []).filter(g => g !== f); };
+const fire = (all, type) => { for (const f of [...(all[type] || [])]) f({type}); };
+const ofWindow = {}, ofDocument = {}, loaded = [], banners = [];
+let hidden = true, focused = false;
+const links = Array.from(page.matchAll(/<link rel="icon" type="image\/png" sizes="(\d+)x\d+" data-path="([^"]+)">/g),
+  ([, px, path]) => ({dataset: {path}, href: '', getAttribute: n => (n === 'sizes' ? `${px}x${px}` : null)}));
+const element = () => ({style: {}, children: [], dataset: {}, textContent: '', append() {}, remove() {}, replaceChildren() {},
+  addEventListener() {}, getBoundingClientRect: () => ({width: 800, height: 16, left: 0, top: 0})});
+const canvas = () => {
+  const drawn = {width: 0, fills: [], strokes: [], texts: [], images: []};
+  const g = {
+    fillStyle: '', strokeStyle: '', font: '', lineWidth: 1,
+    drawImage(img, x, y, w, h) { drawn.images.push([img.src, w, h]); },
+    beginPath() {}, arc() {}, fill() { drawn.fills.push(this.fillStyle); }, stroke() { drawn.strokes.push(this.strokeStyle); },
+    fillText(text) { drawn.texts.push([text, this.fillStyle, this.font]); },
+  };
+  return {
+    set width(v) { drawn.width = v; }, get width() { return drawn.width; }, height: 0,
+    getContext: () => g,
+    toDataURL: () => 'data:image/png;base64,' + Buffer.from(JSON.stringify(drawn)).toString('base64'),
+  };
+};
+class Image {
+  set src(v) { this._src = v; loaded.push(v); queueMicrotask(() => this.onload && this.onload()); }
+  get src() { return this._src; }
+}
+const navigator = {platform: 'Linux', sendBeacon() {}};
+const document = {
+  get hidden() { return hidden; },
+  hasFocus: () => focused,
+  querySelectorAll: q => (q === 'link[rel=icon]' ? links : []),
+  getElementById: element,
+  createElement: tag => (tag === 'canvas' ? canvas() : element()),
+  addEventListener: on(ofDocument), removeEventListener: off(ofDocument),
+};
+const window = {
+  document, navigator, Image, URLSearchParams, TextEncoder, TextDecoder, performance, queueMicrotask, setTimeout, console, Buffer,
+  location: {search: '?t=token', reload() {}},
+  sessionStorage: {getItem: () => null, setItem() {}},
+  addEventListener: on(ofWindow), removeEventListener: off(ofWindow),
+  fetch: () => new Promise(() => {}),
+  focus() {},
+};
+window.window = window;
+// Node's assert, but for values of two realms, the page's and node's own,
+// whose arrays it would never find equal: compared as JSON.
+const check = (ok, why) => assert(ok, why);
+check.strictEqual = assert.strictEqual;
+check.deepStrictEqual = (a, b) => assert.deepStrictEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
+const t = {
+  assert: check, loaded, banners, navigator, window,
+  plain: links.map(l => l.dataset.path + '?t=token'),
+  icons: () => links.map(l => l.href),
+  // What the canvas was asked to draw for each icon, from its data URL.
+  badges: () => links.map(l => {
+    assert(l.href.startsWith('data:image/png;base64,'), `plain: ${l.href}`);
+    return JSON.parse(Buffer.from(l.href.slice('data:image/png;base64,'.length), 'base64'));
+  }),
+  settle: () => new Promise(r => setTimeout(r, 0)),
+  show() { hidden = false; fire(ofDocument, 'visibilitychange'); },
+  hide() { hidden = true; fire(ofDocument, 'visibilitychange'); },
+  focus() { focused = true; fire(ofWindow, 'focus'); },
+  blur() { focused = false; fire(ofWindow, 'blur'); },
+  look() { this.show(); this.focus(); },
+  away() { this.blur(); this.hide(); },
+  // Banners allowed, made as the page asks, kept.
+  allow() {
+    window.Notification = class { constructor(title, o) { banners.push([title, o.body, o.tag]); } close() {} };
+    window.Notification.permission = 'granted';
+  },
+};
+window.t = t;
+vm.createContext(window);
+vm.runInContext('globalThis.WebAssembly = {instantiateStreaming: () => new Promise(() => {})};', window);
+for (const s of scripts) vm.runInContext(s, window);
+vm.runInContext(`(async () => {\n${process.env.STACKED_SCENARIO}\n})()`, window).then(
+  () => t.settle().then(() => console.log('ok')),
+  e => { console.error(e); process.exit(1); });
+"#;
+
+/// Runs `scenario` in node, on the page's scripts in `BROWSER`'s stand-in
+/// for a browser; fails with what node said unless it ran through.
+fn in_the_page(scenario: &str) {
+    let mut node = Command::new("node")
+        .arg("-")
+        .env("STACKED_PAGE", concat!(env!("CARGO_MANIFEST_DIR"), "/web/index.html"))
+        .env("STACKED_SCENARIO", scenario)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("node, which these tests run the page's scripts in");
+    node.stdin.take().unwrap().write_all(BROWSER.as_bytes()).unwrap();
+    let out = node.wait_with_output().unwrap();
+    let (said, failed) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && said.trim_end() == "ok" && failed.is_empty(), "{}\n{said}{failed}", out.status);
+}
+
+#[test]
+fn a_notice_while_the_page_is_not_looked_at_counts_on_the_tab_s_icon_until_the_page_is_looked_at_again() {
+    in_the_page(
+        r#"
+        const {assert} = t;
+        assert.deepStrictEqual(t.icons(), t.plain);
+        // A notice, the page hidden: each icon StackED's, at its own size,
+        // with a red badge, ringed, holding 1 in white.
+        notice('s', 'stacked: s', 'A landed ask waits for your review.', 'n 1');
+        await t.settle();
+        const one = t.badges();
+        assert.deepStrictEqual(one.map(b => [b.width, b.images, b.texts.map(([text, colour]) => [text, colour])]), [
+            [32, [[t.plain[0], 32, 32]], [['1', '#fff']]],
+            [64, [[t.plain[1], 64, 64]], [['1', '#fff']]],
+        ]);
+        for (const b of one) assert.deepStrictEqual([b.fills, b.strokes], [['#d32f2f'], ['#1e1e1e']]);
+        // A second makes 2; the plain icons are loaded once.
+        notice('s', 'stacked: s', 'A run failed.', 'n 2');
+        await t.settle();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['2', '2']);
+        assert.deepStrictEqual(t.loaded, t.plain);
+        // The page shown, but its window not the one with the focus: still
+        // not looked at, still 2. Its window given the focus: the plain
+        // icons, and the count gone with them.
+        t.show();
+        await t.settle();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['2', '2']);
+        t.focus();
+        assert.deepStrictEqual(t.icons(), t.plain);
+        await t.settle();
+        assert.deepStrictEqual(t.icons(), t.plain);
+        // Away again, a notice counts from 0: 1.
+        t.away();
+        notice('s', 'stacked: s', 'A try push is done.', 'n 3');
+        await t.settle();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['1', '1']);
+        // Looked at again from a hidden tab, the window having kept the
+        // focus: the plain icons.
+        t.focus();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['1', '1']);
+        t.show();
+        assert.deepStrictEqual(t.icons(), t.plain);
+        "#,
+    );
+}
+
+#[test]
+fn a_notice_while_the_page_is_looked_at_counts_nothing_and_past_9_the_badge_says_9_plus() {
+    in_the_page(
+        r#"
+        const {assert} = t;
+        t.look();
+        notice('s', 'stacked: s', 'A run failed.', 'n 1');
+        await t.settle();
+        assert.deepStrictEqual([t.icons(), t.loaded], [t.plain, []]);
+        // Not looked at, the first notice counts 1, not 2.
+        t.blur();
+        notice('s', 'stacked: s', 'A run failed.', 'n 2');
+        await t.settle();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['1', '1']);
+        for (let i = 2; i <= 9; i++) notice('s', 'stacked: s', 'A run failed.', 'n 3');
+        await t.settle();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['9', '9']);
+        const size = b => parseInt(b.texts[0][2].split(' ')[1]);
+        const one = t.badges().map(size);
+        notice('s', 'stacked: s', 'A run failed.', 'n 4');
+        await t.settle();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['9+', '9+']);
+        // Two characters, in a smaller font than one.
+        const two = t.badges().map(size);
+        assert(two[0] < one[0] && two[1] < one[1], JSON.stringify([one, two]));
+        "#,
+    );
+}
+
+#[test]
+fn a_badge_drawn_after_the_page_was_looked_at_again_is_dropped_and_banners_shown_or_not_each_notice_counts() {
+    in_the_page(
+        r#"
+        const {assert} = t;
+        // Looked at before the plain icons loaded for the badge: they stay.
+        notice('s', 'stacked: s', 'A run failed.', 'n 1');
+        t.look();
+        await t.settle();
+        assert.deepStrictEqual(t.icons(), t.plain);
+        // Banners allowed: one for each notice, and each counted.
+        t.away();
+        t.allow();
+        notice('s', 'stacked: s', 'A run failed.', 'n 2');
+        notice('s', 'stacked: s', 'A try push is done.', 'n 3');
+        await t.settle();
+        assert.deepStrictEqual(t.banners.map(b => b[1]), ['A run failed.', 'A try push is done.']);
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['2', '2']);
+        "#,
+    );
+}
+
+#[test]
+fn an_installed_app_s_badge_says_the_count_where_the_browser_has_one_and_without_one_nothing_throws() {
+    // No setAppBadge, as in Firefox: the tab's icon alone, nothing thrown.
+    in_the_page(
+        r#"
+        const {assert} = t;
+        assert.strictEqual(t.navigator.setAppBadge, undefined);
+        notice('s', 'stacked: s', 'A run failed.', 'n 1');
+        await t.settle();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['1', '1']);
+        t.look();
+        assert.deepStrictEqual(t.icons(), t.plain);
+        "#,
+    );
+    // With one: the count, then cleared once the page is looked at.
+    in_the_page(
+        r#"
+        const {assert} = t, badge = [];
+        t.navigator.setAppBadge = n => { badge.push(n); return Promise.resolve(); };
+        t.navigator.clearAppBadge = () => { badge.push('cleared'); return Promise.resolve(); };
+        notice('s', 'stacked: s', 'A run failed.', 'n 1');
+        notice('s', 'stacked: s', 'A run failed.', 'n 2');
+        t.look();
+        await t.settle();
+        assert.deepStrictEqual(badge, [1, 2, 'cleared']);
+        "#,
+    );
+    // One the browser refuses, its promise rejected: nothing unhandled,
+    // the tab's icon as ever.
+    in_the_page(
+        r#"
+        const {assert} = t;
+        const no = () => Promise.reject(new Error('NotAllowedError'));
+        t.navigator.setAppBadge = no;
+        t.navigator.clearAppBadge = no;
+        notice('s', 'stacked: s', 'A run failed.', 'n 1');
+        await t.settle();
+        assert.deepStrictEqual(t.badges().map(b => b.texts[0][0]), ['1', '1']);
+        t.look();
+        await t.settle();
+        assert.deepStrictEqual(t.icons(), t.plain);
+        "#,
+    );
+}
+
 /// One editor of this process at a time submits to Phabricator: the
 /// stand-in a submit reads is the process's own.
 #[cfg(feature = "moz-phab")]

@@ -26,10 +26,11 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 <div id="gone"></div>
 <div id="editing"></div>
 <script>
-// Only carries things, and rings the bell: the server's lines to the wasm,
-// what the wasm makes of them to the page, to the system's banners and to
-// the bell, and what it makes of the page's keys and clicks to the server
-// (web/client.rs says what each is).
+// Only carries things, counts the notices and rings the bell: the server's
+// lines to the wasm, what the wasm makes of them to the page, to the
+// system's banners, to the tab's icon and to the bell, and what it makes of
+// the page's keys and clicks to the server (web/client.rs says what each
+// is).
 const token = new URLSearchParams(location.search).get('t');
 const screen = document.getElementById('screen'), gone = document.getElementById('gone'), editing = document.getElementById('editing');
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -93,12 +94,76 @@ const over = text => {
 // focus. Only while it is not are the notices shown and the bell rung: on
 // it, the editor's own banner says what they tell.
 const looked = () => !document.hidden && document.hasFocus();
-// A notice of the editor's, a banner of the system's, only while the page
-// is not what you look at. Clicked, it brings the page forward, closes, and
-// sends its line. Without the browser's permission, or without its
-// notifications, nothing is shown.
+// How many notices came while the page was not what you look at, banners
+// shown or not, said on the tab's icon: StackED's, with a red badge in its
+// top right corner holding the count, white, "9+" past 9 so that it stays
+// legible on a tab. Each icon is drawn at its own size on a canvas from the
+// plain one, loaded once, the first time a badge is drawn; one drawn after
+// the count changed again is dropped. The page looked at again, the count
+// is 0 and the plain icons come back. An installed app's own badge
+// (`setAppBadge`) says the count too, where the browser has one; where it
+// has none, as Firefox, or refuses it, nothing else changes.
+const BADGE = '#d32f2f', RING = '#1e1e1e';
+const icons = Array.from(document.querySelectorAll('link[rel=icon]'));
+let unseen = 0, faces = null;
+const face = path => new Promise((ok, no) => {
+  const img = new Image();
+  img.onload = () => ok(img);
+  img.onerror = no;
+  img.src = path + location.search;
+});
+// The plain icon `img`, `px` wide, with the badge saying `n`: its circle
+// five eighths of the icon wide, ringed with the page's background for it
+// to stand apart from the icon's white sheets.
+const badged = (img, px, n) => {
+  const c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0, px, px);
+  const r = px * 5 / 16, x = px - r, y = r, text = n > 9 ? '9+' : String(n);
+  g.beginPath();
+  g.arc(x, y, r - px / 32, 0, 2 * Math.PI);
+  g.fillStyle = BADGE;
+  g.fill();
+  g.lineWidth = px / 16;
+  g.strokeStyle = RING;
+  g.stroke();
+  g.fillStyle = '#fff';
+  g.font = `bold ${Math.round(px * (text.length > 1 ? 0.34 : 0.46))}px sans-serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, x, y + px / 32);
+  return c.toDataURL('image/png');
+};
+const told = () => {
+  const n = unseen;
+  try { if (navigator.setAppBadge) navigator.setAppBadge(n).catch(() => {}); } catch (_) {}
+  faces ||= Promise.all(icons.map(icon => face(icon.dataset.path)));
+  faces.then(imgs => {
+    if (unseen !== n) return;
+    try {
+      const drawn = icons.map((icon, i) => badged(imgs[i], parseInt(icon.getAttribute('sizes')), n));
+      icons.forEach((icon, i) => { icon.href = drawn[i]; });
+    } catch (_) {}
+  }, () => { faces = null; });
+};
+const seen = () => {
+  if (!unseen || !looked()) return;
+  unseen = 0;
+  for (const icon of icons) icon.href = icon.dataset.path + location.search;
+  try { if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {}); } catch (_) {}
+};
+addEventListener('focus', seen);
+document.addEventListener('visibilitychange', seen);
+// A notice of the editor's, counted on the tab's icon, and a banner of the
+// system's, only while the page is not what you look at. Clicked, the
+// banner brings the page forward, closes, and sends its line. Without the
+// browser's permission, or without its notifications, no banner is shown.
 const notice = (tag, title, body, line) => {
-  if (looked() || !window.Notification || Notification.permission !== 'granted') return;
+  if (looked()) return;
+  unseen++;
+  told();
+  if (!window.Notification || Notification.permission !== 'granted') return;
   try {
     const n = new Notification(title, {body, tag});
     n.onclick = () => { window.focus(); n.close(); send(line); };

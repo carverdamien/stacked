@@ -335,7 +335,8 @@ keys.
   is done, if you let the browser show them when it asks, once
   (`web.notifications = false` turns them off), and rings a soft bell,
   once you have clicked or typed in the page (`web.bell = false` turns it
-  off).
+  off). The tab's icon counts those notices in a red badge until you look
+  at the page again.
   A terminal `$EDITOR` opens in the page itself, in a terminal of `stacked
   web`'s own that gets every key you type there but those with ⌘
   (`web.editor = "terminal"` opens it in the terminal where you started
