@@ -729,10 +729,10 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_window
     screen(&s, "answer only", |b| find(b, "Permission: [answer only]").is_some() && find(b, "│ answer only ").is_none());
     press(&s, KeyCode::Down);
     press(&s, KeyCode::Enter);
-    screen(&s, "the model's list", |b| find(b, "│ claude-opus-5-5   │").is_some());
+    screen(&s, "the model's list", |b| find(b, "│ claude-sonnet-5-5 │").is_some());
     press(&s, KeyCode::Down);
     press(&s, KeyCode::Enter);
-    screen(&s, "the model", |b| find(b, "Model: [claude-opus-5-5]").is_some());
+    screen(&s, "the model", |b| find(b, "Model: [claude-sonnet-5-5]").is_some());
     press(&s, KeyCode::Down);
     press(&s, KeyCode::Enter);
     screen(&s, "the effort's list", |b| find(b, "│ xhigh  │").is_some());
@@ -745,7 +745,7 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_window
     screen(&s, "batched", |b| text(b).contains("batched (answer only): 1 ask in the batch"));
     let d = stacked::db::Db::load(&db).unwrap();
     let q = d.stack_notes("s").into_iter().find_map(|n| n.queued.clone()).expect("batched");
-    assert_eq!((q.batched(), q.way, q.model.as_deref(), q.effort), (true, stacked::db::Way::Answer, Some("claude-opus-5-5"), Some(stacked::db::Effort::Low)));
+    assert_eq!((q.batched(), q.way, q.model.as_deref(), q.effort), (true, stacked::db::Way::Answer, Some("claude-sonnet-5-5"), Some(stacked::db::Effort::Low)));
 }
 
 /// The links a stand-in for the program that opens web links, in `dir`,

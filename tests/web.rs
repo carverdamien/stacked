@@ -1514,7 +1514,7 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_browse
     send(&["k Down -", "k Enter -"]);
     until(&mut events, "the model's list", |l| text(l).contains("│ claude-opus-5-5   │"));
     send(&["k Down -", "k Enter -"]);
-    until(&mut events, "the model", |l| text(l).contains("Model: [claude-opus-5-5]"));
+    until(&mut events, "the model", |l| text(l).contains("Model: [claude-sonnet-5-5]"));
     // Enter on the effort's line opens its list, on low: ↑ goes round to
     // max, ↓ back round to low, and Enter sets it.
     send(&["k Down -", "k Enter -"]);
@@ -1526,7 +1526,7 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_browse
     until(&mut events, "batched", |l| text(l).contains("batched (may change the code): 1 ask in the batch"));
     let d = stacked::db::Db::load(&db).unwrap();
     let q = d.stack_notes("s").into_iter().find_map(|n| n.queued.clone()).expect("batched");
-    assert_eq!((q.batched(), q.way, q.model.as_deref(), q.effort), (true, stacked::db::Way::Change, Some("claude-opus-5-5"), Some(stacked::db::Effort::Low)));
+    assert_eq!((q.batched(), q.way, q.model.as_deref(), q.effort), (true, stacked::db::Way::Change, Some("claude-sonnet-5-5"), Some(stacked::db::Effort::Low)));
 }
 
 #[test]

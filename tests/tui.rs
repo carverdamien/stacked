@@ -14918,7 +14918,7 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
             "Permission: [ — ]",
             "Not set yet: ← or → sets answer only, then steps to change patch and change stack. Enter opens the list of them.",
             "Model: [ — ]",
-            "Not set yet: ← or → sets claude-fable-5-1, then steps to claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5. Enter opens the list of them.",
+            "Not set yet: ← or → sets claude-haiku-5-5, then steps to claude-sonnet-5-5, claude-opus-5-5 and claude-fable-5-1. Enter opens the list of them.",
             "Effort: [ — ]",
             "Not set yet: ← or → sets low, then steps to medium, high, xhigh and max. Enter opens the list of them.",
         ]
@@ -14931,7 +14931,7 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
         " Permission: [ — ] ",
         "   Not set yet: ← or → sets answer only, then steps to change",
         " Model: [ — ] ",
-        "   Not set yet: ← or → sets claude-fable-5-1, then steps to",
+        "   Not set yet: ← or → sets claude-haiku-5-5, then steps to",
         " Effort: [ — ] ",
         "   Not set yet: ← or → sets low, then steps to medium",
         "< Ask Now >   < Ask Later >   < Cancel >",
@@ -14965,11 +14965,11 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
         keys(&mut app, &[code]);
         seen.push(dialog(&app).model.map(|m| m.id()).unwrap_or_default());
     }
-    let (fable, opus, sonnet, haiku) = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5");
-    assert_eq!(seen, [fable, opus, sonnet, haiku, haiku, sonnet, opus, fable, fable]);
+    let (haiku, sonnet, opus, fable) = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1");
+    assert_eq!(seen, [haiku, sonnet, opus, fable, fable, opus, sonnet, haiku, haiku]);
     keys(&mut app, &[KeyCode::Right]);
-    assert!(draw(&mut app).contains(" Model: [claude-opus-5-5] "), "{}", draw(&mut app));
-    assert!(draw(&mut app).contains("claude is given --model claude-opus-5-5."), "{}", draw(&mut app));
+    assert!(draw(&mut app).contains(" Model: [claude-sonnet-5-5] "), "{}", draw(&mut app));
+    assert!(draw(&mut app).contains("claude is given --model claude-sonnet-5-5."), "{}", draw(&mut app));
     assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the effort is set."]);
     // ↓ to the effort: the same, ← from unset setting low too; then →
     // held ends on max, and ← held on low.
@@ -15121,7 +15121,7 @@ fn the_arrows_set_each_line_of_the_ask_dialog_to_its_first_option_from_unset_the
         assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true], "{arrow:?}");
         assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the permission and the model are set."], "{arrow:?}");
         keys(&mut app, &[KeyCode::Up, arrow]);
-        assert_eq!(dialog(&app).model.map(|m| m.id()), Some("claude-fable-5-1"), "{arrow:?}");
+        assert_eq!(dialog(&app).model.map(|m| m.id()), Some("claude-haiku-5-5"), "{arrow:?}");
         assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the permission is set."], "{arrow:?}");
         keys(&mut app, &[KeyCode::Up, arrow]);
         assert_eq!(dialog_set(&app), (Some("answer only"), Some("low")), "{arrow:?}");
@@ -15147,9 +15147,9 @@ fn the_arrows_set_each_line_of_the_ask_dialog_to_its_first_option_from_unset_the
     assert_eq!(held(&mut app, KeyCode::Left, 5), ["change patch", "answer only", "answer only", "answer only", "answer only"]);
     assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
     keys(&mut app, &[KeyCode::Down]);
-    let (fable, opus, sonnet, haiku) = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5");
-    assert_eq!(held(&mut app, KeyCode::Right, 6), [fable, opus, sonnet, haiku, haiku, haiku]);
-    assert_eq!(held(&mut app, KeyCode::Left, 5), [sonnet, opus, fable, fable, fable]);
+    let (haiku, sonnet, opus, fable) = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1");
+    assert_eq!(held(&mut app, KeyCode::Right, 6), [haiku, sonnet, opus, fable, fable, fable]);
+    assert_eq!(held(&mut app, KeyCode::Left, 5), [opus, sonnet, haiku, haiku, haiku]);
     keys(&mut app, &[KeyCode::Right, KeyCode::Down]);
     assert_eq!(held(&mut app, KeyCode::Right, 7), ["low", "medium", "high", "xhigh", "max", "max", "max"]);
     assert_eq!(held(&mut app, KeyCode::Left, 7), ["xhigh", "high", "medium", "low", "low", "low", "low"]);
@@ -15158,7 +15158,7 @@ fn the_arrows_set_each_line_of_the_ask_dialog_to_its_first_option_from_unset_the
     let lines = app.ask_lines(dialog(&app));
     assert_eq!(
         [&lines[0], &lines[2], &lines[3], &lines[4], &lines[5]],
-        ["Permission: [answer only]", "Model: [claude-opus-5-5]", "claude is given --model claude-opus-5-5.", "Effort: [low]", "claude is given --effort low."]
+        ["Permission: [answer only]", "Model: [claude-sonnet-5-5]", "claude is given --model claude-sonnet-5-5.", "Effort: [low]", "claude is given --effort low."]
     );
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
@@ -15236,18 +15236,18 @@ fn enter_on_a_line_of_the_ask_dialog_opens_the_list_of_its_options_under_it_wher
     // line; Enter sets the one the cursor is on.
     keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
     assert_eq!((dialog(&app).line, dialog(&app).list, dialog(&app).model), (ask_dialog::MODEL_LINE, Some(0), None));
-    assert_eq!(dialog(&app).options(ask_dialog::MODEL_LINE), ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+    assert_eq!(dialog(&app).options(ask_dialog::MODEL_LINE), ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]);
     let screen = draw(&mut app);
     let (mx, my) = at(&screen, "Model: [ — ]");
-    let list = ["┌───────────────────┐", "│ claude-fable-5-1  │", "│ claude-opus-5-5   │", "│ claude-sonnet-5-5 │", "│ claude-haiku-5-5  │", "└───────────────────┘"];
+    let list = ["┌───────────────────┐", "│ claude-haiku-5-5  │", "│ claude-sonnet-5-5 │", "│ claude-opus-5-5   │", "│ claude-fable-5-1  │", "└───────────────────┘"];
     for (k, model) in list.into_iter().enumerate() {
         assert_eq!(at_from(&screen, model, mx as usize + 7), (mx + 7, my + 1 + k as u16), "{model:?} under the line\n{screen}");
     }
     assert_eq!(app.hint(), "↑↓ choose · enter: set the model · esc: close the list · ?: what it does");
     keys(&mut app, &[KeyCode::Down]);
-    assert_eq!(app.help()[0], "Press Enter to set the model to claude-opus-5-5 and close the list. claude is given --model claude-opus-5-5.");
+    assert_eq!(app.help()[0], "Press Enter to set the model to claude-sonnet-5-5 and close the list. claude is given --model claude-sonnet-5-5.");
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!((dialog(&app).list, dialog(&app).model.map(|m| m.id())), (None, Some("claude-opus-5-5")));
+    assert_eq!((dialog(&app).list, dialog(&app).model.map(|m| m.id())), (None, Some("claude-sonnet-5-5")));
     assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the effort is set."]);
     // The effort's list: low to max, on low while unset.
     keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
@@ -15477,7 +15477,7 @@ fn the_ask_dialog_opens_with_the_model_and_the_effort_the_settings_name_set_and_
     // Still changed as any: ← on the model's line steps to the one before.
     dialog_line(&mut app, ask_dialog::MODEL_LINE);
     keys(&mut app, &[KeyCode::Left]);
-    assert_eq!(dialog(&app).model.map(|m| m.id()), Some("claude-opus-5-5"));
+    assert_eq!(dialog(&app).model.map(|m| m.id()), Some("claude-haiku-5-5"));
     keys(&mut app, &[KeyCode::Right]);
     // The permission set, Ask Now: claude given the settings' model and
     // effort.
@@ -15984,9 +15984,9 @@ fn an_ask_that_waits_goes_with_the_model_and_at_the_effort_it_was_sent_with() {
     keys(&mut app, &[KeyCode::Enter]);
     let screen = draw(&mut app);
     assert!(screen.contains("Send 1 answer only to    [x] a single agent  [ ] fan out    Model [claude-opus-5-5]    Effort [low]"), "{screen}");
-    // The model's dropdown, Tab to it, then →: another model, for this
+    // The model's dropdown, Tab to it, then ←: another model, for this
     // ask alone.
-    keys(&mut app, &[KeyCode::Tab, KeyCode::Right]);
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Left]);
     assert!(draw(&mut app).contains("Model [claude-sonnet-5-5]"), "{}", draw(&mut app));
     keys(&mut app, &[KeyCode::Enter]);
     assert!(app.status.starts_with("sent the batch (answer only)"), "{}", app.status);
@@ -18157,7 +18157,7 @@ fn sending_work_back_opens_the_ask_dialog_unset_its_send_now_grayed_until_the_th
     );
     dialog_line(&mut app, ask_dialog::MODEL_LINE);
     keys(&mut app, &[KeyCode::Right]);
-    assert_eq!(dialog(&app).model, Some(stacked::db::Model::Fable51));
+    assert_eq!(dialog(&app).model, Some(stacked::db::Model::Haiku55));
     assert_eq!(app.ask_note(dialog(&app)), ["Send Now is grayed until the effort is set."]);
     dialog_line(&mut app, ask_dialog::EFFORT_LINE);
     keys(&mut app, &[KeyCode::Right]);

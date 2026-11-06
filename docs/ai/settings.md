@@ -225,13 +225,13 @@ settings:
   `ask_model` and `ask_effort`, the model and the effort the ask dialog
   opens with, set already, and changed there as any (Asking the agent,
   above): unless set, none, each picked in the dialog. They take the
-  dialog's own values alone: a model by its full id (`claude-fable-5-1`,
-  `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`), an effort
+  dialog's own values alone: a model by its full id (`claude-haiku-5-5`,
+  `claude-sonnet-5-5`, `claude-opus-5-5` or `claude-fable-5-1`), an effort
   by its name (`low`, `medium`, `high`, `xhigh` or `max`); another is
   refused as the file is read, saying which setting and the values it
   takes, and the line opens unset (`agent.ask_model: "opus" is not
-  claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or
-  claude-haiku-5-5`), and `stacked config` refuses to write it. They are
+  claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5 or
+  claude-fable-5-1`), and `stacked config` refuses to write it. They are
   the editor's settings (the checkout's own too), never a database's; the
   command line's `send` and `review --send-back` read neither, and the
   menus' `Model […]` and `Effort […]` dropdowns start from them only for

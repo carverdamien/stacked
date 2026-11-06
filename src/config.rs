@@ -2812,7 +2812,7 @@ mod tests {
         let text = c.render();
         assert!(text.contains("\n# ask_model = ...   (none: picked in the dialog)\n"), "{text}");
         assert!(text.contains("\n# ask_effort = ...   (none: picked in the dialog)\n"), "{text}");
-        assert!(text.contains("# claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5.\n"), "{text}");
+        assert!(text.contains("# claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5 or claude-fable-5-1.\n"), "{text}");
         // Set to one of the dialog's own: that one.
         let (c, wrong) = Config::parse("[agent]\nask_model = \"claude-opus-5-5\"\nask_effort = \"max\"\n").unwrap();
         assert!(wrong.is_empty(), "{wrong:?}");
@@ -2826,7 +2826,7 @@ mod tests {
         assert_eq!(
             wrong,
             [
-                "agent.ask_model: \"opus\" is not claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5",
+                "agent.ask_model: \"opus\" is not claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5 or claude-fable-5-1",
                 "agent.ask_effort: \"huge\" is not low, medium, high, xhigh or max",
             ]
         );
@@ -2838,7 +2838,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[agent]\nask_model = \"claude-haiku-5-5\"\nask_effort = \"low\"\n");
         assert_eq!((Config::load(&path).0.agent.ask_model, Config::load(&path).0.agent.ask_effort), (Some(Model::Haiku55), Some(Effort::Low)));
         let e = set(&path, "agent.ask_model", &["claude-opus-4".to_string()]).unwrap_err();
-        assert!(e.contains("agent.ask_model is claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5, not \"claude-opus-4\""), "{e}");
+        assert!(e.contains("agent.ask_model is claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5 or claude-fable-5-1, not \"claude-opus-4\""), "{e}");
         assert!(set(&path, "agent.ask_effort", &["huge".to_string()]).unwrap_err().contains("low, medium, high, xhigh or max"));
     }
 

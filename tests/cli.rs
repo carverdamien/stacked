@@ -4241,7 +4241,13 @@ fn send_batch_and_send_back_ask_with_the_model_given_else_the_one_asked_with_bef
     let id = comment(&e, &["Other?"]);
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--model", "opus"], "", &env);
     assert!(!fine && err.contains("invalid value 'opus' for '--model <ID>'"), "{err}");
-    assert!(err.contains("[possible values: claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5]"), "{err}");
+    assert!(err.contains("[possible values: claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5, claude-fable-5-1]"), "{err}");
+    // The help of either says the ids in the list's order.
+    let ids = "claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5 or claude-fable-5-1";
+    let help = e.ok(&["send", "--help"]);
+    assert!(help.contains(&format!("as claude's --model takes it: {ids}. Unless given, none of their own")), "{help}");
+    let help = e.ok(&["review", "--help"]);
+    assert!(help.contains(&format!("as claude's --model takes it: {ids}. Unless given, the model the work was asked with")), "{help}");
     let (fine, _, err) = e.run(&["review", "s", "--accept-all", "--model", "claude-opus-5-5"]);
     assert!(!fine && err.contains("--model goes with --send-back"), "{err}");
     assert_eq!(said().len(), 6);

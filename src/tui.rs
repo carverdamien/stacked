@@ -7949,11 +7949,11 @@ impl App {
     /// The model an ask goes with, as a dropdown drawn as one, `Model
     /// [claude-opus-5-5]`: the model of id `at`, that of what was asked
     /// before, if given and in the list; else the one the ask dialog opens
-    /// with (`agent.ask_model`), if set; else the first. What is picked in
+    /// with (`agent.ask_model`), if set; else the strongest. What is picked in
     /// it is the item's alone: no other ask starts with it.
     fn model_choices(&self, at: Option<&str>) -> Choices {
         let list = Model::ALL.iter().map(|m| Choice::new(m.id(), m.id(), format!("claude's --model {}", m.id()), None)).collect();
-        let at = at.and_then(Model::parse).or(self.cfg.agent.ask_model).unwrap_or(Model::ALL[0]);
+        let at = at.and_then(Model::parse).or(self.cfg.agent.ask_model).unwrap_or(Model::STRONGEST);
         Choices {
             named: Some("Model"),
             ..Choices::new(MODEL, "model", list, Some(at.id()))

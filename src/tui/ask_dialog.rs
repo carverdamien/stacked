@@ -1265,7 +1265,7 @@ mod tests {
         // The models by their full ids, in the list's order.
         assert_eq!(
             unset_keys(&Model::IDS),
-            "← or → sets claude-fable-5-1, then steps to claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5. Enter opens the list of them"
+            "← or → sets claude-haiku-5-5, then steps to claude-sonnet-5-5, claude-opus-5-5 and claude-fable-5-1. Enter opens the list of them"
         );
         assert_eq!(one_of(&Model::IDS), Model::listed());
     }
@@ -1316,7 +1316,7 @@ mod tests {
             d.step(MODEL_LINE, forward);
             d.step(EFFORT_LINE, forward);
             let set = (d.permission().map(Permission::label), d.model.map(Model::id), d.effort.map(Effort::name));
-            assert_eq!(set, (Some("answer only"), Some("claude-fable-5-1"), Some("low")), "{forward}");
+            assert_eq!(set, (Some("answer only"), Some("claude-haiku-5-5"), Some("low")), "{forward}");
         }
         // Then → steps on, and stops on the last; ← back, and stops on the
         // first.
@@ -1338,8 +1338,8 @@ mod tests {
             d.step(MODEL_LINE, forward);
             seen.push(d.model.map(Model::id).unwrap_or_default());
         }
-        let (fable, opus, sonnet, haiku) = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5");
-        assert_eq!(seen, [fable, opus, sonnet, haiku, haiku, sonnet, opus, fable, fable, fable]);
+        let (haiku, sonnet, opus, fable) = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1");
+        assert_eq!(seen, [haiku, sonnet, opus, fable, fable, opus, sonnet, haiku, haiku, haiku]);
         // The buttons' line has no options: nothing set there.
         let before = d.clone();
         d.step(BUTTONS_LINE, true);
@@ -1389,7 +1389,7 @@ mod tests {
         assert_eq!((d.list, d.options(MODEL_LINE)), (Some(0), Model::IDS.to_vec()));
         d.list_key(KeyCode::Down);
         d.list_key(KeyCode::Enter);
-        assert_eq!(d.model, Some(Model::Opus55));
+        assert_eq!(d.model, Some(Model::Sonnet55));
         d.open_list();
         assert_eq!(d.list, Some(1));
         d.list_key(KeyCode::Esc);

@@ -860,23 +860,29 @@ impl Effort {
 }
 
 /// The model the agent works on an ask with, by its full id, as claude's
-/// `--model` takes it, in the ask dialog's order. There is no default: the
-/// dialog's model is picked. A record keeps the id itself
+/// `--model` takes it, in the ask dialog's order: weakest to strongest, as
+/// the efforts run low to max (the variants in `ALL`'s order, `IDS`'s too,
+/// each one's place in them its own). There is no default: the dialog's
+/// model is picked. A record keeps the id itself
 /// (`Queued::model`), not one of these, so that one of a model since taken
 /// out of the list still loads, and goes as it was asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Model {
-    Fable51,
-    Opus55,
-    Sonnet55,
     Haiku55,
+    Sonnet55,
+    Opus55,
+    Fable51,
 }
 
 impl Model {
-    pub const ALL: [Model; 4] = [Model::Fable51, Model::Opus55, Model::Sonnet55, Model::Haiku55];
+    pub const ALL: [Model; 4] = [Model::Haiku55, Model::Sonnet55, Model::Opus55, Model::Fable51];
+
+    /// The strongest model: the list's last, as it runs weakest to
+    /// strongest.
+    pub const STRONGEST: Model = Model::ALL[Model::ALL.len() - 1];
 
     /// Each model's id, as claude takes it.
-    pub const IDS: [&'static str; 4] = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
+    pub const IDS: [&'static str; 4] = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"];
 
     pub fn id(self) -> &'static str {
         Model::IDS[self as usize]
@@ -887,18 +893,23 @@ impl Model {
         Model::ALL.into_iter().find(|m| m.id() == id)
     }
 
-    /// The ids, said: `claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5
-    /// or claude-haiku-5-5`.
+    /// The ids, said: `claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5
+    /// or claude-fable-5-1`.
     pub fn listed() -> String {
         let (last, rest) = Model::IDS.split_last().unwrap();
         format!("{} or {last}", rest.join(", "))
     }
 
-    /// Of the ids `ids`, the one first in the list, as an ask of comments
-    /// queued with more than one goes with it; an id the list does not
-    /// have after those it has.
-    pub fn first_of<'a>(ids: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-        ids.into_iter().min_by_key(|id| Model::parse(id).map_or(Model::ALL.len(), |m| m as usize))
+    /// Of the ids `ids`, the one of the strongest model, as an ask of
+    /// comments queued with more than one goes with it, as it goes at the
+    /// highest of their efforts; an id the list does not have only when
+    /// none is one it has, the first such then.
+    pub fn strongest_of<'a>(ids: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+        let rank = |id: &str| Model::parse(id).map(|m| m as usize);
+        ids.into_iter().fold(None, |best, id| match best {
+            Some(b) if rank(b) >= rank(id) => Some(b),
+            _ => Some(id),
+        })
     }
 }
 

@@ -30,8 +30,8 @@ lines, then three buttons:
 │   patch and change stack. Enter opens the list of them.      │
 │                                                              │
 │ Model: [ — ]                                                 │
-│   Not set yet: ← or → sets claude-fable-5-1, then steps to   │
-│   claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5.   │
+│   Not set yet: ← or → sets claude-haiku-5-5, then steps to   │
+│   claude-sonnet-5-5, claude-opus-5-5 and claude-fable-5-1.   │
 │   Enter opens the list of them.                              │
 │ Effort: [ — ]                                                │
 │   Not set yet: ← or → sets low, then steps to medium, high,  │
@@ -50,9 +50,9 @@ model and the effort the settings name for it to open with
 as it opens and changed there as any: nothing set in a dialog is kept for
 the next one, for the stack or between runs, so that no ask goes as the
 one before it went by mistake. On a line, ← or → sets its first option,
-`answer only`, `claude-fable-5-1` or `low`, whichever the arrow, so that
-a stray key never sets the most permissive permission or the most
-expensive effort; then → steps to the next option and ← to the one
+`answer only`, `claude-haiku-5-5` or `low`, whichever the arrow, so that
+a stray key never sets the most permissive permission, the most expensive
+model or the most expensive effort; then → steps to the next option and ← to the one
 before, and neither goes round past either end, as the menus' dropdowns
 do: ← held ends on the first, and → held on the last.
 
@@ -68,8 +68,8 @@ unset:
 │   patch and │ answer only  │ter opens the list of them.      │
 │             │ change patch │                                 │
 │ Model: [ — │ change stack │                                 │
-│   Not set ye└──────────────┘claude-fable-5-1, then steps to  │
-│   claude-opus-5-5, claude-sonnet-5-5 and claude-haiku-5-5.   │
+│   Not set ye└──────────────┘claude-haiku-5-5, then steps to  │
+│   claude-sonnet-5-5, claude-opus-5-5 and claude-fable-5-1.   │
 │   Enter opens the list of them.                              │
 │ Effort: [ — ]                                                │
 │   Not set yet: ← or → sets low, then steps to medium, high,  │
@@ -237,9 +237,10 @@ and Ask Now and Ask Later are grayed while none can be.
   but opens no form; only the editor's review does.
 
 The model the agent works on an ask with is the dialog's second line, by
-its full id, as claude's `--model` takes it, in this order:
-`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`,
-`claude-haiku-5-5`; the list is `Model::ALL`, in one place. There is no
+its full id, as claude's `--model` takes it, in this order, weakest to
+strongest as the efforts run low to max: `claude-haiku-5-5`,
+`claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`; the list is
+`Model::ALL`, in one place. There is no
 default: it is picked in the dialog, or set already as it opens by the
 settings' `agent.ask_model`. How hard the agent works on an ask is its
 effort, as claude's `--effort` takes it: `low`, `medium`, `high`, `xhigh`
@@ -249,9 +250,9 @@ asked before ends with the model it goes with and the effort it goes at,
 `Model [claude-opus-5-5]    Effort [high]`: `Send it now` and the batch's
 items (below), each with the model and at the effort it was asked with
 unless others are picked there; one asked before models were picked, with
-the settings' `agent.ask_model`, else the first of the list, there. On an
-item with choices of its own, Tab goes to the next dropdown, shift-Tab
-goes back, and ← → pick in the one the menu is on. Neither goes round
+the settings' `agent.ask_model`, else the strongest, `claude-fable-5-1`,
+there. On an item with choices of its own, Tab goes to the next
+dropdown, shift-Tab goes back, and ← → pick in the one the menu is on. Neither goes round
 past its end: ← held ends on the first, and → held on the last. A click
 on `Model […]` or `Effort […]` picks the next, round from the last to
 the first. What is picked there is that item's alone: no other ask starts
@@ -271,7 +272,7 @@ each in place of one they give, and the stream's first lines say so
 claude-opus-5-5 --effort high, in …`). A comment in the batch keeps the
 model and the effort it was asked with: its `Send it now` starts with
 them, and each of the batch's items at the highest effort of the comments
-it sends, with the first in the list of their models. An ask asked again
+it sends, with the strongest of their models. An ask asked again
 goes with the model and at the effort it had: a change dropped because
 the work it went on from was rejected, an answer restarted as a change is
 accepted, a comment put back on the queue as it was. Work sent back from
@@ -346,7 +347,7 @@ goes with no model of its own (the settings' `agent.model`, else claude's
 own); the dialog's settings, `agent.ask_model` and `agent.ask_effort`,
 are the dialog's alone. `--batch` sends each comment with the model and
 at the effort it was batched with, an ask of several at the highest
-effort of theirs and with the first in the list of their models.
+effort of theirs and with the strongest of their models.
 `stacked review --send-back` takes `--effort` and `--model` too; without
 them, the work goes back with the model and at the effort it was asked
 with. A level claude does not take, or an id that is not one of the
@@ -444,8 +445,8 @@ single agent, in one ask, of the whole stack when they are on more than one
 patch or one was batched so; its answers to a single agent too, in one ask
 with the whole stack in view, or fanned out, an agent each, all at once;
 each build and test on its own, and each try push on its own too (Try push,
-below). Each of these items ends with the model it sends with, the first
-in the list of those its comments were batched with, and the effort it
+below). Each of these items ends with the model it sends with, the
+strongest of those its comments were batched with, and the effort it
 sends at, the highest its comments were batched at, unless others are
 picked. On the command
 line, `stacked send NAME ID --later` batches (how, as `send` says it:

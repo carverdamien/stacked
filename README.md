@@ -216,8 +216,8 @@ The ask dialog sets two things every time. The permission is one of:
   names no bug: it drafts the bug (Filing a bug, below).
 
 The dialog offers only those that fit where the comment is. The model is
-claude's `--model`, by its full id: claude-fable-5-1, claude-opus-5-5,
-claude-sonnet-5-5 or claude-haiku-5-5. The effort is claude's `--effort`:
+claude's `--model`, by its full id: claude-haiku-5-5, claude-sonnet-5-5,
+claude-opus-5-5 or claude-fable-5-1. The effort is claude's `--effort`:
 low, medium, high, xhigh or max. The agent's replies, and its work, say
 the model and the effort they were asked with: `agent(claude-opus-5-5,
 max)`. `Ask Later`, in

@@ -1596,11 +1596,11 @@ pub fn batched_effort(db: &Db, name: &str, way: Way) -> Option<Effort> {
 
 /// The id of the model stack `name`'s batch of what is asked in `way` was
 /// asked with: of those its comments were batched with, if any was, the
-/// first in the list (`Model::first_of`).
+/// strongest (`Model::strongest_of`).
 pub fn batched_model(db: &Db, name: &str, way: Way) -> Option<String> {
     let notes = db.stack_notes(name);
     let ids = notes.iter().filter_map(|n| n.queued.as_ref().filter(|q| q.batched() && q.way == way)?.model.as_deref());
-    Model::first_of(ids).map(String::from)
+    Model::strongest_of(ids).map(String::from)
 }
 
 /// Whether what is asked in `way` goes from the batch each comment in an
@@ -1629,7 +1629,7 @@ pub type Refused = Vec<((String, String), String)>;
 /// to the whole stack, as do those batched so. Each ask goes at `effort`;
 /// else at the effort its comments were batched at, the highest of them for
 /// an ask of several. Each goes with `model`, else with the model its
-/// comments were batched with, the first in the list of them for an ask of
+/// comments were batched with, the strongest of them for an ask of
 /// several (`batched_model`). `launch` starts them. How many were sent, and
 /// those refused: a try push of a line, batched as an older stacked let it
 /// be.
@@ -1954,7 +1954,7 @@ fn claim(db: &mut Db) -> Result<Claimed> {
     // round sent back starts from, the run asked before it, the effort they
     // were sent at (the highest, should they differ), whether they are a
     // follow-up asked from the review of that work, and the model they were
-    // sent with (the first in the list, should they differ).
+    // sent with (the strongest, should they differ).
     let mut order: Vec<String> = Vec::new();
     type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>, Option<Effort>, bool, Option<String>);
     let mut batches: HashMap<String, Batch> = HashMap::new();
@@ -1987,7 +1987,7 @@ fn claim(db: &mut Db) -> Result<Claimed> {
             });
             entry.3.push(n.clone());
             entry.6 = entry.6.max(q.effort);
-            entry.8 = Model::first_of(entry.8.as_deref().into_iter().chain(q.model.as_deref())).map(String::from);
+            entry.8 = Model::strongest_of(entry.8.as_deref().into_iter().chain(q.model.as_deref())).map(String::from);
         }
     }
     #[cfg(feature = "try-push")]
@@ -5492,13 +5492,15 @@ mod tests {
         // An ask of before, with none: the settings' model as it is.
         assert_eq!(at_effort(theirs.clone(), None, None), theirs);
         // The models by their full ids, in the dialog's order, none by
-        // default; an ask of several goes with the first in the list.
-        assert_eq!(Model::ALL.map(Model::id), ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+        // default; an ask of several goes with the strongest.
+        assert_eq!(Model::ALL.map(Model::id), ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]);
         assert_eq!((Model::parse("claude-sonnet-5-5"), Model::parse("opus")), (Some(Model::Sonnet55), None));
-        assert_eq!(Model::listed(), "claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5");
-        assert_eq!(Model::first_of(["claude-haiku-5-5", "claude-opus-5-5"]), Some("claude-opus-5-5"));
-        assert_eq!(Model::first_of(["claude-gone-4", "claude-haiku-5-5"]), Some("claude-haiku-5-5"));
-        assert_eq!((Model::first_of(["claude-gone-4"]), Model::first_of([])), (Some("claude-gone-4"), None));
+        assert_eq!(Model::listed(), "claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5 or claude-fable-5-1");
+        assert_eq!(Model::STRONGEST, Model::Fable51);
+        assert_eq!(Model::strongest_of(["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"]), Some("claude-opus-5-5"));
+        assert_eq!(Model::strongest_of(["claude-gone-4", "claude-haiku-5-5"]), Some("claude-haiku-5-5"));
+        assert_eq!(Model::strongest_of(["claude-gone-4", "claude-gone-3"]), Some("claude-gone-4"));
+        assert_eq!((Model::strongest_of(["claude-gone-4"]), Model::strongest_of([])), (Some("claude-gone-4"), None));
     }
 
     #[test]

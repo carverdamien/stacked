@@ -414,12 +414,11 @@ enum Cmd {
         /// --batch, the effort each comment was batched at.
         #[arg(long, value_name = "LEVEL", value_parser = effort_arg())]
         effort: Option<stacked::db::Effort>,
-        /// The model the agent works on them with, by its full id, as
-        /// claude's --model takes it: claude-fable-5-1, claude-opus-5-5,
-        /// claude-sonnet-5-5 or claude-haiku-5-5. Unless given, none of
-        /// their own (the settings' agent.model, else claude's own); with
-        /// --batch, the model each comment was batched with.
-        #[arg(long, value_name = "ID", value_parser = model_arg())]
+        // Its help names the ids as the list has them (`Model::listed`).
+        #[arg(long, value_name = "ID", value_parser = model_arg(), help = format!(
+            "The model the agent works on them with, by its full id, as claude's --model takes it: {}. Unless given, none of their own (the settings' agent.model, else claude's own); with --batch, the model each comment was batched with",
+            stacked::db::Model::listed()
+        ))]
         model: Option<stacked::db::Model>,
         /// Wait for them to be answered, and print the threads.
         #[arg(long)]
@@ -467,11 +466,11 @@ enum Cmd {
         /// the effort the work was asked at.
         #[arg(long, value_name = "LEVEL", value_parser = effort_arg())]
         effort: Option<stacked::db::Effort>,
-        /// With --send-back, the model the agent works on it with, by its
-        /// full id, as claude's --model takes it: claude-fable-5-1,
-        /// claude-opus-5-5, claude-sonnet-5-5 or claude-haiku-5-5. Unless
-        /// given, the model the work was asked with.
-        #[arg(long, value_name = "ID", value_parser = model_arg())]
+        // Its help names the ids as the list has them (`Model::listed`).
+        #[arg(long, value_name = "ID", value_parser = model_arg(), help = format!(
+            "With --send-back, the model the agent works on it with, by its full id, as claude's --model takes it: {}. Unless given, the model the work was asked with",
+            stacked::db::Model::listed()
+        ))]
         model: Option<stacked::db::Model>,
         /// Close the comments the agent was asked about too, done with,
         /// once their replies are in their threads.
@@ -753,7 +752,7 @@ fn effort_arg() -> impl clap::builder::TypedValueParser<Value = stacked::db::Eff
 fn model_arg() -> impl clap::builder::TypedValueParser<Value = stacked::db::Model> {
     use clap::builder::TypedValueParser;
     clap::builder::PossibleValuesParser::new(stacked::db::Model::IDS)
-        .map(|s: String| stacked::db::Model::parse(&s).unwrap_or(stacked::db::Model::ALL[0]))
+        .map(|s: String| stacked::db::Model::parse(&s).unwrap_or(stacked::db::Model::STRONGEST))
 }
 
 /// Whether the process `pid` is gone: exited (waited for now, if it is
