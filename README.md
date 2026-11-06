@@ -400,7 +400,11 @@ version put back, a review closed, an edit by hand, asked about before
 status, and changes them only once you type `accept` there; on the command
 line, stacked asks on the terminal, and with no terminal it refuses. Moving
 or dropping such a patch asks nothing, and nor does a pull that brings it
-to Phabricator's own latest diff.
+to Phabricator's own latest diff. Nor does changing a patch under it, by
+hand or by the agent: rebased unchanged onto its changed parent (its lines
+moved, the lines it adds and removes and their context the same), it is no
+change; one whose diff has to change (a line of its context, a conflict
+resolved) is asked about.
 
 - **Pulling.** `Pull from Phabricator`, in the stack's `Phabricator` menu, or `stacked
   moz-phab pull NAME`, brings in what changed there: each revision's

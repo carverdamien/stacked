@@ -4839,6 +4839,70 @@ mod tests {
 
     #[cfg(feature = "moz-phab")]
     #[test]
+    fn a_patch_that_should_not_change_rebased_unchanged_onto_a_changed_patch_under_it_asks_nothing_and_one_whose_lines_change_is_refused() {
+        // Patch 1 and patch 3 given new versions in one write, `under` and
+        // `over` making their diffs of the ones they have, and `message`
+        // patch 3's message: what the write came to.
+        let write = |path: &Path, under: &dyn Fn(&str) -> String, over: &dyn Fn(&str) -> String, message: Option<&str>| {
+            Db::edit_confirmed(path, &[], |db| {
+                let s = db.stack("s")?.clone();
+                let (p1, p3) = (db.patch(&s.patches[0]).clone(), db.patch(&s.patches[2]).clone());
+                let a = db.add_patch(crate::ops::revise(&p1, crate::mbox::Draft { diff: under(&p1.diff), ..crate::mbox::Draft::from(&p1) }))?;
+                let draft = crate::mbox::Draft { diff: over(&p3.diff), message: message.unwrap_or(&p3.message).into(), ..crate::mbox::Draft::from(&p3) };
+                let c = db.add_patch(crate::ops::revise(&p3, draft))?;
+                db.set_stack("s", vec![a, s.patches[1].clone(), c], "edit")
+            })
+        };
+        // `from` written `to` in diff `d`, which holds it.
+        let swap = |d: &str, from: &str, to: &str| {
+            assert!(d.contains(from), "{from:?} in {d}");
+            d.replacen(from, to, 1)
+        };
+        // Patch 1 with a line put in after its line 2, which moves patch 3's
+        // lines down one.
+        let line_in = |d: &str| swap(&swap(d, "+LINE 2\n", "+LINE 2\n+line 2.5\n"), "@@ -1,5 +1,5 @@", "@@ -1,5 +1,6 @@");
+        // Patch 3 as a rebase onto that writes it: its hunk a line down, the
+        // blobs its index line names others.
+        let down = |d: &str| {
+            let d = swap(d, "@@ -17,7 +17,7 @@", "@@ -18,7 +18,7 @@");
+            d.lines().map(|l| if l.starts_with("index ") { "index 1234567..89abcde 100644\n".to_string() } else { format!("{l}\n") }).collect::<String>()
+        };
+        for status in ["accepted", "published"] {
+            let (_tmp, path) = protected_stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{}", named(13))]);
+            fetched_as(&path, 13, status);
+            let was = patches_of(&path);
+            // Rebased so, changing nothing of its own: written, no one asked,
+            // its new version in the stack.
+            write(&path, &line_in, &down, None).unwrap();
+            let now_on = patches_of(&path);
+            assert!(now_on[0] != was[0] && now_on[2] != was[2], "{status}");
+            assert!(Db::load(&path).unwrap().patch(&now_on[2]).diff.contains("@@ -18,7 +18,7 @@"), "{status}");
+            // A line of its own written otherwise as it is rebased: refused,
+            // nothing written.
+            let (_tmp, path) = protected_stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{}", named(13))]);
+            fetched_as(&path, 13, status);
+            let bytes = std::fs::read(&path).unwrap();
+            let otherwise = |d: &str| swap(&down(d), "+LINE 20", "+LINE twenty");
+            match write(&path, &line_in, &otherwise, None) {
+                Err(Failed::Protected(r)) => assert_eq!(r.ids(), [patches_of(&path)[2].clone()], "{status}"),
+                other => panic!("{status}: {other:?}"),
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{status}: nothing written");
+            // A line of its context changed by the patch under it: its diff
+            // changes, refused too.
+            let context = |d: &str| format!("{d}@@ -17,3 +17,3 @@\n line 17\n-line 18\n+LINE 18\n line 19\n");
+            let around = |d: &str| swap(d, " line 18\n", " LINE 18\n");
+            assert!(matches!(write(&path, &context, &around, None), Err(Failed::Protected(_))), "{status}");
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{status}: nothing written");
+            // Its message written otherwise as it is rebased: refused.
+            let reworded = format!("Bug 3 - THREE\n\n{}", named(13));
+            assert!(matches!(write(&path, &line_in, &down, Some(&reworded)), Err(Failed::Protected(_))), "{status}");
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{status}: nothing written");
+        }
+    }
+
+    #[cfg(feature = "moz-phab")]
+    #[test]
     fn undo_redo_and_a_stack_picked_from_the_tree_are_refused_as_any_write_that_changes_a_patch_that_should_not_change() {
         let (_tmp, path) = protected_stack([&format!("Bug 1 - one\n\n{}", named(11)), "Bug 2 - two", "Bug 3 - three"]);
         // Patch 1 changed, then Accepted as it is now.

@@ -5694,6 +5694,65 @@ fn a_command_that_changes_a_patch_that_should_not_change_asks_on_a_terminal_and_
     assert!(!names_d12(&e.db), "undone");
 }
 
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_agent_s_work_on_a_patch_under_one_that_should_not_change_is_taken_with_no_one_asked_and_its_work_on_that_patch_asks() {
+    for status in ["accepted", "published"] {
+        let e = env();
+        e.ok(&["import", "s", "base"]);
+        // Patch 3 given a version naming D13, then D13 Accepted, or Landed,
+        // as a fetch stored it.
+        Db::edit(&e.db, |d| {
+            let old = d.patch(&d.stack("s")?.patches[2]).clone();
+            let message = format!("{}\n\nDifferential Revision: https://phabricator.example.com/D13", old.message);
+            ops::replace(d, "s", 2, Draft { message, ..Draft::from(&old) }, "reword").map(|_| ())
+        })
+        .unwrap();
+        let state = stacked::db::State { status: status.into(), phid: "PHID-DREV-13".into(), ..Default::default() };
+        Db::edit(&e.db, |d| d.store_revision("https://phabricator.example.com/D13", "D13", Some(state), None).map(|_| ())).unwrap();
+        let patch = |at: usize| {
+            let d = Db::load(&e.db).unwrap();
+            d.patch(&d.stack("s").unwrap().patches[at]).clone()
+        };
+        let was = patch(2);
+        // The agent changes patch 1, under it, a line put in after its line
+        // 2, which moves patch 3's lines down: taken as it lands, with no
+        // terminal to ask on, nothing asked; patch 3, rebased on it, as it
+        // was.
+        let c = comment(&e, &["--patch", "1", "Add", "a", "line."]);
+        let under = fake_claude(
+            &e,
+            "claude-under.sh",
+            "set -e\n(awk '{print} /^2$/ {print \"2.5\"}' a.txt > a.txt.new && mv a.txt.new a.txt)\ngit -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a",
+            r#"{"replies": {"c1": "Done."}}"#,
+        );
+        let (fine, out, err) = send(&e, &under, &[&c], &[]);
+        assert!(fine, "{status}: {out}{err}");
+        assert!(patch(0).diff.contains("+2.5"), "{status}: taken: {}", patch(0).diff);
+        assert_eq!(patch(2), was, "{status}: patch 3 as it was");
+        assert!(landed_ids(&e).is_empty(), "{status}: nothing waits");
+        // The agent changes patch 3 itself: refused with no terminal to ask
+        // on, its work waiting for review, patch 3 as it was.
+        let c = comment(&e, &["--patch", "3", "Spell", "it", "out."]);
+        let own = fake_claude(
+            &e,
+            "claude-own.sh",
+            &format!("set -e\n{}\ngit -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a", sed_i("s/^9$/neuf/", "a.txt")),
+            r#"{"replies": {"c1": "Done."}}"#,
+        );
+        let (fine, out, err) = send(&e, &own, &[&c], &[]);
+        assert!(!fine, "{status}: {out}{err}");
+        assert!(err.contains("patch 3 should not change, so nothing changed: D13 is "), "{status}: {err}");
+        assert_eq!(patch(2), was, "{status}: not taken");
+        assert_eq!(landed_ids(&e).len(), 1, "{status}: its work waits for review");
+        // Its review closed on a terminal, accept typed: taken.
+        let (fine, said) = stacked_on_terminal(&e.src, &e.db, &["review", "s", "--accept-all"], "accept\n");
+        assert!(fine, "{status}: {said}");
+        assert!(said.contains("Patch 3, D13, is "), "{status}: {said}");
+        assert!(patch(2).diff.contains("+neuf"), "{status}: taken: {}", patch(2).diff);
+    }
+}
+
 #[test]
 fn phabricator_s_commands_are_there_when_built_with_it() {
     let e = env();

@@ -2,8 +2,9 @@
 //! on Phabricator as it was last fetched: Accepted, as a change of the
 //! patch needs review again, or Landed, as it is in the tree already
 //! (`protecting`, the one place that says which). A stack written to hold
-//! another version of such a patch, its diff or its message differing,
-//! changes it (`changes`); dropped, moved, or left as it is while patches
+//! another version of such a patch, its message differing, or its diff by
+//! more than a rebase onto changed patches under it writes, changes it
+//! (`changes`); dropped, moved, rebased so, or left as it is while patches
 //! change around it, it does not change. The database refuses such a write
 //! unless the patch was confirmed for the one operation that writes it
 //! (`Db::confirm`), its refusal an error of its own kind that names the
@@ -106,16 +107,36 @@ pub fn guard_of(db: &Db, p: &Patch) -> Option<Guard> {
 }
 
 /// Whether version `now` of a patch changes version `was` of it: their
-/// diffs or their messages differ. Another author, another date, another
-/// place in the stack are no change.
+/// messages differ, or their diffs do, by more than a rebase of the patch
+/// onto changed patches under it writes (`rebased`). Another author,
+/// another date, another place in the stack are no change.
 pub fn differs(was: &Patch, now: &Patch) -> bool {
-    was.diff != now.diff || was.message != now.message
+    was.message != now.message || !rebased(&was.diff, &now.diff)
+}
+
+/// Whether diff `now` is diff `was` as a rebase writes it once a patch
+/// under it changed, the patch changing nothing of its own: the same text;
+/// or the same effect (`ops::same_effect`), the same files in the same
+/// order, with the same paths and modes, and the same hunks, each with the
+/// same lines, kept, added and removed, in the same order, where each hunk
+/// starts, the heading after its `@@`, the blobs an `index` line names and
+/// a rename's similarity alone differing. A line of context written
+/// otherwise (a change under it within its lines of context, a conflict
+/// resolved), a line added or removed otherwise, hunks split or merged
+/// otherwise, another file, are a change. So is a binary file's change
+/// whose text is not the same, as that text does not say its effect whole:
+/// `Binary files … differ` says nothing of it, and a delta is made against
+/// the blob the `index` line names.
+pub fn rebased(was: &str, now: &str) -> bool {
+    let binary = |d: &str| d.lines().any(|l| l.starts_with("Binary files ") || l.starts_with("GIT binary patch"));
+    was == now || (!binary(was) && !binary(now) && crate::ops::same_effect(was, now))
 }
 
 /// The patches of a stack holding `was` that should not change, that its
 /// holding `now` instead would change, by their versions and places in
 /// `was`, in order: each that `now` does not hold, whose change `now` holds
-/// in another version that differs from it (`differs`). One that `now`
+/// in another version that differs from it (`differs`), by more than a
+/// rebase onto changed patches under it writes. One that `now`
 /// holds as it is, anywhere, does not change, nor does one it does not
 /// hold at all, dropped. Only the patches the write replaces are looked at,
 /// so that a write that replaces none costs a look at the ids alone.
@@ -160,11 +181,12 @@ pub fn of_edit(db: &Db, name: &str, from: &Stack, places: std::ops::Range<usize>
 /// Of the patches that should not change that a stack holding `was` would
 /// change holding `now`, those a pull brings to what Phabricator has of
 /// them, by their versions in `was`: the new version's diff is its
-/// revision's latest, as the read stored it raw, or the patch's own, and
-/// its message is the revision's title and summary as a submit sends them
-/// (`submit::message_against`), or the patch's own. A pull takes what
-/// Phabricator has, so that those change with no one asked; the others it
-/// changes, a patch it made again on the pulled versions under it say, are
+/// revision's latest, as the read stored it raw, or the patch's own,
+/// rebased or not (`rebased`), and its message is the revision's title and
+/// summary as a submit sends them (`submit::message_against`), or the
+/// patch's own. A pull takes what Phabricator has, so that those change
+/// with no one asked; the others it changes, a patch it made again on the
+/// pulled versions under it, a line of its context changed, say, are
 /// asked about as any.
 pub fn from_phabricator(db: &Db, was: &[String], now: &[String]) -> Vec<String> {
     #[cfg(feature = "moz-phab")]
@@ -177,7 +199,7 @@ pub fn from_phabricator(db: &Db, was: &[String], now: &[String]) -> Vec<String> 
                 let Some(new) = now.iter().map(|n| db.patch(n)).find(|n| n.change == old.change) else { return false };
                 let Some((state, _)) = db.revision_state(&c.guard.link) else { return false };
                 let raw = (state.diff != 0).then(|| db.raw_diff(&c.guard.link, state.diff)).flatten();
-                let diff = new.diff == old.diff || raw == Some(new.diff.as_str());
+                let diff = rebased(&old.diff, &new.diff) || raw == Some(new.diff.as_str());
                 let message = new.message == old.message || crate::submit::message_against(&state.title, &state.summary, new, trailer).is_none();
                 diff && message
             })
@@ -331,6 +353,41 @@ mod tests {
             at,
             guard: Guard { d: d.into(), link: format!("https://phabricator.example.com/{d}"), status: status.into(), fetched: Some(fetched) },
         }
+    }
+
+    #[test]
+    fn a_diff_rebased_unchanged_is_no_change_and_one_whose_lines_change_is() {
+        let at = "diff --git a/a.txt b/a.txt\nindex 1111111..2222222 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -17,7 +17,7 @@ fn f()\n line 17\n line 18\n line 19\n-line 20\n+LINE 20\n line 21\n line 22\n line 23\n";
+        // Its hunk moved down, its heading and its blobs others: rebased.
+        let down = at.replace("@@ -17,7 +17,7 @@ fn f()", "@@ -18,7 +18,7 @@").replace("1111111..2222222", "3333333..4444444");
+        assert!(rebased(at, at) && rebased(at, &down));
+        // A line added, removed or kept written otherwise, white space at
+        // the end of one alone; another file too: a change.
+        for other in [
+            down.replace("+LINE 20", "+LINE twenty"),
+            down.replace("-line 20", "-line twenty"),
+            down.replace(" line 19\n", " LINE 19\n"),
+            down.replace("+LINE 20\n", "+LINE 20 \n"),
+            down.replace("a.txt", "b.txt"),
+            format!("{down}diff --git a/c.txt b/c.txt\nnew file mode 100644\n--- /dev/null\n+++ b/c.txt\n@@ -0,0 +1 @@\n+sea\n"),
+        ] {
+            assert!(!rebased(at, &other), "{other}");
+        }
+        // Its hunk split in two: a change.
+        let split = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -17,4 +17,4 @@\n line 17\n line 18\n line 19\n-line 20\n+LINE 20\n@@ -21,3 +21,3 @@\n line 21\n line 22\n line 23\n";
+        assert!(!rebased(at, split));
+        // A binary file's change: rebased only as the same text, as its
+        // text does not say its effect whole.
+        let binary = |index: &str| format!("diff --git a/i.png b/i.png\nindex {index} 100644\nGIT binary patch\ndelta 12\nzcmV-o0Gf\n\n");
+        assert!(rebased(&binary("1111111..2222222"), &binary("1111111..2222222")));
+        assert!(!rebased(&binary("1111111..2222222"), &binary("3333333..4444444")));
+        let said = |index: &str| format!("diff --git a/i.png b/i.png\nindex {index} 100644\nBinary files a/i.png and b/i.png differ\n");
+        assert!(!rebased(&said("1111111..2222222"), &said("3333333..4444444")));
+        // A message written otherwise, the diff rebased: a change; another
+        // author alone, none.
+        let p = Patch { id: "a".into(), change: "c".into(), author: None, date: None, message: "Bug 1 - one".into(), diff: at.into() };
+        assert!(!differs(&p, &Patch { diff: down.clone(), author: Some("Someone Else <else@example.com>".into()), ..p.clone() }));
+        assert!(differs(&p, &Patch { diff: down, message: "Bug 1 - One".into(), ..p.clone() }));
     }
 
     #[test]

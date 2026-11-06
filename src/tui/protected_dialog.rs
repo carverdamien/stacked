@@ -116,33 +116,37 @@ impl App {
     /// Of an edit by hand in $EDITOR that `action` asks for, the patches
     /// that should not change it may change, not confirmed for it yet, if
     /// there are any, to ask about before the editor opens: the patch
-    /// edited (as mail); with the patches above it, which conflicts with it
-    /// resolved by hand rebase, for its code; every patch for the stack as a
-    /// list, which may edit or reword any. Of the stack as it is, or as the
-    /// landed work it edits from its review would make it, then by the
-    /// versions of the stack as it is (`protected::of_edit`). Going on with
-    /// an edit not taken, those confirmed for that edit are not asked about
-    /// again (`hand_ok`). None for any other action.
+    /// edited, as mail or its code, or edited again, and the patch whose
+    /// conflict with an edit is resolved by hand; every patch for the stack
+    /// as a list, which may edit or reword any. Not the patches above the
+    /// one edited: those an edit only rebases do not change, and one that
+    /// a conflict with it changes is asked about as that conflict is
+    /// resolved, or, made again otherwise, as the review the edit lands
+    /// for closes (`Db::guard`). Of the stack as it is, or as the landed
+    /// work it edits from its review would make it, then by the versions of
+    /// the stack as it is (`protected::of_edit`). Going on with an edit not
+    /// taken, those confirmed for that edit are not asked about again
+    /// (`hand_ok`). None for any other action.
     pub(super) fn hand_refused(&self, action: &Action) -> Option<Refused> {
         let continuing = hand_edit(action)?;
         let all = usize::MAX;
+        let one = |at: usize| at..at + 1;
         let (work, places) = match action {
-            Action::EditPatch if self.patch_id().is_some() => (None, self.sel..self.sel + 1),
-            Action::EditCode if self.code_place().is_some() => (None, self.sel..all),
+            Action::EditPatch if self.patch_id().is_some() => (None, one(self.sel)),
+            Action::EditCode if self.code_place().is_some() => (None, one(self.sel)),
             Action::EditList => (None, 0..all),
             Action::EditAgain if self.refused.is_some() => match &self.refused_work {
-                Some((run, at)) => (Some(run.clone()), *at..all),
-                None => (None, self.sel..all),
+                Some((run, at)) => (Some(run.clone()), one(*at)),
+                None => (None, one(self.sel)),
             },
             Action::Resolve => {
                 let c = self.conflict.as_ref()?;
-                (c.work.clone(), c.at..all)
+                (c.work.clone(), one(c.at))
             }
             Action::EditWorkList | Action::EditWorkPatch(..) | Action::EditWorkFile(..) => {
                 let run = self.reviewing.as_ref()?.run.clone();
                 match action {
-                    Action::EditWorkPatch(at, _) => (Some(run), *at..at + 1),
-                    Action::EditWorkFile(at, ..) => (Some(run), *at..all),
+                    Action::EditWorkPatch(at, _) | Action::EditWorkFile(at, ..) => (Some(run), one(*at)),
                     _ => (Some(run), 0..all),
                 }
             }

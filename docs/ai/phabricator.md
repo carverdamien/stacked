@@ -419,11 +419,23 @@ fetched of yet, change as any. Without the `moz-phab` feature, or with
 reviews coming from nowhere (`reviews.source = "none"`, Settings, above),
 no patch is protected.
 
-A stack written to hold another version of such a patch, its diff or its
-message differing from the version the stack holds, changes it; nothing
-else does: the patch dropped from the stack, moved with its version as it
-was, another version of the same diff and message (another author, say), or
-left as it is while patches change around it. No such stack goes in, nor
+A stack written to hold another version of such a patch, its message
+differing from the version the stack holds, or its diff by more than a
+rebase onto changed patches under it writes, changes it; nothing else does:
+the patch dropped from the stack, moved with its version as it was, another
+version of the same diff and message (another author, say), left as it is
+while patches change around it, or rebased unchanged onto a changed patch
+under it. Rebased unchanged, its new diff has the effect of the old
+(`protected::rebased`, `ops::same_effect`): the same files in the same
+order, with the same paths and modes, and the same hunks, each with the
+same lines, kept, added and removed, in the same order; only where each
+hunk starts, the heading after its `@@`, the blobs an `index` line names and
+a rename's similarity differ. A line of its context written otherwise (a
+change under it within its lines of context, a conflict resolved by hand),
+a line it adds or removes written otherwise, its hunks split or merged
+otherwise, and a binary file's change whose text is not the same, change
+it. So editing a patch under an Accepted one, by hand or by the agent, asks
+nothing of the Accepted one while it applies as it was. No such stack goes in, nor
 does a name move to one of its tree (an undo, a redo, a stack picked in the
 tree of edits), unless that patch was confirmed for that one operation: the
 database refuses the write, nothing written, as an error of its own kind
@@ -451,9 +463,10 @@ nothing is written, and the bottom line says that nothing changed, and why
 Phabricator`).
 
 An edit by hand in $EDITOR asks before the editor opens, so that no edit is
-lost to a refusal after it: of a patch as mail, when that patch should not
-change; of its code, when it or a patch above it should not, as a conflict
-with one of those, resolved by hand, makes it again on the edit; of the stack
+lost to a refusal after it: of a patch as mail, or of its code, or edited
+again, when that patch should not change, not of the patches above it,
+which an edit that only rebases them does not change; of a conflict
+resolved by hand, when the patch it is in should not change; of the stack
 as a list, which may edit or reword any patch, when any should not; and so
 from the review of landed work, of the stack the work makes, the patches
 named as the stack holds them. The dialog then says that the edit may change

@@ -168,15 +168,27 @@ nothing but saying why, nothing written; Esc cancels it, the bottom line
 saying why, nothing written; `accept` writes it, for that one operation, the
 next undo asking again; Changes Planned and Needs Review write at once. An
 edit by hand asks before $EDITOR opens, of the patch as mail, of a file
-of the patch under it, as it may rebase it, of the stack as a list, and
-from the review of landed work; cancelled, $EDITOR does not open; typed,
-it opens, the edit lands, and its review closes with no one asked again; an
-edit of a file not taken, as the patch above it no longer applies on it,
-edited again asks of a patch Accepted since alone, cancelled giving back the
-edit's menu, and its conflict resolved by hand asks nothing more, its review
-closing so too; Changes Planned and Needs Review give $EDITOR at once. A review of a change of such a patch, closed,
+of it, of the stack as a list, and from the review of landed work;
+cancelled, $EDITOR does not open; typed, it opens, the edit lands, and its
+review closes with no one asked again; a file of the patch under it asks
+nothing, its review closing so too, the patch above as it was; an edit of
+a file not taken, as the patch above it no longer applies on it, asks
+nothing, and its conflict resolved by hand asks of that patch, cancelled
+giving back the edit's menu, then nothing more, its review closing so too;
+Changes Planned and Needs Review give $EDITOR at once. A review of a change of such a patch, closed,
 asks first, the review staying open while cancelled; from the banner too,
 the main screen staying, the review closed from there once accept is typed.
+The agent's work on the patch under it closes with no one asked, the patch
+above as it was, or rebased unchanged, a version whose hunk is a line down;
+one that changes a line of its context asks, as one that changes the patch
+itself does, the review staying open while cancelled. In `db.rs`, such a
+patch rebased so is written with no one asked, and one rebased with a line
+of its own, a line of its context, or its message written otherwise is
+refused; in `protected.rs`, what is rebased unchanged and what is not, a
+binary file's change being so only as the same text. In `tests/cli.rs`,
+`send --accept` takes the agent's work on the patch under it, its lines
+moved, with no terminal to ask on, and refuses its work on that patch,
+which waits for review and is taken on a terminal once accept is typed.
 A pull that brings such a patch to its revision's latest diff closes with
 no one asked; one that makes it again on the pulled version under it asks,
 Accepted or Landed. The dialog draws its title, each patch's line, how long
