@@ -1393,6 +1393,98 @@ fn the_wheel_scrolls_the_patches_while_a_patch_is_moved_the_patch_going_under_th
 }
 
 #[test]
+fn the_wheel_scrolls_the_patches_past_heads_line_a_line_at_a_time_to_the_end_as_by_notches_of_several() {
+    let (_tmp, db, src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    // HEAD after patch 10, among the patches: on a screen of 10 lines, the
+    // pane's 7 lines under its header.
+    git(&src, &["checkout", "-q", "--detach", "main~10"]);
+    let opened = || {
+        let mut app = open(&db).unwrap();
+        app.checkout = src.clone();
+        app.look_at_head();
+        app.settle();
+        draw_sized(&mut app, 120, 10);
+        app.hover(5, 3);
+        app
+    };
+    // The wheel turned the same way over the pane until the pane no longer
+    // moves: what it showed each time.
+    let turned = |app: &mut App, turned: Turned| {
+        let mut seen = vec![pane_rows(app, 120, 10)];
+        while seen.len() < 60 {
+            app.wheel(Some((5, 3)), turned);
+            let rows = pane_rows(app, 120, 10);
+            if seen.last() == Some(&rows) {
+                break;
+            }
+            seen.push(rows);
+        }
+        seen
+    };
+    // A line at a time, as a mouse's notches come in the browser: past
+    // HEAD's line, which goes on the pane's top line once it is scrolled
+    // past, as far as patch 20 on the bottom line; each turn moving the
+    // pane, none showing again what the one before showed.
+    let mut app = opened();
+    let lines = turned(&mut app, Turned::Lines(1));
+    let end = lines.last().unwrap().clone();
+    assert!(end[0].trim().starts_with("↑ HEAD ") && row_of(&end, 20) == Some(end.len() - 1), "{lines:#?}");
+    // Up a line at a time, past it again, as far as patch 1 on the top line.
+    let up = turned(&mut app, Turned::Lines(-1));
+    assert_eq!(row_of(up.last().unwrap(), 1), Some(0), "{up:#?}");
+    // Notches of several lines, and pages, as a trackpad's and StackED's
+    // turns may be: as far, no further.
+    for by in [Turned::Lines(2), Turned::Lines(3), Turned::Pages(1)] {
+        let mut app = opened();
+        assert_eq!(turned(&mut app, by).last(), Some(&end), "{by:?}");
+    }
+}
+
+#[test]
+fn the_wheel_scrolls_the_middle_compact_to_its_end_over_the_side_that_ends_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("base.txt"), "base\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    let lines: String = (1..=120).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(src.join("big.txt"), lines).unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "Bug 1 - add big"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    // A new file, side by side, compact: its old side ends with its header,
+    // its new side goes on for 120 lines. The mouse over the old side, on a
+    // screen of 12 lines.
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    pick_view(&mut app, "Side by side, compact");
+    key(&mut app, KeyCode::Home);
+    draw_sized(&mut app, 120, 12);
+    let over = (MIDDLE as u16 + 2, 4);
+    app.hover(over.0, over.1);
+    // The wheel turned down there until nothing moves: the new side's last
+    // line in sight. The cursor goes on the old side's row under the mouse,
+    // which the new side scrolled past: the panes are not pulled back to
+    // that row on the new side.
+    for by in [Turned::Lines(1), Turned::Lines(3)] {
+        key(&mut app, KeyCode::Home);
+        draw_sized(&mut app, 120, 12);
+        app.hover(over.0, over.1);
+        let mut screen = draw_sized(&mut app, 120, 12);
+        for _ in 0..200 {
+            app.wheel(Some(over), by);
+            screen = draw_sized(&mut app, 120, 12);
+        }
+        assert!(screen.contains("+line 120"), "{by:?}:\n{screen}");
+    }
+}
+
+#[test]
 fn the_wheel_scrolls_a_reference_s_preview_and_nothing_out_of_it() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

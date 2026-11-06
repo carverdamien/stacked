@@ -822,7 +822,10 @@ editor's own test, `editor.rs`, of the box scrolled: nothing before it
 is drawn, the cursor on the nearest of its lines at its column, as far as
 its ends, what was closed here scrolled as ↑↓ scroll it); over the
 patches while a patch is moved, the patch going under the mouse; each as
-far as its ends and no further; by pages too, a page the middle's height
+far as its ends and no further; the patches past HEAD's line among them
+a line at a time, as a mouse's notches come in the browser, as far as
+notches of several lines and pages go; the middle compact, over the side
+that ends first, to the other side's end; by pages too, a page the middle's height
 less a line; nothing out of a box open, over the middle while a patch is
 moved, nor over the top bar or the bottom line; after a key, ↑↓ where
 the cursor is, wherever the mouse is, pgdn for a page, until the mouse

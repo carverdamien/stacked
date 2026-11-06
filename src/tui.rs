@@ -12225,8 +12225,15 @@ impl App {
         });
         // Scrolled by the wheel: as many entries further as the lines it
         // turned take; and since, until a key, where the wheel left it, as
-        // far as the list's end, the pick in sight or not.
+        // far as the list's end, the pick in sight or not. HEAD's line shown
+        // first, in its place, shows what the entry after it shown first
+        // shows, HEAD's line pinned over it (drawn as HEAD in its place,
+        // below): down from there, from that entry, else a line down would
+        // show the same again, and the wheel would never go past HEAD a
+        // line at a time.
+        let head_first = matches!(entries.get(kept), Some((Listed::Head, its)) if its.len() == 1) && kept + 1 < entries.len();
         let kept = match self.turned(Wheeled::Patches) {
+            Some(n) if n > 0 && head_first => list_moved(&entries, kept + 1, n),
             Some(n) => list_moved(&entries, kept, n),
             None => kept,
         };

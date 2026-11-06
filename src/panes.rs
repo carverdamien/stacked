@@ -217,7 +217,7 @@ impl Compact {
     }
 
     /// The panes on `row`, the cursor on it: on line `y`, else where it is
-    /// if its pane shows it, else a third down.
+    /// if its pane shows it, or the other does, else a third down.
     fn place(&mut self, p: &Panes, row: usize, h: usize, y: Option<usize>) {
         let h = h.max(1);
         let mut mine = self.side();
@@ -233,12 +233,17 @@ impl Compact {
         };
         self.cursor = Some(row);
         self.held = true;
-        // On screen already, in its pane: the cursor goes to it there.
+        // On screen already, in its pane, else in the other: the cursor
+        // goes to it there, the panes as they are, as the mouse over a row
+        // the wheel scrolled into sight puts the cursor on it.
         if y.is_none() {
-            for (y, (l, r)) in self.lines(p, h).iter().enumerate() {
-                if (if mine == 0 { *l } else { *r }) == Some(row) {
-                    self.y = y;
-                    return;
+            let lines = self.lines(p, h);
+            for which in [mine, 1 - mine] {
+                for (y, (l, r)) in lines.iter().enumerate() {
+                    if (if which == 0 { *l } else { *r }) == Some(row) {
+                        self.y = y;
+                        return;
+                    }
                 }
             }
         }
