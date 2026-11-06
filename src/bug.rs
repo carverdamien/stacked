@@ -1,6 +1,6 @@
-//! A bug filed for a patch whose title names none, or that a comment on it
-//! asks for (`mentioned`), as Firefox's own
-//! bug-filing skill files one, with no Bugzilla key: the agent drafts it
+//! A bug filed for a patch, as a comment of yours on it asks, saying the
+//! word bug (`mentioned`), as Firefox's own bug-filing skill files one,
+//! with no Bugzilla key: the agent drafts it
 //! (`Way::Bug`, built with the `moz-phab` feature), its product and
 //! component as `./mach file-info bugzilla-component` names them, its type,
 //! its summary and its description written by the skill's rules; the draft
@@ -168,7 +168,7 @@ pub fn titled(title: &str, n: u64) -> String {
 }
 
 /// Whether `title` names no bug, as moz-phab reads one in a title
-/// (`links::bug_in`): then a bug may be drafted for its patch.
+/// (`links::bug_in`): then the bug drafted for its patch goes in it.
 #[cfg(feature = "moz-phab")]
 pub fn names_none(title: &str) -> bool {
     named_in(title).is_none()
@@ -181,10 +181,11 @@ pub fn named_in(title: &str) -> Option<String> {
     crate::links::bug_in(&title.chars().collect::<Vec<_>>()).map(|(_, _, n)| n)
 }
 
-/// Whether `text`, a comment's, says the word bug, in any case, as a word
-/// of its own (`bug`, `Bug:`, `BUG`, `follow-up bug`, `bug 123`, `bug123`),
-/// or its plural (`bugs`): then a bug may be drafted from it, as it may be
-/// asking for one, whatever its patch's title names. Not in another word
+/// Whether `text`, what you ask the agent in a comment, says the word bug,
+/// in any case, as a word of its own (`bug`, `Bug:`, `BUG`, `follow-up
+/// bug`, `bug 123`, `bug123`), or its plural (`bugs`): then a bug may be
+/// drafted from it, as it may be asking for one, whatever its patch's
+/// title names. Not in another word
 /// (`debug`, `bugzilla`, `humbug`): a word is made of letters, digits and
 /// `_`, but for the digits of a number right after `bug`.
 pub fn mentioned(text: &str) -> bool {

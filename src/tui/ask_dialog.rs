@@ -43,8 +43,8 @@ pub enum Permission {
     Test,
     #[cfg(feature = "try-push")]
     Try,
-    /// A bug drafted for the patch, whose title names none, or as a comment
-    /// that says bug asks, built with the `moz-phab` feature (`bug`).
+    /// A bug drafted for the patch, as a comment of yours that says the
+    /// word bug asks, built with the `moz-phab` feature (`bug`).
     #[cfg(feature = "moz-phab")]
     Bug,
 }
@@ -95,7 +95,7 @@ impl Permission {
             }
             #[cfg(feature = "moz-phab")]
             (Permission::Bug, _) => {
-                "The agent drafts a bug for this patch, whose title names none: it files nothing and changes nothing, and the draft waits for your review. Closing the review opens Bugzilla's form, filled in, in your browser, and you give the bug's number once you file it there."
+                "The agent drafts a bug for this patch from a comment of yours that says the word bug: it files nothing and changes nothing, and the draft waits for your review. Closing the review opens Bugzilla's form, filled in, in your browser, and you give the bug's number once you file it there."
             }
         }
     }
@@ -509,11 +509,10 @@ impl App {
     /// whole stack; the stack's, the stack; the stack's and a patch's as a
     /// whole, to build and test, and, built with the `try-push` feature, to
     /// select the CI tasks of a try push (not in the tour, whose game has
-    /// no CI to push to); a patch's comment, the patch's title naming no
-    /// bug or the comment saying the word bug, built with the `moz-phab`
-    /// feature, to draft one (not in the tour
-    /// either); a question on the history, to answer alone. None if what it
-    /// asks about is gone.
+    /// no CI to push to); a patch's comment, what you ask in it saying the
+    /// word bug, built with the `moz-phab` feature, to draft one (not in
+    /// the tour either); a question on the history, to answer alone. None
+    /// if what it asks about is gone.
     fn asking_of(&self, about: &AskOf) -> Option<Opened> {
         let ways = |patch: bool, test: bool| {
             let mut out = vec![Permission::Answer];
@@ -670,38 +669,55 @@ impl App {
     }
 
     /// Of comment `e`, being written on a patch: whether it may be asked to
-    /// draft a bug, as it may once saved (`ask::can_bug`): the patch's title
-    /// names none, or the comment says the word bug (`bug::mentioned`), in
-    /// what is typed so far, or in a turn of its thread that stands and
-    /// that the editor does not write again. Not in the tour, whose game has
-    /// no bug to file.
+    /// draft a bug, as it may once saved (`ask::can_bug`): what you ask the
+    /// agent in its thread as saving it makes it (`written_thread`), what
+    /// is typed so far in it, says the word bug (`ask::bug_asked`). Not in
+    /// the tour, whose game has no bug to file.
     #[cfg(feature = "moz-phab")]
     fn written_bug(&self, e: &Edit) -> bool {
-        let t = &e.target;
-        let (change, id) = match t {
-            Target::Patch(change) | Target::Line { change, .. } => (change, None),
-            Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } | Target::Rewind { change, id, .. } => {
-                (change, Some(id))
+        !self.in_memory() && self.written_thread(e).is_some_and(|(change, text)| ask::bug_asked(&self.db, change, &text))
+    }
+
+    /// Of comment `e`, being written on a patch: the patch's change, and
+    /// its thread as saving it makes it (`save_with`), what is typed so far
+    /// taking its place; a rewind's, without the lines stacked wrote back
+    /// for it. Nothing typed, the thread as it is, as it is asked then.
+    #[cfg(feature = "moz-phab")]
+    fn written_thread<'a>(&self, e: &'a Edit) -> Option<(&'a String, String)> {
+        let typed = e.ed.text();
+        let typed = typed.trim();
+        let note = |change: &String, id: &String| self.db.note(change, id).map(|n| n.text.clone());
+        let thread = match &e.target {
+            Target::Patch(change) => (change, crate::thread::yours(typed)),
+            Target::Line { change, key, .. } => match note(change, key) {
+                Some(text) if typed.is_empty() => (change, text),
+                Some(text) => (change, append_turn(&text, Role::You, typed, None)),
+                None => (change, crate::thread::yours(typed)),
+            },
+            Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } | Target::Rewind { change, id, .. }
+                if typed.is_empty() =>
+            {
+                (change, note(change, id)?)
             }
-            _ => return false,
+            Target::Reply { change, id } => (change, append_turn(&note(change, id)?, Role::You, typed, None)),
+            Target::Edit { change, id } => {
+                let text = note(change, id)?;
+                let body = crate::refs::kept(&last_mine(&text).unwrap_or_default(), typed);
+                (change, replace_last_turn(&text, &body).unwrap_or_else(|| append_turn(&text, Role::You, typed, None)))
+            }
+            Target::Turn { change, id, turn } => {
+                let text = note(change, id)?;
+                let was = all_turns(&text).into_iter().nth(*turn).map(|t| t.body).unwrap_or_default();
+                (change, edit_turn(&text, *turn, &crate::refs::kept(&was, typed)).unwrap_or(text))
+            }
+            Target::Rewind { change, id, from } => {
+                let text = note(change, id)?;
+                let body = without_written(typed, &rewind_written(&text, *from));
+                (change, crate::thread::rewind(&text, *from, &body).unwrap_or(text))
+            }
+            _ => return None,
         };
-        if self.in_memory() {
-            return false;
-        }
-        let Some(p) = self.db.latest_version(change) else { return false };
-        if crate::bug::names_none(p.title()) {
-            return true;
-        }
-        let note = id.and_then(|id| self.db.note(change, id));
-        let mut typed = e.ed.text();
-        if let (Target::Rewind { from, .. }, Some(n)) = (t, note) {
-            typed = without_written(&typed, &rewind_written(&n.text, *from));
-        }
-        let again = self.turns_written_again(t).unwrap_or((usize::MAX, usize::MAX));
-        crate::bug::mentioned(&typed)
-            || note.is_some_and(|n| {
-                all_turns(&n.text).iter().enumerate().any(|(k, turn)| !turn.deleted && !(again.0..again.1).contains(&k) && crate::bug::mentioned(&turn.body))
-            })
+        Some(thread)
     }
 
     /// The bug the title of the patch that comment `about` is on names,
@@ -867,7 +883,7 @@ impl App {
             && let Some(n) = self.bug_titled(&d.about)
         {
             return format!(
-                "The agent drafts another bug for this patch, as the comment asks, its title naming bug {n} already: it files nothing and changes nothing, and the draft waits for your review. Closing the review opens Bugzilla's form, filled in, in your browser, and the patch's title keeps bug {n}."
+                "The agent drafts another bug for this patch from a comment of yours that says the word bug, as the patch's title names bug {n} already: it files nothing and changes nothing, and the draft waits for your review. Closing the review opens Bugzilla's form, filled in, in your browser, and the patch's title keeps bug {n}."
             );
         }
         match (d.permission(), d.count()) {

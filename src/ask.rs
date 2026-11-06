@@ -481,32 +481,42 @@ pub const TRY_OF_A_PATCH: &str = "A try push is asked of a patch as a whole or o
 comment on the patch's title or on the stack.";
 
 /// Whether `n` may be asked to draft a bug (`bug`): a comment on a patch, on
-/// it as a whole or on one of its lines, whose title names no bug as
-/// moz-phab reads one (`bug::names_none`), or one of whose turns says the
-/// word bug (`said_bug`); never one on the stack, nor on the stack's
-/// history.
+/// it as a whole or on one of its lines, whose thread asks for one
+/// (`bug_asked`); never one on the stack, nor on the stack's history.
 #[cfg(feature = "moz-phab")]
 pub fn can_bug(db: &Db, n: &Note) -> bool {
-    n.about.is_none() && !n.on_stack() && db.latest_version(&n.change).is_some_and(|p| crate::bug::names_none(p.title()) || said_bug(&n.text))
+    n.about.is_none() && !n.on_stack() && bug_asked(db, &n.change, &n.text)
 }
 
-/// Whether a turn of the thread `text` that stands, yours, the agent's or
-/// a reviewer's, says the word bug (`bug::mentioned`).
+/// Whether the thread `text`, of a comment on the patch of `change`, asks
+/// for a bug: the patch is there, and what the user asks the agent in it
+/// (`asked`) says the word bug (`bug::mentioned`), whatever the patch's
+/// title names. A reviewer's turn or the agent's that says it does not.
 #[cfg(feature = "moz-phab")]
-pub fn said_bug(text: &str) -> bool {
-    crate::thread::thread_turns(text).iter().any(|t| crate::bug::mentioned(&t.body))
+pub fn bug_asked(db: &Db, change: &str, text: &str) -> bool {
+    db.latest_version(change).is_some() && crate::bug::mentioned(&asked(text))
+}
+
+/// What the user asks the agent in the thread `text`: the turns of theirs
+/// that stand since the agent's last turn, every one of theirs when the
+/// agent has none; a reviewer's left out.
+#[cfg(feature = "moz-phab")]
+pub fn asked(text: &str) -> String {
+    let turns = thread_turns(text);
+    let from = turns.iter().rposition(|t| t.role == Role::Agent).map_or(0, |k| k + 1);
+    turns[from..].iter().filter(|t| t.role == Role::You).map(|t| t.body.as_str()).collect::<Vec<_>>().join("\n\n")
 }
 
 /// Why a comment is not asked to draft a bug, as every way of asking one
 /// says it.
 #[cfg(feature = "moz-phab")]
-pub const BUG_OF_A_PATCH: &str = "A bug is drafted from a comment on a patch whose title names none, or from one that says the word bug: \
-not from the stack's comments, nor from other comments once the title names a bug.";
+pub const BUG_OF_A_PATCH: &str = "A bug is drafted from a comment of yours on a patch that says the word bug: \
+not from a comment that does not say it, nor from the stack's comments.";
 
 /// Whether `n` may be asked in `way`, of those the comment's own choices
 /// have: a build and test, and a try push, on the stack or a patch as a
-/// whole, a try push not on the history; a bug's draft, on a patch whose
-/// title names none, or from a comment that says bug.
+/// whole, a try push not on the history; a bug's draft, on a patch, from
+/// a comment of yours that says the word bug.
 pub fn fits_way(db: &Db, n: &Note, way: Way) -> bool {
     match way {
         Way::Test => can_test(db, n),

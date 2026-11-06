@@ -212,9 +212,8 @@ The ask dialog sets two things every time. The permission is one of:
   builds, and says what it found; it changes nothing in the stack.
 - **try push**, with the `try-push` feature: it selects tasks of Firefox's
   CI for a try push (below).
-- **file a bug**, with the `moz-phab` feature, on a patch whose title
-  names no bug, or on a comment that says the word bug: it drafts the bug
-  (Filing a bug, below).
+- **file a bug**, with the `moz-phab` feature, on a comment of yours on a
+  patch that says the word bug: it drafts the bug (Filing a bug, below).
 
 The dialog offers only those that fit where the comment is. The model is
 claude's `--model`, by its full id: claude-haiku-5-5, claude-sonnet-5-5,
@@ -462,9 +461,10 @@ review once its tasks are done.
 
 ## Filing a bug
 
-With the `moz-phab` feature, a comment on a patch whose title names no bug
-can be asked with the `file a bug` permission. The agent drafts the bug as
-Firefox's own bug-filing skill does: its product and component from `./mach
+With the `moz-phab` feature, a comment of yours on a patch that says the
+word bug can be asked with the `file a bug` permission, and only such a
+comment. The agent drafts the bug as Firefox's own bug-filing skill does:
+its product and component from `./mach
 file-info bugzilla-component`, its type, a summary and a description by the
 skill's rules. It files nothing and opens nothing. The draft waits for your
 review, to read. Closing the review opens Bugzilla's form to file the bug,
@@ -474,10 +474,10 @@ in the title` makes the patch's title `Bug N - title`, a new version of the
 patch. The next submit to Phabricator sends the bug. `Cancel` changes
 nothing.
 
-A comment that says the word bug, in any case (`bug`, `Bug:`, `follow-up
-bug`, `bugs`, but not `debug` or `bugzilla`), can be asked so too, on any
-patch: in any turn of its thread, a reviewer's included, or in what you
-are typing. When the patch's title names a bug already, the agent drafts
+The word counts in any case (`bug`, `Bug:`, `follow-up bug`, `bugs`, but
+not `debug` or `bugzilla`), in what you are typing, or in what you wrote
+since the agent last replied. A reviewer's turn or the agent's that says
+bug does not count, and neither does a title that names no bug. When the patch's title names a bug already, the agent drafts
 another one, a follow-up, which may point at the title's bug. Closing the
 review opens the form as above, and nothing more: no dialog, and the
 patch's title keeps its bug.

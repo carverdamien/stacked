@@ -195,16 +195,24 @@ and Ask Now and Ask Later are grayed while none can be.
   selects waits for your review, and stacked pushes what you accept (Try
   push, below).
 - `file a bug`, built with the `moz-phab` feature, on a patch's comments
-  (as a whole or on a line) when the patch's title names no bug as
-  moz-phab reads one (`links::bug_in`), or when the comment says the word
-  bug (`bug::mentioned`): in any case, as a word of its own or its plural
-  (`bug`, `Bug:`, `BUG`, `follow-up bug`, `bug 123`, `bug123`, `bugs`),
-  not inside another word (`debug`, `bugzilla`, `humbug`), in any turn of
-  its thread that stands, yours, the agent's or a reviewer's, and for a
-  comment being written, in what is typed so far (`ask::can_bug`, and
-  `written_bug` in `tui/ask_dialog.rs` for one being written). Never on
-  the stack's comments, the history, nor in the tour; absent from the list
-  otherwise. The title naming no bug, it drafts the bug the patch is for;
+  (as a whole or on a line) only when what you ask the agent in the
+  comment says the word bug (`bug::mentioned`): in any case, as a word of
+  its own or its plural (`bug`, `Bug:`, `BUG`, `follow-up bug`, `bug 123`,
+  `bug123`, `bugs`), not inside another word (`debug`, `bugzilla`,
+  `humbug`). What you ask is your turns that stand since the agent's last
+  turn, every one of yours when the agent has none (`ask::asked`); a
+  reviewer's turn or the agent's that says bug does not count, and the
+  patch's title naming no bug does not either. For a comment being
+  written, it is read in the thread as saving it makes it, what is typed
+  so far in it (a rewind's lines stacked wrote back left out; nothing
+  typed, the thread as it is). One rule (`ask::bug_asked`, through
+  `ask::can_bug` for a saved comment, and `written_bug` in
+  `tui/ask_dialog.rs` for one being written). Never on the stack's
+  comments, the history, nor in the tour; absent from the list otherwise.
+  Asking it any other way, the comment is refused with `A bug is drafted
+  from a comment of yours on a patch that says the word bug: not from a
+  comment that does not say it, nor from the stack's comments.`
+  (`ask::BUG_OF_A_PATCH`). The title naming no bug, it drafts the bug the patch is for;
   naming one, it drafts another one, a follow-up, as the comment asks, the
   prompt saying the title's bug and that `see_also`, `blocked` or
   `dependson` may name it where that fits. It drafts as Firefox's own

@@ -7557,25 +7557,13 @@ impl App {
     /// rows do not show them too: the comment's id, then from which turn,
     /// to the one after the last.
     fn written_turns(&self) -> Option<(String, (usize, usize))> {
-        let t = &self.writing()?.target;
-        let id = match t {
-            Target::Edit { id, .. } | Target::Turn { id, .. } | Target::Rewind { id, .. } => id.clone(),
-            _ => return None,
-        };
-        Some((id, self.turns_written_again(t)?))
-    }
-
-    /// Of the turns of its comment, those that a comment written for `t`
-    /// writes again: from which turn, to the one after the last. None when
-    /// it writes none again.
-    fn turns_written_again(&self, t: &Target) -> Option<(usize, usize)> {
-        match t {
+        match &self.writing()?.target {
             Target::Edit { change, id } => {
                 let k = last_mine_at(&self.db.note(change, id)?.text)?;
-                Some((k, k + 1))
+                Some((id.clone(), (k, k + 1)))
             }
-            Target::Turn { turn, .. } => Some((*turn, *turn + 1)),
-            Target::Rewind { from, .. } => Some((*from, usize::MAX)),
+            Target::Turn { id, turn, .. } => Some((id.clone(), (*turn, *turn + 1))),
+            Target::Rewind { id, from, .. } => Some((id.clone(), (*from, usize::MAX))),
             _ => None,
         }
     }

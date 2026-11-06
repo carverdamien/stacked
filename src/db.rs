@@ -777,10 +777,10 @@ pub enum Way {
     /// once you accept them.
     #[cfg(feature = "try-push")]
     Try,
-    /// A bug drafted for a patch whose title names none, built with the
-    /// `moz-phab` feature (`bug`): it changes nothing, and the draft waits
-    /// for your review; closing the review opens Bugzilla's form, filled
-    /// in with it.
+    /// A bug drafted for a patch, as a comment of yours that says the word
+    /// bug asks, built with the `moz-phab` feature (`bug`): it changes
+    /// nothing, and the draft waits for your review; closing the review
+    /// opens Bugzilla's form, filled in with it.
     #[cfg(feature = "moz-phab")]
     Bug,
 }

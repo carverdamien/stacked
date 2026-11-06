@@ -16,8 +16,8 @@
 //! dialog staying. Esc, Cancel, or a click out of the dialog closes it:
 //! nothing changes, and the form stays open in the browser, to file the bug
 //! all the same. A bug drafted for a patch whose title names one already,
-//! another one, as a comment that says bug asks: no dialog, the form alone
-//! opening, and the title keeping its bug.
+//! another one, as your comment that says the word bug asks: no dialog,
+//! the form alone opening, and the title keeping its bug.
 
 use super::*;
 use crate::bug::Draft;

@@ -29564,8 +29564,11 @@ fn written_permissions(app: &mut App, text: &str) -> Vec<&'static str> {
     if let Some(at) = d.permissions.iter().position(|(p, _)| p.label() == "file a bug") {
         let said = app.ask_lines(&AskDialog { permission: Some(at), ..d })[1].clone();
         assert!(
-            said.starts_with("The agent drafts a bug for this patch, whose title names none: it files nothing and changes nothing")
-                || (said.starts_with("The agent drafts another bug for this patch, as the comment asks, its title naming bug ")
+            said.starts_with(
+                "The agent drafts a bug for this patch from a comment of yours that says the word bug: it files nothing and changes nothing"
+            ) || (said.starts_with(
+                "The agent drafts another bug for this patch from a comment of yours that says the word bug, as the patch's title names bug "
+            )
                     && said.contains(": it files nothing and changes nothing")
                     && said.ends_with("and the patch's title keeps bug 1.")),
             "{said}"
@@ -29588,9 +29591,10 @@ fn patch_in(db: &Path, k: usize) -> stacked::db::Patch {
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn file_a_bug_is_offered_on_a_patch_whose_title_names_none_and_nowhere_else() {
-    // Its title names no bug: a comment on the patch, as a whole or on a
-    // line, may be asked to draft one, the last of the permissions.
+fn file_a_bug_is_offered_only_when_what_you_write_says_the_word_bug() {
+    // A patch whose title names no bug: a comment on it that says the word
+    // bug, as it is typed, may be asked to draft one, the last of the
+    // permissions.
     let (_tmp, db, _here) = with_message(|_| "shout two\n\nBecause.".into());
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
@@ -29600,15 +29604,21 @@ fn file_a_bug_is_offered_on_a_patch_whose_title_names_none_and_nowhere_else() {
         want.push("try push");
     }
     want.push("file a bug");
-    assert_eq!(written_permissions(&mut app, "File a bug for this."), want);
+    assert_eq!(written_permissions(&mut app, "file a bug for this"), want);
+    // A comment that does not say it: not offered, though the title names
+    // no bug, neither as it is typed nor once saved.
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(written_permissions(&mut app, "why so loud?").last(), Some(&"file a bug"));
-    // On the stack's comments: not offered.
+    assert_eq!(written_permissions(&mut app, "why so loud?"), ["answer only", "change patch", "change stack"]);
+    let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text.contains("why so loud?")).unwrap();
+    let d = Db::load(&db).unwrap();
+    assert!(!stacked::ask::can_bug(&d, &n));
+    drop(d);
+    // On the stack's comments: not offered, even saying it.
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
     choose(&mut app, "Comment on the stack…");
-    assert!(!written_permissions(&mut app, "And the stack?").contains(&"file a bug"));
+    assert!(!written_permissions(&mut app, "And the stack's bug?").contains(&"file a bug"));
     // A patch whose title names a bug: not offered, unless the comment
     // says the word bug, as it is typed.
     let (_tmp, db, _src) = setup();
@@ -29624,37 +29634,58 @@ fn file_a_bug_is_offered_on_a_patch_whose_title_names_none_and_nowhere_else() {
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn file_a_bug_is_offered_on_a_patch_naming_a_bug_once_a_turn_of_the_comment_says_bug() {
+fn file_a_bug_is_offered_once_your_turn_says_bug_not_a_reviewer_s_nor_the_agent_s() {
     // Patch 1's title names bug 1; the comment on its line says no bug:
     // not offered.
     let (_tmp, db, _src) = setup();
     let mut app = asking_about_a_line(&db);
     keys(&mut app, &[KeyCode::Esc]);
-    // A reviewer's turn says it: offered, the last of the permissions,
-    // and the comment may be sent so.
     let n = notes_of(&db, "s", 0).remove(0);
-    Db::edit(&db, |d| {
-        let n = d.note(&n.change, &n.id).cloned().unwrap();
-        d.set_note(Note { text: append_turn(&n.text, Role::Reviewer, "Agreed, but in a follow-up Bug, please.", Some("ann")), ..n })
-    })
-    .unwrap();
+    let add = |role: Role, body: &str, tag: Option<&str>| {
+        Db::edit(&db, |d| {
+            let n = d.note(&n.change, &n.id).cloned().unwrap();
+            d.set_note(Note { text: append_turn(&n.text, role, body, tag), ..n })
+        })
+        .unwrap();
+    };
+    let can = || {
+        let d = Db::load(&db).unwrap();
+        stacked::ask::can_bug(&d, d.note(&n.change, &n.id).unwrap())
+    };
+    // A reviewer's turn says it, yours not: not offered.
+    add(Role::Reviewer, "Agreed, but in a follow-up Bug, please.", Some("ann"));
+    app.refresh();
+    choose(&mut app, "Ask agent…");
+    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!can());
+    // Your reply says it: offered, the last of the permissions, and the
+    // comment may be sent so.
+    add(Role::You, "Then file that follow-up bug.", None);
     app.refresh();
     choose(&mut app, "Ask agent…");
     assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack", "file a bug"]);
     let d = dialog(&app).clone();
     let said = app.ask_lines(&AskDialog { permission: Some(3), ..d })[1].clone();
-    assert!(said.starts_with("The agent drafts another bug for this patch, as the comment asks, its title naming bug 1 already"), "{said}");
-    let d = Db::load(&db).unwrap();
-    assert!(stacked::ask::can_bug(&d, d.note(&n.change, &n.id).unwrap()));
+    assert!(
+        said.starts_with(
+            "The agent drafts another bug for this patch from a comment of yours that says the word bug, as the patch's title names bug 1 already"
+        ),
+        "{said}"
+    );
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(can());
+    // The agent answered it, saying bug too: what you asked before is
+    // answered, and what you say after it alone is what you ask then.
+    add(Role::Agent, "The bug is drafted.", Some("bug"));
+    assert!(!can());
+    add(Role::You, "Thanks, and shout less.", None);
+    assert!(!can());
     // The word in another word says none.
-    drop(d);
-    Db::edit(&db, |d| {
-        let n = d.note(&n.change, &n.id).cloned().unwrap();
-        d.set_note(Note { text: n.text.replace("follow-up Bug", "debugging session"), ..n })
-    })
-    .unwrap();
-    let d = Db::load(&db).unwrap();
-    assert!(!stacked::ask::can_bug(&d, d.note(&n.change, &n.id).unwrap()));
+    add(Role::You, "After a debugging session.", None);
+    assert!(!can());
+    add(Role::You, "Bugs remain.", None);
+    assert!(can());
 }
 
 #[cfg(feature = "moz-phab")]

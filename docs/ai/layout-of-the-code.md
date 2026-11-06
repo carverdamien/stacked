@@ -93,8 +93,8 @@
   Conduit called by curl, the token on its standard input, what
   Phabricator answered said, and its refusals of this machine (HTTP 429)
   an error of their own.
-- `bug.rs`: a bug filed for a patch whose title names none, or as a
-  comment that says the word bug asks (`mentioned`), as Firefox's
+- `bug.rs`: a bug filed for a patch, as a comment of yours that says the
+  word bug asks (`mentioned`), as Firefox's
   bug-filing skill files one: what an ask drafting it is told and answers
   with (`Way::Bug`, with the `moz-phab` feature), the draft read from its
   answer, the link of Bugzilla's form filled in with it, the bug's number
