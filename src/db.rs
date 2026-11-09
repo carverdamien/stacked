@@ -772,6 +772,14 @@ pub enum Way {
     /// Build and test, in the stack's build worktree; changes nothing in
     /// the stack.
     Test,
+    /// An experiment, with the whole stack in its worktree: the agent may
+    /// change the code, build and run anything there, to find out what the
+    /// comment asks; what it changed lands for your review as a change of
+    /// the stack does, every operation rejected until you accept it. The
+    /// agent is asked to put what it changed only to find out in a patch of
+    /// its own, its commit message saying it is throwaway: to stacked, a
+    /// patch as any other.
+    Experiment,
     /// The CI tasks the comment asks for, selected for a try push: it
     /// changes nothing, and the tasks wait for your review, to be pushed
     /// once you accept them.
@@ -789,7 +797,8 @@ impl Way {
     /// Every way of asking, as each kind of ask is said: a change, an
     /// answer, a build and test, and, with the `try-push` feature, a try
     /// push's selection. Not a bug's draft, which is let use what an
-    /// answer is, from the answers' lists (`Agent::accepted`).
+    /// answer is, from the answers' lists (`Agent::accepted`), nor an
+    /// experiment, which is let use what a change is, from the changes'.
     pub const ALL: &'static [Way] = &[
         Way::Change,
         Way::Answer,
@@ -803,11 +812,18 @@ impl Way {
             Way::Change => "change",
             Way::Answer => "answer",
             Way::Test => "test",
+            Way::Experiment => "experiment",
             #[cfg(feature = "try-push")]
             Way::Try => "try",
             #[cfg(feature = "moz-phab")]
             Way::Bug => "bug",
         }
+    }
+
+    /// Whether it may change the stack: a change, and an experiment, whose
+    /// work lands for review as a change's does.
+    pub fn changes(self) -> bool {
+        matches!(self, Way::Change | Way::Experiment)
     }
 
     /// How it is said to the user: `answer only`.
@@ -816,6 +832,7 @@ impl Way {
             Way::Change => "may change the code",
             Way::Answer => "answer only",
             Way::Test => "build and test",
+            Way::Experiment => "experiment",
             #[cfg(feature = "try-push")]
             Way::Try => "try push",
             #[cfg(feature = "moz-phab")]
@@ -1126,6 +1143,18 @@ pub fn local_time(t: i64) -> String {
         tm.tm_hour,
         tm.tm_min
     )
+}
+
+/// The change id known by `seed` alone, as `new_change` writes one: the
+/// same each time it is asked for the same seed.
+pub fn change_of(seed: &str) -> String {
+    sha1_smol::Sha1::from(seed)
+        .digest()
+        .to_string()
+        .chars()
+        .take(12)
+        .map(|c: char| (b'k' + c.to_digit(16).unwrap() as u8) as char)
+        .collect()
 }
 
 /// A new change id: twelve letters from k to z, so it is never taken for a

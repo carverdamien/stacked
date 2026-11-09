@@ -33,6 +33,10 @@
 use super::*;
 use crate::reach;
 
+/// What an experiment lets the agent do, as the line under the permission
+/// says it.
+const EXPERIMENT_SAID: &str = "The agent works with the whole stack in its worktree: it may change the code, build it and run anything there to find out what you ask. What it changes waits for your review, every change rejected until you accept it; what it changed only to find out is in a patch of its own on top, its commit message saying it is throwaway.";
+
 /// What the agent may do, as the dialog's first line sets it: its options,
 /// in this order, those that apply where it is asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +44,8 @@ pub enum Permission {
     Answer,
     ChangePatch,
     ChangeStack,
+    /// An experiment, with the whole stack (`Way::Experiment`).
+    Experiment,
     Test,
     #[cfg(feature = "try-push")]
     Try,
@@ -56,6 +62,7 @@ impl Permission {
             Permission::Answer => "answer only",
             Permission::ChangePatch => "change patch",
             Permission::ChangeStack => "change stack",
+            Permission::Experiment => "experiment",
             Permission::Test => "build and test",
             #[cfg(feature = "try-push")]
             Permission::Try => "try push",
@@ -69,6 +76,7 @@ impl Permission {
         match self {
             Permission::Answer => Way::Answer,
             Permission::ChangePatch | Permission::ChangeStack => Way::Change,
+            Permission::Experiment => Way::Experiment,
             Permission::Test => Way::Test,
             #[cfg(feature = "try-push")]
             Permission::Try => Way::Try,
@@ -88,6 +96,7 @@ impl Permission {
             (Permission::ChangeStack, _) => {
                 "The agent works with the whole stack in its worktree: it may change any patch, add patches anywhere and reorder them."
             }
+            (Permission::Experiment, _) => EXPERIMENT_SAID,
             (Permission::Test, _) => "The agent builds and tests in the stack's build worktree, and changes nothing.",
             #[cfg(feature = "try-push")]
             (Permission::Try, _) => {
@@ -104,7 +113,7 @@ impl Permission {
     /// work, and asks a round of its own; with any other, a follow-up that
     /// only reads, the work staying waiting for your review.
     pub fn changes(self) -> bool {
-        matches!(self, Permission::ChangePatch | Permission::ChangeStack)
+        matches!(self, Permission::ChangePatch | Permission::ChangeStack | Permission::Experiment)
     }
 
     /// What sending work back with it does, as the line under the
@@ -122,6 +131,9 @@ impl Permission {
             }
             (Permission::ChangeStack, _) => {
                 "This work is rejected, its change not applied: the agent works with the whole stack this work makes in its worktree, and may change any patch, add patches anywhere and reorder them; its new work lands for your review in place of this one."
+            }
+            (Permission::Experiment, _) => {
+                "This work is rejected, its change not applied: the agent experiments with the whole stack this work makes in its worktree, and may change the code, build it and run anything there; its new work lands for your review in place of this one, every change rejected until you accept it."
             }
             (Permission::Test, _) => {
                 "This work stays waiting for your review: the agent builds and tests the stack this work makes, in the stack's build worktree, and changes nothing; what it finds comes into this review, to read."
@@ -162,6 +174,7 @@ impl Permission {
         match self {
             Permission::Answer => "to answer",
             Permission::ChangePatch | Permission::ChangeStack => "to change the code",
+            Permission::Experiment => "for an experiment",
             Permission::Test => "to build and test",
             #[cfg(feature = "try-push")]
             Permission::Try => "for a try push",
@@ -520,6 +533,10 @@ impl App {
                 out.push(Permission::ChangePatch);
             }
             out.push(Permission::ChangeStack);
+            // Not in the tour, which builds and runs nothing.
+            if !self.in_memory() {
+                out.push(Permission::Experiment);
+            }
             if test {
                 out.push(Permission::Test);
             }
@@ -625,6 +642,9 @@ impl App {
                 out.push(Permission::ChangePatch);
             }
             out.push(Permission::ChangeStack);
+            if !self.in_memory() {
+                out.push(Permission::Experiment);
+            }
             if one && notes.iter().all(|n| ask::can_test(&self.db, n)) {
                 out.push(Permission::Test);
             }

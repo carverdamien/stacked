@@ -179,6 +179,25 @@ and Ask Now and Ask Later are grayed while none can be.
   stack's own comments change the stack; on a patch's comment, the comment
   stays on its line, and its reply goes in its thread. On the command
   line, `stacked send NAME ID --whole-stack`.
+- `experiment`, on any comment but a question on the history, and not in
+  the tour: to find out what the comment asks, with the whole stack in its
+  worktree, as `change stack` has it, the stack's own (`.stacked/NAME/agent`,
+  kept, with what it built). It may change the code as a change does,
+  build it and run anything there, by its own rules (CLAUDE.md), as a
+  build and test may: Bash at large, given with what a change is given,
+  the changes' lists of the settings (`agent.change_tools`,
+  `agent.change_accepted`) its own, and nothing refused of what would make
+  a command run another program. It is told to put what it changed only to
+  find out (logging, a test written to see, a shortcut) in a patch of its
+  own on top, its commit message ending with the line `Throwaway: yes`, and
+  a change worth keeping in the patch it belongs to, or a new one; its
+  reply says what it tried, what it ran and what it found. To stacked that
+  patch is a patch as any other. What it changed lands for your review as
+  a change of the stack does, every operation of it rejected until you
+  accept it (What the agent brings back waits for your review, below);
+  queued, batched and chained as a change is (`Send N experiments to a
+  single agent` in the banner's batch). Not on the command line, but for
+  `stacked send NAME --batch`, which sends those batched in the editor too.
 - `build and test`, on the stack's comments and a patch's as a whole: it may
   run any command, in the stack's build worktree (below), by its own rules
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
@@ -383,7 +402,8 @@ none of which reaches the network, so that a change cannot touch a remote
 it changes (Linting, below); an answer, and a try push's selection,
 `Read`, `Grep`, `Glob`, `LS`, the commands that only read and git's that
 only read (`answer only`, above), and stacked's commands that read the
-stack; a build and test, any command. What else
+stack; a build and test, any command; an experiment, what a change is
+given and any command. What else
 each may use is a list of
 the settings' (Settings, below): `agent.change_tools` for the asks that
 change the stack, nothing unless set; `agent.answer_tools` for answer-only
@@ -401,8 +421,8 @@ checkout's claude settings of yours deny (`permissions.deny` of
 checkout, and stacked has it refused in the agents' worktrees too, which do
 not have that file, as git does not track it (`--disallowedTools`). What
 the tracked `.claude/settings.json` denies is in the worktrees already.
-Every ask but a build and test, which runs what the project needs, is
-refused what would make the commands it may run run another program or
+Every ask but a build and test and an experiment, which run what the
+project needs, is refused what would make the commands it may run run another program or
 delete files (`git rebase --exec`, `find -exec`, `find -delete`, `rg
 --pre`, `rg --hostname-bin`, `sort --compress-program`, however shortened,
 `--co`), whatever its lists let it run. An answer and a try push's

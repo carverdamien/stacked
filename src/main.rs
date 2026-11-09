@@ -1561,6 +1561,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 // try-push feature: each on its own.
                 let ways = [
                     Way::Change,
+                    Way::Experiment,
                     Way::Answer,
                     Way::Test,
                     #[cfg(feature = "try-push")]
@@ -1591,7 +1592,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                                 println!("{}\tready ({}), it goes {w}", short_id(c, i), q.said());
                             }
                             (None, Some((way, run))) => {
-                                let whole = *way == Way::Change && !n.on_stack() && ask::run_scope(&db, run) == Some(ask::Scope::Stack);
+                                let whole = way.changes() && !n.on_stack() && ask::run_scope(&db, run) == Some(ask::Scope::Stack);
                                 println!("{}\tsent ({})", short_id(c, i), if whole { stacked::db::WHOLE } else { way.said() });
                             }
                             (None, None) => println!("{}\tsent ({})", short_id(c, i), way.said()),
@@ -1651,7 +1652,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         busy.contains_key(k)
                             || db
                                 .note(&k.0, &k.1)
-                                .is_some_and(|n| n.queued.as_ref().is_some_and(|q| !(q.batched() || reviewing && q.way == Way::Change)))
+                                .is_some_and(|n| n.queued.as_ref().is_some_and(|q| !(q.batched() || reviewing && q.way.changes())))
                     });
                     // Accepted as soon as landed: what waited on its review
                     // goes.

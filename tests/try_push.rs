@@ -845,7 +845,7 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
     save(&mut app, "Run what tests a.txt, as many as you see fit.");
     to_comment(&mut app, &notes_of(&db, 0)[0].id);
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack", "build and test", "try push"]);
+    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack", "experiment", "build and test", "try push"]);
     keys(&mut app, &[KeyCode::Esc]);
     ask_as(&mut app, "try push", "Ask Now");
     assert!(app.status.starts_with("asked the agent about 1 comment (try push)"), "{}", app.status);
@@ -1347,13 +1347,13 @@ fn a_try_push_is_asked_of_the_stack_or_a_patch_as_a_whole_never_of_a_line() {
     choose(&mut app, "Comment on the stack…");
     typed(&mut app, "Run it all.");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(hows(&mut app), ["answer only", "change stack", "build and test", "try push"]);
+    assert_eq!(hows(&mut app), ["answer only", "change stack", "experiment", "build and test", "try push"]);
     choose(&mut app, "Save it");
     keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
     choose(&mut app, "Comment on this patch…");
     typed(&mut app, "Run its tests.");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack", "build and test", "try push"]);
+    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack", "experiment", "build and test", "try push"]);
     choose(&mut app, "Save it");
     // One on a line may not: neither as it is written, nor on its menu.
     keys(&mut app, &[KeyCode::Right]);
@@ -1361,10 +1361,10 @@ fn a_try_push_is_asked_of_the_stack_or_a_patch_as_a_whole_never_of_a_line() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "Test this line.");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack"]);
+    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack", "experiment"]);
     choose(&mut app, "Save it");
     keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
-    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack"]);
+    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack", "experiment"]);
     keys(&mut app, &[KeyCode::Esc]);
     // Batched as a try push, as an older stacked let it be: sent from the
     // banner, it is refused, saying why. It stays a comment, out of the

@@ -2037,7 +2037,13 @@ file or run a program, long or shortened (`git log --output`, `file
 --compile`, `git grep --open`), none that only reads, and none twice. A
 change is given what it was, and refused, as every ask but a build and
 test, `rg --hostname-bin` and `sort --co` too; a build and test is refused
-nothing. The
+nothing, nor is an experiment, given Bash at large and what a change is.
+In `cli.rs`, an experiment batched and sent with the batch is told it is
+one and how to mark what it changed only to find out (`Throwaway: yes`),
+not that it cannot build, and is given Bash at large; its change, a patch
+worth keeping and a throwaway one, lands as experiment, the stack as it
+was, every operation rejected, its reply to review; closed so, the reply
+goes in its thread, the stack still as it was. The
 stream's thinking is tested in `ask.rs`, with the prompt asking the agent
 to point at the stack before the web and its answer's schema taking a web
 link, the ask's model then its effort given to claude after the settings' arguments, in

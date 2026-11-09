@@ -1476,6 +1476,59 @@ fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
 }
 
 #[test]
+fn an_experiment_builds_and_runs_what_it_changes_its_change_landing_rejected_its_reply_kept() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let before = e.column(2);
+    let id = comment(&e, &["Find", "out", "whether", "c", "helps."]);
+    // Told it is an experiment, and how to mark what it changed only to
+    // find out; given Bash at large, and nothing that would run another
+    // program refused: a change worth keeping, then one to throw away, its
+    // commit message saying so.
+    let claude = fake_claude(
+        &e,
+        "claude-experiment.sh",
+        r#"set -e
+printf '%s\n' "$2" | grep -q 'This is an experiment'
+printf '%s\n' "$2" | grep -qF 'Throwaway: yes'
+! printf '%s\n' "$2" | grep -q 'You cannot build the project'
+printf '%s\n' "$@" | grep -q '^Bash,'
+! printf '%s\n' "$@" | grep -qF -- 'Bash(git rebase *--exec*)'
+echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x commit -qm "Bug 4 - add c"
+echo log > log.txt && git add log.txt && git -c user.name=C -c user.email=c@x commit -qm "Bug 5 - log what c does" -m "Throwaway: yes""#,
+        r#"{"replies": {"c1": "I added c and logged what it does: it helps."}}"#,
+    );
+    // Batched as an experiment, then sent with the batch.
+    let n = Db::load(&e.db).unwrap().find_note("s", &id).unwrap().clone();
+    stacked::ask::batch(&e.db, "s", &[(n.change.clone(), n.id.clone())], stacked::db::Way::Experiment, false, None, stacked::db::Effort::High).unwrap();
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", "--batch", "--wait"], "", &[("STACKED_CLAUDE", claude.as_path())]);
+    assert!(fine, "{out}{err}");
+    // Landed for review, the stack as it was; the two patches it added each
+    // an operation of their own, both rejected until accepted, the
+    // throwaway one a patch as any other.
+    assert_eq!(e.column(2), before, "the stack is as it was");
+    let db = Db::load(&e.db).unwrap();
+    let run = db.runs().into_iter().find(|r| stacked::ask::experiment(r)).cloned().unwrap_or_else(|| panic!("{}", e.ok(&["runs"])));
+    assert_eq!(run.what, "experiment");
+    let h = run.held.clone().unwrap();
+    let patches: Vec<String> = h.stack.as_ref().unwrap().patches.iter().map(|p| db.patch(p).title().to_string()).collect();
+    assert_eq!(patches[patches.len() - 2..], ["Bug 4 - add c", "Bug 5 - log what c does"]);
+    let marks = stacked::held::marks(&db, &run);
+    let ops: Vec<(&String, &bool)> = marks.iter().filter(|(k, _)| k.as_str() != "reply 0").collect();
+    assert!(ops.len() >= 2 && ops.iter().all(|(_, m)| !**m), "{marks:?} {:?}", stacked::operations::whole_why(&db, &run, &h));
+    assert_eq!(marks.get("reply 0"), None, "the reply to review");
+    // Every operation rejected, its reply accepted: the reply goes in its
+    // thread, the stack as it was.
+    let mut closing = marks.clone();
+    closing.insert("reply 0".into(), true);
+    drop(db);
+    let said = Db::edit(&e.db, |d| stacked::held::close(d, &run.id, &closing, None)).unwrap();
+    assert!(said.contains("1 reply accepted"), "{said}");
+    assert_eq!(e.column(2), before);
+    assert!(e.ok(&["comments", "s"]).contains("it helps."), "{}", e.ok(&["comments", "s"]));
+}
+
+#[test]
 fn what_each_operation_of_the_agent_s_change_needs_is_worked_out_as_it_lands_and_stored_with_it() {
     let e = env();
     e.ok(&["import", "s", "base"]);

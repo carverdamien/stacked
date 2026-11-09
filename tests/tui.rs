@@ -5507,7 +5507,7 @@ fn comments_are_written_where_they_will_show() {
     // How and when it is asked, in the dialog Ask agent… opens; a line's
     // comment, of a patch, may be asked of the whole stack.
     choose(&mut app, "Ask agent…");
-    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack"]);
+    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack", "experiment"]);
     // Cancel: back to writing, as Esc in the menu goes back.
     keys(&mut app, &[KeyCode::Esc]);
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text().ends_with("loud?\nreally")), "{:?}", app.mode);
@@ -7439,7 +7439,7 @@ fn what_you_said_last_may_be_written_again() {
     assert!(app.help()[0].starts_with("Press Enter to open the dialog that asks the agent about the comment as it is: "), "{:?}", app.help());
     choose(&mut app, "Ask agent…");
     assert_eq!(dialog(&app).title, "ask the agent about the comment on patch 1 · a.txt: TWO, as it is");
-    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack"]);
+    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack", "experiment"]);
     keys(&mut app, &[KeyCode::Esc]);
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Leave it as it is");
@@ -12124,7 +12124,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(all[1], "Ask agent…", "{all:?}");
     choose(&mut app, "Ask agent…");
-    assert_eq!(dialog(&app).permission_labels()[1..], ["change patch", "change stack"]);
+    assert_eq!(dialog(&app).permission_labels()[1..], ["change patch", "change stack", "experiment"]);
     keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
     choose(&mut app, "Save it");
     // Its menu has it too, beside asking about its patch alone.
@@ -15008,7 +15008,7 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
         app.ask_lines(&d),
         [
             "Permission: [ — ]",
-            "Not set yet: ← or → sets answer only, then steps to change patch and change stack. Enter opens the list of them.",
+            "Not set yet: ← or → sets answer only, then steps to change patch, change stack and experiment. Enter opens the list of them.",
             "Model: [ — ]",
             "Not set yet: ← or → sets claude-haiku-5-5, then steps to claude-sonnet-5-5, claude-opus-5-5 and claude-fable-5-1. Enter opens the list of them.",
             "Effort: [ — ]",
@@ -15037,11 +15037,11 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_kee
     // stops on the last; ← steps back, and stops on the first. Under it,
     // what the one set lets the agent do.
     let mut seen = Vec::new();
-    for code in [KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Left, KeyCode::Left, KeyCode::Left] {
+    for code in [KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Left, KeyCode::Left, KeyCode::Left, KeyCode::Left] {
         keys(&mut app, &[code]);
         seen.push(dialog(&app).permission().map(|p| p.label()).unwrap_or_default());
     }
-    assert_eq!(seen, ["answer only", "change patch", "change stack", "change stack", "change patch", "answer only", "answer only"]);
+    assert_eq!(seen, ["answer only", "change patch", "change stack", "experiment", "experiment", "change stack", "change patch", "answer only", "answer only"]);
     assert_eq!((dialog(&app).line, dialog(&app).list), (0, None));
     let screen = draw(&mut app);
     assert!(screen.contains(" Permission: [answer only] ") && screen.contains("The agent answers, and changes nothing."), "{screen}");
@@ -15185,7 +15185,7 @@ fn asking_about_a_line(db: &Path) -> Editor {
     keys(&mut app, &[KeyCode::Down]);
     assert!(app.rows[app.cursor].head);
     choose(&mut app, "Ask agent…");
-    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack"]);
+    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack", "experiment"]);
     app
 }
 
@@ -15235,8 +15235,8 @@ fn the_arrows_set_each_line_of_the_ask_dialog_to_its_first_option_from_unset_the
             .collect()
     };
     choose(&mut app, "Ask agent…");
-    assert_eq!(held(&mut app, KeyCode::Right, 5), ["answer only", "change patch", "change stack", "change stack", "change stack"]);
-    assert_eq!(held(&mut app, KeyCode::Left, 5), ["change patch", "answer only", "answer only", "answer only", "answer only"]);
+    assert_eq!(held(&mut app, KeyCode::Right, 5), ["answer only", "change patch", "change stack", "experiment", "experiment"]);
+    assert_eq!(held(&mut app, KeyCode::Left, 5), ["change stack", "change patch", "answer only", "answer only", "answer only"]);
     assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
     keys(&mut app, &[KeyCode::Down]);
     let (haiku, sonnet, opus, fable) = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1");
@@ -15275,8 +15275,8 @@ fn enter_on_a_line_of_the_ask_dialog_opens_the_list_of_its_options_under_it_wher
     let (vx, vy) = at(&screen, "Permission: [ — ]");
     let (lx, ly) = (vx + "Permission: ".len() as u16, vy + 1);
     let row = |y: u16| -> String { (lx..lx + 16).map(|x| buf[(x, y)].symbol()).collect() };
-    let rows: Vec<String> = (ly..ly + 5).map(row).collect();
-    assert_eq!(rows, ["┌──────────────┐", "│ answer only  │", "│ change patch │", "│ change stack │", "└──────────────┘"], "{screen}");
+    let rows: Vec<String> = (ly..ly + 6).map(row).collect();
+    assert_eq!(rows, ["┌──────────────┐", "│ answer only  │", "│ change patch │", "│ change stack │", "│ experiment   │", "└──────────────┘"], "{screen}");
     let looks_at = |x: u16, y: u16| {
         let c = &buf[(x, y)];
         (c.fg, c.bg, c.modifier)
@@ -15303,7 +15303,7 @@ fn enter_on_a_line_of_the_ask_dialog_opens_the_list_of_its_options_under_it_wher
         keys(&mut app, &[code]);
         seen.push(dialog(&app).list.unwrap_or(9));
     }
-    assert_eq!(seen, [2, 0, 1, 2, 0, 1]);
+    assert_eq!(seen, [3, 0, 1, 3, 0, 1]);
     keys(&mut app, &[KeyCode::Left, KeyCode::Right, KeyCode::Right]);
     assert_eq!((dialog(&app).list, dialog(&app).permission, dialog(&app).line), (Some(1), None, 0));
     // Enter picks the option under the cursor and closes the list: the
@@ -15468,7 +15468,7 @@ fn ask_now_saves_what_changed_first_and_asks_at_the_permission_and_effort_set() 
     assert!(app.help()[0].starts_with("Press Enter to open the dialog that saves the comment, then asks the agent about it: "), "{:?}", app.help());
     keys(&mut app, &[KeyCode::Enter]);
     let help = app.help();
-    let opens = "Press Enter to open the list of what the agent may do here, to pick one: answer only, change patch or change stack.";
+    let opens = "Press Enter to open the list of what the agent may do here, to pick one: answer only, change patch, change stack or experiment.";
     assert!(help[0].starts_with(opens), "{help:?}");
     assert_eq!(app.help()[2], "Nothing is set as the dialog opens, and nothing set in it is kept: each dialog opens unset.");
     // On a button grayed, Enter does nothing, and says why.
@@ -15795,7 +15795,7 @@ fn every_ask_agent_item_opens_the_dialog_with_the_permissions_that_apply_there()
     to_comment(&mut app, "test it");
     let (title, all) = opened(&mut app, "Ask agent…");
     assert_eq!(title, "ask the agent about the comment on patch 1, as a whole");
-    assert_eq!(all, tried(&["answer only", "change patch", "change stack", "build and test"]));
+    assert_eq!(all, tried(&["answer only", "change patch", "change stack", "experiment", "build and test"]));
     // On a line: its patch, or the stack.
     keys(&mut app, &[KeyCode::Home]);
     down_to(&mut app, "+TWO");
@@ -15804,7 +15804,7 @@ fn every_ask_agent_item_opens_the_dialog_with_the_permissions_that_apply_there()
     keys(&mut app, &[KeyCode::Down]);
     let (title, all) = opened(&mut app, "Ask agent…");
     assert_eq!(title, "ask the agent about the comment on patch 1 · a.txt: TWO");
-    assert_eq!(all, ["answer only", "change patch", "change stack"]);
+    assert_eq!(all, ["answer only", "change patch", "change stack", "experiment"]);
     // On the stack: no change of a patch alone.
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
     choose(&mut app, "Comment on the stack…");
@@ -15812,7 +15812,7 @@ fn every_ask_agent_item_opens_the_dialog_with_the_permissions_that_apply_there()
     to_comment(&mut app, "and the rest");
     let (title, all) = opened(&mut app, "Ask agent…");
     assert_eq!(title, "ask the agent about the comment on the stack");
-    assert_eq!(all, tried(&["answer only", "change stack", "build and test"]));
+    assert_eq!(all, tried(&["answer only", "change stack", "experiment", "build and test"]));
     // Ask agent about all…, on the stack's header: its comments, each
     // asked so, how many each asks about said under the line.
     keys(&mut app, &[KeyCode::Left]);
@@ -15831,7 +15831,7 @@ fn every_ask_agent_item_opens_the_dialog_with_the_permissions_that_apply_there()
     keys(&mut app, &[KeyCode::Esc]);
     let (title, all) = opened(&mut app, "Ask agent…");
     assert_eq!(title, "save the comment on the stack, then ask the agent about it");
-    assert_eq!(all, tried(&["answer only", "change stack", "build and test"]));
+    assert_eq!(all, tried(&["answer only", "change stack", "experiment", "build and test"]));
     assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Throw it away");
@@ -18219,8 +18219,8 @@ fn sending_work_back_opens_the_ask_dialog_unset_its_send_now_grayed_until_the_th
     let d = dialog(&app).clone();
     assert_eq!(d.title, "send back the agent's work: a change of patch 1, 1 reply · asked \"why so loud?\"");
     assert_eq!((d.permission, d.model, d.effort, d.line, d.list), (None, None, None, 0, None));
-    assert_eq!(d.permission_labels(), ["answer only", "change patch", "change stack"]);
-    assert_eq!(app.ask_lines(&d)[1], "Not set yet: ← or → sets answer only, then steps to change patch and change stack. Enter opens the list of them.");
+    assert_eq!(d.permission_labels(), ["answer only", "change patch", "change stack", "experiment"]);
+    assert_eq!(app.ask_lines(&d)[1], "Not set yet: ← or → sets answer only, then steps to change patch, change stack and experiment. Enter opens the list of them.");
     // Its buttons, Send Now and Cancel: Send Now grayed until the three lines are
     // set, as the dialog says under them.
     let screen = draw(&mut app);
@@ -29634,7 +29634,7 @@ fn file_a_bug_is_offered_only_when_what_you_write_says_the_word_bug() {
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
     choose(&mut app, "Comment on this patch…");
-    let mut want = vec!["answer only", "change patch", "change stack", "build and test"];
+    let mut want = vec!["answer only", "change patch", "change stack", "experiment", "build and test"];
     if cfg!(feature = "try-push") {
         want.push("try push");
     }
@@ -29645,7 +29645,7 @@ fn file_a_bug_is_offered_only_when_what_you_write_says_the_word_bug() {
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(written_permissions(&mut app, "why so loud?"), ["answer only", "change patch", "change stack"]);
+    assert_eq!(written_permissions(&mut app, "why so loud?"), ["answer only", "change patch", "change stack", "experiment"]);
     let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text.contains("why so loud?")).unwrap();
     let d = Db::load(&db).unwrap();
     assert!(!stacked::ask::can_bug(&d, &n));
@@ -29691,7 +29691,7 @@ fn file_a_bug_is_offered_once_your_turn_says_bug_not_a_reviewer_s_nor_the_agent_
     add(Role::Reviewer, "Agreed, but in a follow-up Bug, please.", Some("ann"));
     app.refresh();
     choose(&mut app, "Ask agent…");
-    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack"]);
+    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack", "experiment"]);
     keys(&mut app, &[KeyCode::Esc]);
     assert!(!can());
     // Your reply says it: offered, the last of the permissions, and the
@@ -29699,9 +29699,9 @@ fn file_a_bug_is_offered_once_your_turn_says_bug_not_a_reviewer_s_nor_the_agent_
     add(Role::You, "Then file that follow-up bug.", None);
     app.refresh();
     choose(&mut app, "Ask agent…");
-    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack", "file a bug"]);
+    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack", "experiment", "file a bug"]);
     let d = dialog(&app).clone();
-    let said = app.ask_lines(&AskDialog { permission: Some(3), ..d })[1].clone();
+    let said = app.ask_lines(&AskDialog { permission: Some(4), ..d })[1].clone();
     assert!(
         said.starts_with(
             "The agent drafts another bug for this patch from a comment of yours that says the word bug, as the patch's title names bug 1 already"

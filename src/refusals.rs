@@ -789,7 +789,7 @@ pub const SHELLS_OWN: &str = "the shell runs it itself, and claude refused this 
 /// The asks made in `way`, said within a sentence: `answer-only asks`.
 pub fn kind_said(way: Way) -> &'static str {
     match way {
-        Way::Change => "the asks that change the stack",
+        Way::Change | Way::Experiment => "the asks that change the stack",
         Way::Answer => "answer-only asks",
         Way::Test => "builds and tests",
         #[cfg(feature = "try-push")]

@@ -362,7 +362,7 @@ impl Agent {
     pub fn accepted(&self, way: crate::db::Way) -> &[String] {
         use crate::db::Way;
         match way {
-            Way::Change => &self.change_accepted,
+            Way::Change | Way::Experiment => &self.change_accepted,
             Way::Answer => &self.answer_accepted,
             Way::Test => &self.test_accepted,
             #[cfg(feature = "try-push")]
@@ -379,7 +379,7 @@ impl Agent {
 pub fn accepted_key(way: crate::db::Way) -> &'static str {
     use crate::db::Way;
     match way {
-        Way::Change => "agent.change_accepted",
+        Way::Change | Way::Experiment => "agent.change_accepted",
         Way::Answer => "agent.answer_accepted",
         Way::Test => "agent.test_accepted",
         #[cfg(feature = "try-push")]

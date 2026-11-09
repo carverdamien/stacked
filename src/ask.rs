@@ -302,6 +302,13 @@ fn light(r: &Run) -> Option<Light> {
     Light::deserialize(r.ask.as_ref()?).ok()
 }
 
+/// Whether run `r` is an experiment's: its change of the stack lands every
+/// operation rejected, and rejecting them all leaves its replies and the
+/// comments it opened as they are marked, for what it found is in them.
+pub fn experiment(r: &Run) -> bool {
+    light(r).is_some_and(|l| l.way == Way::Experiment)
+}
+
 /// The worktree for pushes that run `r`, a try push's selection, lists the
 /// tasks mach can push in, while it does (`Info::listing`): read from its
 /// run without the rest, as it is read of every run going whenever a
@@ -756,13 +763,13 @@ fn waits_for(db: &Db, name: &str, way: Way, mine: Option<&str>) -> Option<String
         && let Some(j) = r.lint.as_deref()
         && mine != Some(r.id.as_str())
         && (j.step == crate::lint::Step::Running || ahead(&r.id))
-        && (way == Way::Change || (way == Way::Test && j.step == crate::lint::Step::Running) || (!chain && reads(way)))
+        && (way.changes() || (way == Way::Test && j.step == crate::lint::Step::Running) || (!chain && reads(way)))
     {
         return Some("once the linter's work on the stack lands".into());
     }
     // A reconcile with HEAD, as a change: a change waits until it is
     // reviewed; an answer goes at once.
-    if way == Way::Change
+    if way.changes()
         && let Some(r) = crate::reconcile::pending(db, name)
         && mine != Some(r.id.as_str())
         && (r.state != RunState::Started || ahead(&r.id))
@@ -775,14 +782,14 @@ fn waits_for(db: &Db, name: &str, way: Way, mine: Option<&str>) -> Option<String
     // A pull from Phabricator under way, as a change: a change goes once it
     // is made, from the stack it makes.
     #[cfg(feature = "moz-phab")]
-    if way == Way::Change
+    if way.changes()
         && let Some(r) = crate::review::pending(db, name)
         && ahead(&r.id)
     {
         return Some("once the pull from Phabricator before it is made".into());
     }
     // Chained, an answer runs alongside a change, on the stack as it is.
-    let change = going.iter().find(|(_, i)| i.way == Way::Change).filter(|_| !(chain && reads(way)));
+    let change = going.iter().find(|(_, i)| i.way.changes()).filter(|_| !(chain && reads(way)));
     if let Some((_, i)) = change {
         let on = match &i.scope {
             Scope::Stack => "the stack".to_string(),
@@ -792,7 +799,7 @@ fn waits_for(db: &Db, name: &str, way: Way, mine: Option<&str>) -> Option<String
     }
     // A change goes from the stack as it is once the change before it is
     // reviewed; chained, at once, from the stack that change makes.
-    if way == Way::Change
+    if way.changes()
         && !chain
         && let Some(r) = crate::held::change_waiting(db, name)
         && let Some(c) = r.held.as_ref().and_then(|h| h.stack.as_ref())
@@ -800,7 +807,7 @@ fn waits_for(db: &Db, name: &str, way: Way, mine: Option<&str>) -> Option<String
         return Some(format!("once you have reviewed {} of {}", whose_change(r), c.of));
     }
     match way {
-        Way::Change if !chain && going.iter().any(|(_, i)| reads(i.way)) => Some("once the running answers land".into()),
+        Way::Change | Way::Experiment if !chain && going.iter().any(|(_, i)| reads(i.way)) => Some("once the running answers land".into()),
         // One build and test at a time, of every stack.
         Way::Test => testing(db).map(|r| match r.stack == name {
             true => "once the running build and test lands".to_string(),
@@ -1214,7 +1221,7 @@ enum Changer {
 /// asked to when it is filed, reading Phabricator, waiting its turn or
 /// being made, as an edit is (`review::make`).
 fn changer(db: &Db, name: &str) -> Option<Changer> {
-    if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change) {
+    if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way.changes()) {
         return Some(Changer::Agent(match &i.scope {
             Scope::Stack => "the stack".to_string(),
             Scope::Patch(c) => format!("patch {}", position(db, name, c).map_or("?".into(), |p| (p + 1).to_string())),
@@ -1256,7 +1263,7 @@ pub fn changing(db: &Db, name: &str) -> Option<String> {
 /// Whether a round sent back from the review of stack `name`'s landed work,
 /// one that may change the code, waits its turn.
 fn round_waiting(db: &Db, name: &str) -> bool {
-    let waits = |n: &Note| n.queued.as_ref().is_some_and(|q| q.on.is_some() && q.way == Way::Change && !q.batched());
+    let waits = |n: &Note| n.queued.as_ref().is_some_and(|q| q.on.is_some() && q.way.changes() && !q.batched());
     db.stack_notes(name).into_iter().any(waits) || queued_off_stacks(db).into_iter().any(|(s, n)| s == name && waits(n))
 }
 
@@ -1512,6 +1519,8 @@ fn enqueue(
     if whole && way == Way::Bug {
         return err("a bug is drafted for a patch, not asked of the whole stack");
     }
+    // An experiment works with the whole stack, whatever comment asks it.
+    let whole = whole || way == Way::Experiment;
     let batch = format!("b{}", crate::db::unique());
     let busy = with_agent(db);
     let mut scope = None;
@@ -1739,7 +1748,7 @@ pub fn edits_after(db: &Db, name: &str, id: &str) -> usize {
         .stack_notes(name)
         .into_iter()
         .filter_map(|n| n.queued.as_ref())
-        .filter(|q| !q.batched() && q.way == Way::Change && q.on.is_none() && q.batch > key)
+        .filter(|q| !q.batched() && q.way.changes() && q.on.is_none() && q.batch > key)
         .map(|q| q.batch.as_str())
         .collect();
     batches.len()
@@ -2041,7 +2050,7 @@ fn claim(db: &mut Db) -> Result<Claimed> {
         let going = asks_going(db, name);
         let lint_runs = crate::lint::pending(db, name).and_then(|r| r.lint.as_deref()).is_some_and(|j| j.step == crate::lint::Step::Running);
         Going {
-            change: going.iter().any(|(_, i)| i.way == Way::Change) || lint_runs,
+            change: going.iter().any(|(_, i)| i.way.changes()) || lint_runs,
             answers: going.iter().filter(|(_, i)| reads(i.way)).count(),
             change_waits: false,
             reviewing: crate::held::change_waiting(db, name).is_some(),
@@ -2118,7 +2127,7 @@ fn claim(db: &mut Db) -> Result<Claimed> {
             // for review, from the stack it makes, as if accepted. One waiting
             // for what runs holds back the answers behind it, so it goes next.
             // Not before a lint job asked before it.
-            Way::Change => {
+            Way::Change | Way::Experiment => {
                 if !st.change && !st.lint && !st.reconciling && !st.pulling && (st.chain || (!st.reviewing && st.answers == 0)) {
                     st.change = true;
                     true
@@ -2168,7 +2177,7 @@ fn claim(db: &mut Db) -> Result<Claimed> {
             continue;
         }
         // Chained, a change goes on from the work under review.
-        let after = if st.chain && on.is_none() && way == Way::Change { st.tail.clone() } else { None };
+        let after = if st.chain && on.is_none() && way.changes() { st.tail.clone() } else { None };
         let Some((from, _)) = db.head(&name) else { continue };
         let id = crate::db::unique();
         let shown = notes
@@ -2372,14 +2381,14 @@ fn answer_given(cmd: &str) -> String {
 
 /// What stacked refuses an ask in `way`, whatever its lists let it run, a
 /// rule each, as claude takes them (`--disallowedTools`): to every ask but
-/// a build and test, which runs what the project needs, what would make the
+/// a build and test and an experiment, which run what the project needs, what would make the
 /// commands it may run run another program or delete files
 /// (`claude::refused_tools`); to an ask that only reads, an answer or a try
 /// push's selection, what would make those it is given write a file or run
 /// a program, too (`claude::read_refused`).
 pub(crate) fn refused_of(way: Way) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    if way != Way::Test {
+    if !matches!(way, Way::Test | Way::Experiment) {
         out.extend(crate::claude::refused_tools().split(',').map(String::from));
     }
     if reads(way) {
@@ -2440,10 +2449,13 @@ fn linter_told(command: &str) -> String {
 /// Bash at large, and every ask's. A try push's selection is given what an
 /// answer is: it reads only, and is not given the linter. So is a bug's
 /// draft, with `./mach file-info bugzilla-component` besides
-/// (`bug::MACH_RULE`), and the answers' lists of the settings.
+/// (`bug::MACH_RULE`), and the answers' lists of the settings. An
+/// experiment is given what a change is, and Bash at large, as a build and
+/// test is: it builds and runs what it changed.
 pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent, linter: &Linter) -> String {
     let (mut tools, own): (String, &[String]) = match way {
         Way::Change => (change_given(cmd, linter), &agent.change_tools),
+        Way::Experiment => (format!("Bash,{}", change_given(cmd, linter)), &agent.change_tools),
         Way::Answer => (answer_given(cmd), &agent.answer_tools),
         Way::Test => (format!("Bash,{}", allowed_tools()), &[]),
         #[cfg(feature = "try-push")]
@@ -2624,6 +2636,22 @@ code. Do not push or fetch, nor stash. Nothing you run here reaches the network:
 are not yours to set (`git -c`, `git config` but to read them), and what would run another \
 program is refused (`git rebase --exec`, `find -exec`, `rg --pre`).";
 
+/// What an experiment is told in place of `KEEP_TITLES`: it builds and runs
+/// what it changes, and every change it leaves is reviewed, rejected
+/// unless the user accepts it; what it changed only to find out goes in a
+/// patch of its own on top, its commit message saying it is throwaway.
+const EXPERIMENT: &str = "Keep each commit's title unless asked to change it: a patch is \
+followed across its versions by its title. This is an experiment: find out what the comments \
+below ask by changing the code, building it and running it here, by your own rules for this \
+repository; you may run any command. Every change you leave comes back to the user for review, \
+rejected unless they accept it. Put what you change only to find out (logging, a test written to \
+see, a shortcut) in one patch of its own on top of the stack, its commit message saying that it \
+is throwaway, with the line `Throwaway: yes` at its end. A change worth keeping goes where it \
+belongs, in the patch it changes or in a new patch, as any change of the stack. When you are \
+done, everything must be committed and HEAD must be the top. Do not push or fetch, nor stash. \
+Never use the user's current worktree, nor change a branch of the user's. In your answer, say \
+what you tried, what you ran and what you found.";
+
 /// The most lines of a dropped change's stack diff a prompt shows.
 const BEFORE_LINES: usize = 300;
 
@@ -2722,7 +2750,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
     let at = i.after.as_ref().or(i.on.as_ref()).map_or(format!("--rev {}", i.from), |w| format!("--work {w}"));
     let export = format!("{cmd} export {} {at}", s.name);
     let mut p = match (i.way, &i.scope) {
-        (Way::Change, Scope::Stack) => format!(
+        (Way::Change | Way::Experiment, Scope::Stack) => format!(
             "You are changing a stack of patches, as the comments below ask. The current \
              directory is a git worktree made for you: the stack is the commits {base}..HEAD, \
              each commit a patch, listed below bottom first. You may change any of them: \
@@ -2743,10 +2771,11 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
              commits below {base}. To rebase the stack onto another commit, write the plan \
              of its picks, then `git rebase -i --onto COMMIT {base}`, and say onto what: \
              \"base\": COMMIT's full sha, {said}. \
-             {KEEP_TITLES}{lint}",
-            base = i.base
+             {keep}{lint}",
+            base = i.base,
+            keep = if i.way == Way::Experiment { EXPERIMENT } else { KEEP_TITLES }
         ),
-        (Way::Change, Scope::Patch(_)) => format!(
+        (Way::Change | Way::Experiment, Scope::Patch(_)) => format!(
             "You are changing one patch of a stack, patch {k} of {n}, as the comments below \
              ask. The current directory is a git worktree made for you: the commits \
              {base}..HEAD are the stack up to that patch, the patches below it and the patch \
@@ -2894,7 +2923,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
     if let Some(on) = i.on.as_ref().filter(|_| !i.follow && !from_pull) {
         let changed = db.run(on).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_some());
         p.push_str(&match i.way {
-            Way::Change if changed => format!(
+            Way::Change | Way::Experiment if changed => format!(
                 " This is another round: the user reviewed the change you made, which the worktree holds \
                  as you left it, and sent it back with the comments below: change it as they ask, from \
                  there. What you changed then is below, and `{cmd} export {} --work {on}` prints the \
@@ -2950,6 +2979,12 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
                  comments need more than this patch."
             ),
         },
+        Way::Experiment => format!(
+            "\n{end}: {{\"replies\": {{label: your reply to that comment: what you tried, what \
+             you ran and what you found, and which patches hold what you changed}}}}, labels as \
+             above ([c1] is \"c1\"); with \"base\": the commit's sha, when you rebased the stack \
+             onto another."
+        ),
         Way::Answer => format!(
             "\n{only}: {{\"replies\": {{label: your answer}}, \"comments\": [{{\"patch\": its \
              number, \"file\": the path as the diff names it, \"side\": \"+\" for an added line, \
@@ -3059,10 +3094,10 @@ fn answer_schema(i: &Info, s: &Stack) -> Value {
     });
     props.insert("refused".into(), json!({"type": "array", "items": refused}));
     match (i.way, &i.scope) {
-        (Way::Change, Scope::Stack) => {
+        (Way::Change | Way::Experiment, Scope::Stack) => {
             props.insert("base".into(), json!({"type": "string"}));
         }
-        (Way::Change, Scope::Patch(_)) => {
+        (Way::Change | Way::Experiment, Scope::Patch(_)) => {
             props.insert("promote".into(), json!({"type": "string"}));
         }
         (Way::Answer, _) => {
@@ -3620,7 +3655,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let patches: Vec<&Patch> = s.patches[..upto].iter().map(|p| db.patch(p)).collect();
     let mbox = format_mbox(&patches);
     let kind = match i.way {
-        Way::Change => AGENT,
+        Way::Change | Way::Experiment => AGENT,
         Way::Answer => ANSWERING,
         Way::Test => BUILD,
         #[cfg(feature = "try-push")]
@@ -3634,7 +3669,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     git::ready(&repo, &cwd, &base, &mbox, upto, &step)?;
     i.worktree = Some(cwd.to_string_lossy().into_owned());
     i.kept = true;
-    if i.way == Way::Change {
+    if i.way.changes() {
         let shas: Vec<String> = git::git(&cwd, &["rev-list", "--reverse", &format!("{base}..HEAD")])?
             .lines()
             .map(String::from)
@@ -3651,7 +3686,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     // checkout's settings have it now, on the files it changes; no other
     // kind of ask is given it.
     let linter = match i.way {
-        Way::Change => Linter::of(&repo),
+        Way::Change | Way::Experiment => Linter::of(&repo),
         _ => Linter::None,
     };
     // What it may use: what stacked gives its kind of ask, and what the
@@ -3678,7 +3713,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     // that sets an editor. Its plan's folder is kept in the run, to remove
     // once it lands.
     let todo = match (i.way, &i.scope) {
-        (Way::Change, Scope::Stack) => Some(rebase_todo(&plans, &cwd, &plans_busy(&db, id))?),
+        (Way::Change | Way::Experiment, Scope::Stack) => Some(rebase_todo(&plans, &cwd, &plans_busy(&db, id))?),
         _ => None,
     };
     if let Some(todo) = &todo {
@@ -3969,7 +4004,7 @@ fn refusals_of(events: &[&Value], i: &Info, output: &str) -> Vec<crate::refusals
 /// ask's.
 fn allow_more(way: Way) -> &'static str {
     match way {
-        Way::Change => {
+        Way::Change | Way::Experiment => {
             "the review of its work lists each, to allow for this work or from now on; agent.change_tools lets asks that change the stack use more, and `stacked setup agent` sets it; your claude settings can allow more too"
         }
         Way::Answer => {
@@ -4194,6 +4229,13 @@ fn file_landed(db_path: &Path, id: &str, exit: Option<&str>, worked: Option<Opti
             ..started
         };
         db.add_run(run.clone())?;
+        // An experiment's change of the stack lands rejected, every
+        // operation of it (`held::marks`), until you accept what is worth
+        // keeping.
+        if i.way == Way::Experiment && run.held.as_ref().is_some_and(|h| h.stack.is_some()) && db.review(&run.id).is_none() {
+            let marks = std::iter::once((crate::held::Part::Stack.key(), false)).collect();
+            db.set_review(&run.id, crate::held::Review { marks, ..Default::default() })?;
+        }
         // Its folder of its own goes, failed or not, stopped or found dead,
         // under the lock: its rebase plan's, which an ask that takes its
         // worktree next makes again, or its copy of the task graph's.
@@ -4288,8 +4330,8 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
 fn file(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<Landed> {
     let replies = replies_of(result);
     match (i.way, &i.scope) {
-        (Way::Change, Scope::Patch(_)) => land_patch(db, run, i, result, &replies),
-        (Way::Change, Scope::Stack) => land_stack(db, run, i, result, &replies),
+        (Way::Change | Way::Experiment, Scope::Patch(_)) => land_patch(db, run, i, result, &replies),
+        (Way::Change | Way::Experiment, Scope::Stack) => land_stack(db, run, i, result, &replies),
         (Way::Answer, _) => Ok(Landed::held(Held {
             replies: held_replies(db, i, &replies),
             opened: opened_notes(db, run, i, result)?,
@@ -4471,7 +4513,6 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
             true,
         ));
     }
-    let _ = run;
     let from = db.node(i.from)?.clone();
     // A round sent back goes on from the stack the work it was sent back
     // from makes: its patches the ones the commits are new versions of.
@@ -4495,6 +4536,21 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     let drafts = read_back(&wt, &format!("{base}..HEAD"))?;
     let olds: Vec<Patch> = start.patches.iter().map(|id| db.patch(id).clone()).collect();
     let planned = plan_checked(&olds, drafts, &written(&wt, i), Some((&wt, &base)));
+    // Each patch it adds a change known by the run and its place among
+    // those added: what each operation needs, worked out on a copy as it
+    // lands (`land`), is then for the very changes filed.
+    let had: HashSet<&str> = olds.iter().map(|p| p.change.as_str()).collect();
+    let planned: Vec<Patch> = planned
+        .into_iter()
+        .scan(0, |added, p| {
+            if had.contains(p.change.as_str()) {
+                return Some(p);
+            }
+            *added += 1;
+            let change = crate::db::change_of(&format!("{}\0{added}", run.id));
+            Some(Patch::new(change, p.author, p.date, p.message, p.diff))
+        })
+        .collect();
     let ids: Vec<String> = planned.iter().map(|p| p.id.clone()).collect();
     let replies = held_replies(db, i, replies);
     // Nothing changed of the stack it went on from: a guess's, the stack the
@@ -5444,6 +5500,10 @@ mod tests {
         let changes = |call: &str| refused_of(Way::Change).iter().any(|r| crate::refusals::lets(r, "Bash", &Value::Null, Some(call)));
         assert!(changes("rg --hostname-bin=./x Foo") && changes("sort --co=sh a.txt") && !changes("sort -o out.txt a.txt"));
         assert!(refused_of(Way::Test).is_empty());
+        // An experiment: Bash at large, then what a change is given; refused
+        // nothing, as a build and test, for it runs what it changes.
+        assert_eq!(tools_of(Way::Experiment), ["Bash".to_string()].into_iter().chain(change).collect::<Vec<_>>());
+        assert!(refused_of(Way::Experiment).is_empty());
     }
 
     #[test]

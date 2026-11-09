@@ -21,7 +21,11 @@ as far as what each needs to apply allows, which is worked out as the
 work lands (below); the change of work that landed before stacked worked
 that out is one part, accepted or rejected whole. Rejecting every
 operation of the change rejects the replies that go with it too, since
-each says what the agent changed. Once every part is accepted or
+each says what the agent changed; but an experiment's (Asking the agent,
+above), whose replies and comments say what it found: they stay as
+marked. An experiment's change lands with every operation rejected, `✗`
+from the start, until you accept what is worth keeping, the patch it
+put what it changed only to find out in too, if you need it. Once every part is accepted or
 rejected, the review closes. What was accepted is applied then, the
 change of the stack as its operations accepted leave the stack; what was
 rejected is dropped for good, though `Runs…` still shows what the agent

@@ -56,6 +56,7 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
 pub(super) fn ask_said(q: &crate::db::Queued) -> &'static str {
     match q.way {
         Way::Change => "edit ask",
+        Way::Experiment => "experiment ask",
         Way::Answer => "answer-only ask",
         Way::Test => "build and test ask",
         #[cfg(feature = "try-push")]
@@ -567,6 +568,11 @@ impl App {
             let label = format!("Send {edits} edit{} to a single agent", plural(edits));
             out.push(Item::new(label, Action::SendBatch(Way::Change, false)).when(w).with(model(Way::Change)).with(effort(Way::Change)));
         }
+        let experiments = count(Way::Experiment);
+        if experiments > 0 {
+            let label = format!("Send {experiments} experiment{} to a single agent", plural(experiments));
+            out.push(Item::new(label, Action::SendBatch(Way::Experiment, false)).when(w).with(model(Way::Experiment)).with(effort(Way::Experiment)));
+        }
         if answers > 0 {
             let list = vec![
                 Choice::new("single", "a single agent", "one agent answers them all, in one ask", Some(Action::SendBatch(Way::Answer, false))),
@@ -642,6 +648,7 @@ impl App {
         let bugs = 0;
         for (n, one, many) in [
             (count(Way::Change), "edit", "edits"),
+            (count(Way::Experiment), "experiment", "experiments"),
             (count(Way::Answer), "answer only", "answers only"),
             (count(Way::Test), "build and test", "builds and tests"),
             (tries, "try push", "try pushes"),

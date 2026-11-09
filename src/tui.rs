@@ -1936,6 +1936,9 @@ fn about(action: &Action) -> String {
         Action::SendBatch(Way::Change, _) => {
             "send the batched edits to a single agent, in one ask: from more than one patch, it may change the whole stack".into()
         }
+        Action::SendBatch(Way::Experiment, _) => {
+            "send the batched experiments to a single agent, in one ask, with the whole stack: what it changes waits for your review, rejected until you accept it".into()
+        }
         Action::SendBatch(Way::Answer, false) => "send the batched questions to a single agent, in one ask, to answer only".into(),
         Action::SendBatch(Way::Answer, true) => "send each batched question to an agent of its own, all at once, to answer only".into(),
         Action::SendBatch(Way::Test, _) => "send each batched build and test, each an ask of its own, one after the other".into(),
@@ -13670,7 +13673,7 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
     let mut parts = Vec::new();
     if let Some((way, run)) = busy.get(&(n.change.clone(), n.id.clone())) {
         // A patch's comment, asked of the whole stack.
-        let whole = *way == Way::Change && !n.on_stack() && ask::run_scope(db, run) == Some(Scope::Stack);
+        let whole = way.changes() && !n.on_stack() && ask::run_scope(db, run) == Some(Scope::Stack);
         let how = if whole { crate::db::WHOLE } else { way.said() };
         let at = match db.run(run).map_or(String::new(), |r| crate::thread::asked_at(&ask::at_of(r))) {
             at if at.is_empty() => at,

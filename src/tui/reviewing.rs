@@ -847,9 +847,11 @@ impl App {
     }
 
     /// Whether `marks` reject the change of the stack: every one of its
-    /// operations, the comments of the work with it.
+    /// operations, the comments of the work with it. Never an experiment's,
+    /// whose comments say what it found, its change rejected or not.
     fn change_rejected(&self, marks: &BTreeMap<String, bool>) -> bool {
-        self.review_ops().is_some_and(|ops| matches!(ops.tally(marks), (0, n, 0) if n > 0))
+        let experiment = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).is_some_and(ask::experiment);
+        !experiment && self.review_ops().is_some_and(|ops| matches!(ops.tally(marks), (0, n, 0) if n > 0))
     }
 
     /// Whether closing the review, the parts not marked yet as `rest`

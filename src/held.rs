@@ -1855,9 +1855,11 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     });
     let change = h.stack.as_ref().zip(taken);
     // Every operation rejected, the agent's replies and comments with them;
-    // a pull's comments are the reviewers', filed all the same.
+    // a pull's comments are the reviewers', filed all the same, and an
+    // experiment's say what it found, as they are marked.
     if let Some((_, Accepted::Nothing)) = change
         && !pull
+        && !crate::ask::experiment(&r)
     {
         for (key, m) in all.iter_mut() {
             if !crate::operations::is_key(key) && key != "stack" {
@@ -1919,7 +1921,7 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     // one goes in, and the change is not rejected.
     let mut reopened = 0;
     let mut filed: HashMap<(String, String), bool> = HashMap::new();
-    let rejected = matches!(change, Some((_, Accepted::Nothing)));
+    let rejected = matches!(change, Some((_, Accepted::Nothing))) && !crate::ask::experiment(&r);
     for (k, rp) in h.replies.iter().enumerate() {
         let at = (rp.change.clone(), rp.id.clone());
         let goes = match rp.read {

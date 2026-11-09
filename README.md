@@ -208,6 +208,11 @@ The ask dialog sets two things every time. The permission is one of:
   other.
 - **change stack**: it may change any patch, add patches anywhere and
   reorder them.
+- **experiment**: to find out what you ask, it may change the code, build
+  it and run any command, with the whole stack. Its changes come back for
+  your review, each one rejected until you accept it. What it changed only
+  to find out is in a patch of its own on top, whose commit message says it
+  is throwaway; accept it too if you need it.
 - **build and test**: it may run any command, in a worktree kept for
   builds, and says what it found; it changes nothing in the stack.
 - **try push**, with the `try-push` feature: it selects tasks of Firefox's
