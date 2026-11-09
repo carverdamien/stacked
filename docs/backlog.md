@@ -227,6 +227,27 @@ is built leaves this file in the commit that builds it.
       to the rate limit (the 406 of 2026-11-04); whether the watch outlives
       quitting stacked; and whether a backout is watched too.
 
+13. **Build and test on a workspace over ssh** (2026-11-09: "Allow build
+    and test to run on ssh remote workspace.").
+    - **Today:** a build and test always runs in the stack's build worktree
+      on the machine stacked runs on, `.stacked/NAME/build`, kept for the
+      next build to build on (`docs/ai/asking-the-agent.md`). The agent may
+      run any command there.
+    - **The change:** a setting names a remote workspace over ssh (a host
+      and a folder there). The build and test sends the patches up to the
+      comment's there, the stack's base and patches as the remote checkout
+      takes them, and runs the build and the tests there, its output in the
+      ask's stream and what it found coming back as today: in the reply and
+      on each patch's title. The remote build folder is kept for the next
+      build, as the local one is. Nothing runs in the remote user's own
+      checkout.
+    - **To settle:** where the agent runs (on this machine, its commands
+      sent over ssh, or on the remote machine itself); how the patches get
+      there (a git bundle, a push to a branch of the remote's clone, or
+      the diffs applied); whether the setting is global, per checkout, or
+      chosen per ask; what happens when the host cannot be reached; and
+      whether a try push or a lint may use the same workspace.
+
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but
