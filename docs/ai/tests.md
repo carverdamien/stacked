@@ -2186,9 +2186,14 @@ before, and none once it is fetched; that a latest diff with ten
 lines of context, as moz-phab sends it, is the patch as it is on the base
 it was made on, and nothing is sent; that once upstream has changed a line
 within those ten and not within three, and the stack is rebased onto it,
-the diff is known by its changes alone, never as the patch as it is, the
-review saying why, and a new diff is sent, which a submit after a fetch
-finds to be the patch as it is; that once the patch is edited too, its code is
+the diff, which no longer applies on the patches below, makes the
+patch's changes and is the patch as it is still, nothing sent; and in the
+editor, that such a diff, its files in another order too, is in sync on
+the Phabricator line and `✓` in the patches pane, before the rebase and
+after it, Space and the menu's view of what differs saying that
+Phabricator has this exact version, and a submit sending nothing, while
+a diff that really differs is `the diff differs`, `✗`, and Space opens
+the view of what differs; that once the patch is edited too, its code is
 compared from the version whose changes the diff makes; that a latest
 diff of other changes is still refused, nothing written; that a revision
 in review, accepted or needing revision is sent its title and summary
@@ -2196,8 +2201,9 @@ alone in one write, `WIP: ` first only where its title has it, the
 reviewers its title names kept and none read, its status kept, no diff
 made and its repository not read; its parent alone, in one write, when
 only that differs; and nothing when only its diff differs, said
-so, its latest diff left as it is whatever version it is, one known by
-its changes alone with no new diff said to be sent; that a send reads
+so, its latest diff left as it is whatever version it is, one of
+the patch's changes made before a rebase taken as the patch as it is,
+with nothing said of its code; that a send reads
 nothing, a revision retitled and accepted on Phabricator since it was
 fetched sent the summary the review showed, and not the title, nothing
 stored of it; that each failure says what was done and what was not: a

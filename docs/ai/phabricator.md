@@ -569,18 +569,24 @@ landed or was abandoned refuses, its status said as the Phabricator line
 says it (`D123 is Landed, not open: only an open revision is updated, and
 nothing was sent.`). In work, its latest diff
 must be a version of the
-patch the database holds, the one in the stack or an earlier one: of the
-same effect, or leaving the same files once both are applied on the
-patches below, so that a diff moz-phab sent with more context is still the
-version it was made from. When neither rule finds one, a third looks for
-the version whose changes it makes: file by file, the same lines removed
-and added one after another, whatever lines of context are around them and
-wherever its hunks start. moz-phab sends a diff with more context than
-stacked keeps, so once a rebase has changed lines of that context, the
-diff no longer applies on the patches below, though its changes are that
-version's. A diff known by this rule is never the patch as it is, as it
-was made on the patches below as they were before: a new diff of the
-patch is sent, made on them as they are now. Else it came from elsewhere,
+patch the database holds, the one in the stack or an earlier one. The one
+in the stack first, by the rule the Phabricator line reads too, from the
+same code, so that the two never disagree: of the same effect, or leaving
+the same files once both are applied on the patches below, so that a diff
+moz-phab sent with more context, or its files in another order, is still
+the patch as it is; or, where one of them does not apply there, making
+the same changes: file by file, the same lines removed and added one
+after another, whatever lines of context are around them and wherever its
+hunks start. moz-phab sends a diff with more context than stacked keeps,
+so once a rebase has changed lines of that context, the diff no longer
+applies on the patches below, though its changes are the patch's: it is
+the patch as it is still, and no new diff is sent. Then an earlier
+version, of the same effect or leaving the same files; when none is, the
+version whose changes it makes, by the third rule, the one in the stack
+too where both apply but leave a file otherwise (a hunk put elsewhere). A
+diff known by its changes alone is never the patch as it is: a new diff
+of the patch is sent, made on the patches below as they are now. Else it
+came from elsewhere,
 and nothing is sent
 (`D123's latest diff is not a version of patch 3 that stacked knows: it
 came from elsewhere, and nothing was sent.`). And while HEAD is on the

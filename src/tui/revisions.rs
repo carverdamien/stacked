@@ -188,21 +188,22 @@ struct Job {
 }
 
 /// What differs in the code between `raw`, Phabricator's latest diff of the
-/// patch at `at`, and `mine`, the patch as it is: nothing when the two do
-/// the same (`ops::same_effect`), or leave each file the same, both applied
-/// on the patches below it, `below`, on `pad`'s base in its repository, as
-/// a submit's check takes them; else the code from one to the other, each
-/// file as each leaves it (`submit::files_diff`). Where the files cannot be
-/// read so, the two diffs diffed as text, said.
+/// patch at `at`, and `mine`, the patch as it is, both on the patches below
+/// it, `below`, on `pad`'s base in its repository, by the rule a submit
+/// reads (`submit::code_against`), so that the line never says the code
+/// differs where a submit has none of it to send: nothing when the two do
+/// the same, leave each file the same, or, where one does not apply there,
+/// make the same changes, whatever their context lines and the order of
+/// their files; else the code from one to the other, each file as each
+/// leaves it. Where the files cannot be read so, the two diffs diffed as
+/// text, said.
 fn compare(job: Job) -> Code {
-    if crate::ops::same_effect(&job.raw, &job.mine) {
-        return Code::Same;
-    }
     let below: Vec<&str> = job.below.iter().map(String::as_str).collect();
-    match job.pad.and_then(|(repo, base)| crate::submit::files_diff(&repo, &base, &below, &job.raw, &job.mine)) {
-        Some(None) => Code::Same,
-        Some(Some(code)) => Code::Differs(code, None),
-        None => Code::Differs(crate::submit::diffs_diffed(job.at, &job.raw, &job.mine), Some(AS_TEXT.into())),
+    let pad = job.pad.as_ref().map(|(repo, base)| (repo.as_path(), base.as_str()));
+    match crate::submit::code_against(pad, &below, &job.raw, &job.mine) {
+        Ok(None) => Code::Same,
+        Ok(Some(code)) => Code::Differs(code, None),
+        Err(()) => Code::Differs(crate::submit::diffs_diffed(job.at, &job.raw, &job.mine), Some(AS_TEXT.into())),
     }
 }
 

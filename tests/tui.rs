@@ -22651,14 +22651,34 @@ fn with_only_what_changed_the_two_diffs_of_a_submit_leave_out_what_the_move_of_t
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn a_latest_diff_of_the_patch_s_changes_made_before_a_rebase_is_reviewed_saying_why_a_new_diff_is_sent() {
+fn a_latest_diff_of_the_patch_s_changes_with_more_context_and_its_files_reordered_is_in_sync_on_the_line_and_for_a_submit() {
     let (tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
     let src = tmp.path().join("src");
-    // As moz-phab sends it: ten lines of context around a.txt's line 20.
+    // As moz-phab sends it: ten lines of context around a.txt's line 20,
+    // and c.txt first.
     let wide = format!("{}\n", git_said(&src, &["diff", "-U10", "HEAD~1", "HEAD"]));
+    let at = wide.find("diff --git a/c.txt").unwrap_or_else(|| panic!("{wide}"));
+    let reordered = format!("{}{}", &wide[at..], &wide[..at]);
+    assert!(reordered.starts_with("diff --git a/c.txt") && reordered.contains("@@ -10,21 +10,21 @@"), "{reordered}");
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &reordered)));
+    statuses_from(&db, &phab);
+    let _one = phab_stand_in(&phab);
+    let in_sync = "Phabricator: D13 · Changes Planned · in sync · no new comments";
+    // On the base it was made on: in sync, ✓.
+    {
+        let mut app = open(&db).unwrap();
+        fetched(&mut app);
+        keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+        app.refresh();
+        app.settle();
+        assert_eq!(phab_line(&mut app).as_deref(), Some(in_sync));
+        assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [W]✓ Bug 3 - three");
+    }
     // Upstream changes a.txt's line 12, within those ten lines but not
     // within the three the stack's diffs keep, and the stack is rebased
-    // onto it, each patch as it was.
+    // onto it, each patch as it was: D13's diff no longer applies on the
+    // patches below, but it makes patch 3's changes, so it is patch 3 as it
+    // is still, as for a submit.
     git(&src, &["checkout", "-q", "-b", "upstream", "HEAD~3"]);
     let lines: String = (1..=30).map(|n| format!("line {n}\n")).collect();
     std::fs::write(src.join("a.txt"), lines.replace("line 12\n", "line twelve\n")).unwrap();
@@ -22666,35 +22686,51 @@ fn a_latest_diff_of_the_patch_s_changes_made_before_a_rebase_is_reviewed_saying_
     git(&src, &["checkout", "-q", "main"]);
     git(&src, &["rebase", "-q", "upstream"]);
     stacked(&src, &db, &["import", "s", "upstream", "--replace"]);
-    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &wide)));
-    let _one = phab_stand_in(&phab);
     let mut app = open(&db).unwrap();
+    fetched(&mut app);
     keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some(in_sync));
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [W]✓ Bug 3 - three");
+    // Space on the line says that Phabricator has this exact version, and
+    // opens nothing.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up]);
+    assert!(app.on_line());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.starts_with("Phabricator has this exact version of patch 3: the latest diff of D13 does what this version does,"), "{}", app.status);
+    assert_eq!(app.screen, Screen::Main);
+    keys(&mut app, &[KeyCode::Left]);
+    // From the menu, the view says that nothing differs, and shows nothing.
+    phab_choose(&mut app, "What differs from D13 on Phabricator…");
+    let (_, lines) = differs_seen(&mut app).unwrap();
+    assert!(differs_said(&lines).starts_with("Nothing differs: the latest diff of D13 does what this version of patch 3 does,"), "{lines:#?}");
+    assert!(differs_shown(&lines).is_empty(), "{lines:#?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // A submit has nothing to send.
     phab_choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
-    assert_eq!((app.screen, app.status.as_str()), (Screen::Submit, ""));
-    // At its top, why a new diff is sent; then what is sent and where, and
-    // no code, as it is the patch's already.
-    let rows = submitted(&mut app);
-    let sent = rows.iter().position(|r| r.starts_with("   D13, at ")).unwrap_or_else(|| panic!("{rows:#?}"));
-    let top: Vec<&str> = rows[1..sent].iter().map(|r| r.trim_start()).collect();
-    assert_eq!(
-        top.join(" "),
-        "The latest diff of D13 makes the same changes as version 1 of patch 3, but it was made on the patches below patch 3 as they were before, and it no longer applies on them as they are now, so a new diff of patch 3 is sent, made on them."
-    );
-    assert_eq!(rows[sent], "   D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and stays Changes Planned.");
-    assert!(!rows.iter().any(|r| r.contains("The code does not change") || r.starts_with("the code")), "{rows:#?}");
-    // Sent from the menu: a new diff.
-    submit_menu(&mut app, "Send it to Phabricator");
+    assert_eq!(app.screen, Screen::Main);
+    assert!(app.status.starts_with("D13 is patch 3 as it is already, with its title and summary, so nothing was sent."), "{}", app.status);
+    assert!(phab.lock().unwrap().writes().is_empty());
+    // A diff that really differs, of D15 now, the same context and order:
+    // the diff differs, ✗, and Space opens the view of what differs.
+    {
+        let mut p = phab.lock().unwrap();
+        *p = std::mem::take(&mut *p).with(15, "changes-planned", "WIP: Bug 3 - three", &reordered.replace("+LINE 20", "+Someone's 20"));
+    }
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}15"), &patch_of(&db, 2).diff);
+    app.refresh();
+    fetched(&mut app);
     app.settle();
-    assert_eq!(
-        app.status,
-        "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent. What is shown of D13 was fetched before this submit."
-    );
-    assert_eq!(
-        phab.lock().unwrap().writes(),
-        ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update", "differential.revision.edit plan-changes"]
-    );
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D15 · Changes Planned · the diff differs · no new comments"));
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [W]✗ Bug 3 - three");
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up]);
+    assert!(app.on_line());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let (title, _) = differs_seen(&mut app).expect("the view of what differs");
+    assert_eq!(title, "D15 on Phabricator, then patch 3 as it is");
+    stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
 }
 

@@ -425,11 +425,14 @@ It says the revision; its status, by its full name: Draft, Changes
 Planned, Needs Review, Needs Revision, Accepted, Landed (Closed, as
 Phabricator names it), Abandoned, or `status unknown`; whether Phabricator
 has this version of the patch, `in sync` when the revision's latest diff
-does what the patch does (the same effect, or each file the same once both
-are applied on the patches below it, as a submit's check takes them: the
-line keeps those two strict rules, and not the submit's third, as a diff of
-the same changes made on the patches below as they were before, which no
-longer applies on them, is not what would land), its
+does what the patch does, by the one rule a submit reads too, so that the
+line never says the diff differs where a submit has no new diff to send:
+the same effect, or each file the same once both are applied on the
+patches below it, as a submit's check takes them; or, where one of them
+no longer applies there (a diff moz-phab sent with more context, made on
+the patches below as they were before), the same changes, whatever their
+lines of context and the order of their files (Submitting a patch,
+below); its
 title and summary are to the letter those a submit sends (`WIP: `
 first or not, as the revision's title is; the summary without the lines
 naming a revision; the white space at their end aside), where their lines
