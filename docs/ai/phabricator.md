@@ -409,7 +409,10 @@ every line or only what the patches changed (as an interdiff, in a column
 per version, or side by side, or the change
 from the latest diff, on the commit it is on, to the patch as it is, as a
 patch of its own, a fetch, the one a submit makes first, and a pull
-storing that commit as Phabricator names it), and its menu
+storing that commit as Phabricator names it; that commit is the one under
+the whole series a submit sent, so the diff is read on it over the
+patches below it in the stack, and, where it does not apply so, on that
+commit alone, as the parent's own commit), and its menu
 holds every item of the patch about Phabricator (The editor, above).
 
 ## Patches that should not change

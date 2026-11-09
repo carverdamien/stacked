@@ -589,7 +589,10 @@ column), the change from one version to another as a patch of its own
 (the code, which the dialog's Compare sets, on the versions of a patch,
 on History…'s history and its stack diff, on the screen of what an edit
 changed, in the review and, with moz-phab, on what differs from
-Phabricator, the code can be set there; from v2 to v3, on one
+Phabricator, the code can be set there (and drawn there both from a
+latest diff on its parent's own commit, read on it alone, and from one on
+the commit under the whole series, read over the patches below it, which
+does not apply on that commit alone); from v2 to v3, on one
 base, what it is said once, the messages' lines over it, then a.txt as v2
 leaves it, then as v3 leaves it, `-line 39 was`, `+line 39 said`, nothing
 dim, the status line, the bar `1: view · 3: whole` and the top bar saying

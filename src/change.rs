@@ -20,13 +20,16 @@ use crate::diff::{parse_diff, unquote};
 /// A version of a patch on its own base, as its files are read: the
 /// repository; the commit its base is, and the diffs of the patches below
 /// it, bottom first, applied on that in turn; and its own diff, applied on
-/// those.
+/// those. With `or_alone`, where they do not apply so, its own diff on the
+/// base alone: a revision's latest diff on Phabricator, whose base may be
+/// the commit under the whole series or its parent's own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Side {
     pub repo: PathBuf,
     pub base: String,
     pub below: Vec<String>,
     pub diff: String,
+    pub or_alone: bool,
 }
 
 /// The change from one version of a patch to another (`read`).
@@ -67,7 +70,11 @@ pub fn read(old: &Side, new: &Side, names: (&str, &str)) -> Result<Change, Strin
     let paths: Vec<String> = paths.into_iter().collect();
     let around = |s: &Side, name: &str| -> Result<(Vec<Left>, Vec<Left>), String> {
         let below: Vec<&str> = s.below.iter().map(String::as_str).collect();
-        crate::check::around(&s.repo, &s.base, &below, &s.diff, &paths).map_err(|e| e.0)?.ok_or_else(|| {
+        let mut read = crate::check::around(&s.repo, &s.base, &below, &s.diff, &paths).map_err(|e| e.0)?;
+        if read.is_none() && s.or_alone && !below.is_empty() {
+            read = crate::check::around(&s.repo, &s.base, &[], &s.diff, &paths).map_err(|e| e.0)?;
+        }
+        read.ok_or_else(|| {
             let base = &s.base[..12.min(s.base.len())];
             match s.below.len() {
                 0 => format!("{name} does not apply on its base, {base}"),
@@ -471,7 +478,7 @@ mod tests {
             d
         };
         let (old, new) = (edit(&one, "OLD"), edit(&two, "NEW"));
-        let side = |base: &str, diff: &str| Side { repo: r.clone(), base: base.into(), below: vec![], diff: diff.into() };
+        let side = |base: &str, diff: &str| Side { repo: r.clone(), base: base.into(), below: vec![], diff: diff.into(), or_alone: false };
         let c = read(&side(&one, &old), &side(&two, &new), ("v1", "v2")).unwrap();
         assert!(c.rebased && !c.diff.contains("other.txt"), "{}", c.diff);
         assert_eq!(said(&c), ["-OLD", "+NEW", " line 1", " line 2", " line 3", " line 5", " line 6", " line 7", "~-line 8", "~+LINE 8"]);

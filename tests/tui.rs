@@ -28184,6 +28184,41 @@ fn what_differs_from_phabricator_is_drawn_as_the_change_from_the_latest_diff_on_
     stacked::phab::statuses_stand_in(&db, None);
 }
 
+#[cfg(feature = "moz-phab")]
+#[test]
+fn what_differs_from_phabricator_reads_a_diff_on_the_commit_under_the_whole_series_over_the_patches_below_it() {
+    // Phabricator saying the commit under the whole series, as a submit
+    // sends it: the latest diff of D13 changes line 3 of a.txt next to the
+    // line 2 patch 1 changed, so it applies only over patches 1 and 2, not
+    // on that commit alone. The change is drawn all the same, on one base.
+    let (tmp, db, phab, _) = three_revisions();
+    let src = tmp.path().join("src");
+    let raw = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,5 +1,5 @@\n line 1\n LINE 2\n-line 3\n+LINE 3\n line 4\n line 5\n";
+    {
+        let mut p = phab.lock().unwrap();
+        let r = p.revisions.get_mut(&13).unwrap();
+        r.base = git_said(&src, &["rev-parse", "HEAD~3"]);
+        let id = r.diffs[0];
+        p.diffs.insert(id, raw.into());
+    }
+    let mut app = open(&db).unwrap();
+    fetched(&mut app);
+    next_patch(&mut app);
+    next_patch(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    inter_view(&mut app, InterLayout::ChangeUnified);
+    app.wait_files();
+    let (title, lines) = differs_seen(&mut app).unwrap();
+    assert_eq!(title, "D13 on Phabricator, then patch 3 as it is");
+    let all = lines.join("\n");
+    assert!(!all.contains("cannot be drawn"), "{all}");
+    assert!(all.contains("The code is the change from D13 on Phabricator to patch 3 as it is as a patch of its own"), "{all}");
+    assert!(lines.iter().any(|l| l == "-LINE 3") && lines.iter().any(|l| l == "+line 3"), "{lines:#?}");
+    assert!(lines.iter().any(|l| l == "+LINE 20") && lines.iter().any(|l| l == "+sea"), "{lines:#?}");
+    assert!(!all.contains("drawn dim"), "{all}");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
 /// The lines of the versions of a patch's pane, 120 columns wide and 50
 /// rows high: each from column 31, its spaces at the end gone.
 fn version_lines(app: &mut App) -> Vec<String> {

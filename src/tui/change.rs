@@ -28,7 +28,8 @@ pub(super) enum Changed {
 /// A version of a patch on its base, as a screen knows it: the repository
 /// and the commit its base is, the ids of the patches below it, bottom
 /// first, and its diff, as patch `id` has it, or `raw`, a diff of its own,
-/// known by `id`, as a revision's latest on Phabricator.
+/// known by `id`, as a revision's latest on Phabricator, then, where it
+/// does not apply over those patches, on the base alone (`Side::or_alone`).
 #[derive(Debug, Clone)]
 pub(super) struct On {
     pub repo: String,
@@ -525,6 +526,7 @@ impl App {
             base: on.base.clone(),
             below: on.below.iter().map(|id| self.db.patch(id).diff.clone()).collect(),
             diff: on.raw.clone().unwrap_or_else(|| self.db.patch(&on.id).diff.clone()),
+            or_alone: on.raw.is_some(),
         };
         match self.changes.get(&key, || (side(&old), side(&new), names.map(String::from))) {
             None => Changed::Reading,

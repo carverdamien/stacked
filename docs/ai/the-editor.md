@@ -495,7 +495,10 @@ diff, then the patch as it is, as an interdiff, the way `Versions of this
 patch…` shows two versions, in the view of the interdiffs that `1` sets
 there (below), the two versions named `D12 on Phabricator` and `patch 2
 as it is`: the interdiff, or the change from the latest diff, on the
-commit it is on, to the patch as it is, as a patch of its own. The screen first says what it shows: the
+commit it is on, over the patches below it in the stack (that commit is
+the one under the whole series a submit sent; where the diff does not
+apply so, on that commit alone), to the patch as it is, as a patch of its
+own. The screen first says what it shows: the
 parent first, when a submit would set one, the revision's parents on
 Phabricator then the one a submit sets (`Parent: D10 on Phabricator; a
 submit sets D11, the revision of patch 2.`, `Parent: none` for a revision

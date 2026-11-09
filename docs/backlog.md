@@ -227,25 +227,6 @@ is built leaves this file in the commit that builds it.
       to the rate limit (the 406 of 2026-11-04); whether the watch outlives
       quitting stacked; and whether a backout is watched too.
 
-13. **Bug: "Compare: [the code]" does nothing on the screen of what
-    differs from Phabricator** (2026-11-09: "In What differ from
-    phabricator. Compare [the code] does not work. It keeps showing an
-    interdiff view.").
-    - **Today:** Space on a patch's message header opens `D12 on
-      Phabricator, then patch 2 as it is` (`docs/ai/the-editor.md`). Its `1`
-      dialog (`src/tui/views_dialog.rs`) offers `Compare: [the two diffs]`
-      or `[the code]`. With the code picked, the screen still draws the two
-      diffs as an interdiff.
-    - **The fix:** with the code picked, the screen draws the change from
-      the latest diff to the patch as it is, as a patch of its own, as the
-      spec says and as `Versions of this patch…` does. When the code
-      cannot be compared there (the bases unread), the dialog greys the
-      choice and says why, as it already does elsewhere. A test drives the
-      dialog on this screen and checks what is drawn.
-    - **To find:** whether the choice is not passed to this screen, or is
-      reset when the screen redraws, and whether the submit review's
-      interdiff (5870256) has the same fault.
-
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but

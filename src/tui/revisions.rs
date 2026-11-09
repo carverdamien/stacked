@@ -914,33 +914,37 @@ impl App {
 
     /// The change from the latest diff of the revision at `link` to patch
     /// `p` as it is, named `names` (`App::changed`): that diff on the commit
-    /// it is on (`phab_on`), the patch on the stack's base with the patches
-    /// below it; with the lines of their interdiff, `lines`, of versions
-    /// `was` and `is` as it compares them, nearest each line of it.
+    /// it is on with the patches below it (`phab_on`), the patch on the
+    /// stack's base with the same patches; with the lines of their
+    /// interdiff, `lines`, of versions `was` and `is` as it compares them,
+    /// nearest each line of it.
     fn phab_change(&self, p: &Patch, link: &str, lines: &[&ops::InterLine], (was, is): (&Patch, &Patch), names: [&str; 2]) -> (super::change::Changed, super::change::Near) {
         let near = super::change::Near::new(&ops::code_places(lines, was, is), 0, 0);
-        let mine = self.current().ok_or_else(|| "no stack is shown".to_string()).and_then(|s| {
-            let at = s.patches.iter().position(|id| *id == p.id).unwrap_or_default();
-            self.on_stack(s, at, names[1])
-        });
-        (self.changed(self.phab_on(link, names[0]), mine, names), near)
+        let at = self.current().and_then(|s| s.patches.iter().position(|id| *id == p.id)).unwrap_or_default();
+        let mine = self.current().ok_or_else(|| "no stack is shown".to_string()).and_then(|s| self.on_stack(s, at, names[1]));
+        (self.changed(self.phab_on(link, names[0], at), mine, names), near)
     }
 
     /// The latest diff of the revision at `link`, named `name`, on the
     /// commit it is on as Phabricator names it (`State::base`), in the
     /// repository of the stack shown: as git names it, else as git-cinnabar
-    /// has the Mercurial changeset (`App::commit_named`). Why not, where
-    /// Phabricator said none, or the repository has not that commit.
-    fn phab_on(&self, link: &str, name: &str) -> std::result::Result<super::change::On, String> {
+    /// has the Mercurial changeset (`App::commit_named`); after the patches
+    /// below patch `at` (from 0) of the stack, applied in turn. That commit
+    /// is the one under the whole series a submit sent, as moz-phab sends
+    /// it, not the revision's parent: its diff applies only over the
+    /// patches below it. Why not, where Phabricator said none, or the
+    /// repository has not that commit.
+    fn phab_on(&self, link: &str, name: &str, at: usize) -> std::result::Result<super::change::On, String> {
         let s = self.current().ok_or_else(|| "no stack is shown".to_string())?;
         let repo = s.repo.clone().ok_or_else(|| format!("the stack has no repository to read the files of {name} in"))?;
+        let below = s.patches.get(..at).unwrap_or_default().to_vec();
         let state = self.state(link).filter(|s| !s.missing && s.diff != 0).ok_or_else(|| format!("{name} has no diff stored"))?;
         let raw = self.raw(link).ok_or_else(|| format!("{name} has no diff stored"))?;
         if state.base.is_empty() {
             return Err(format!("the commit {name} is on is not known: Phabricator said none, or it was fetched before stacked read that"));
         }
         let base = self.commit_named(&repo, &state.base, name)?;
-        Ok(super::change::On { repo, base, below: vec![], id: format!("{link}#{}", state.diff), raw: Some(raw.to_string()) })
+        Ok(super::change::On { repo, base, below, id: format!("{link}#{}", state.diff), raw: Some(raw.to_string()) })
     }
 
     /// Why the screen of what differs from Phabricator cannot draw the
@@ -952,7 +956,7 @@ impl App {
         let s = self.current()?;
         let at = s.patches.iter().position(|id| *id == p.id)?;
         let mine = format!("patch {} as it is", self.sel + 1);
-        self.phab_on(&link, &format!("{d} on Phabricator")).and_then(|_| self.on_stack(s, at, &mine)).err()
+        self.phab_on(&link, &format!("{d} on Phabricator"), at).and_then(|_| self.on_stack(s, at, &mine)).err()
     }
 
     /// What differs between the patch the middle shows and its revision on
