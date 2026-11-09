@@ -247,6 +247,18 @@ is built leaves this file in the commit that builds it.
       the diffs applied); whether the setting is global, per checkout, or
       chosen per ask; what happens when the host cannot be reached; and
       whether a try push or a lint may use the same workspace.
+    - **Losing the connection** (2026-11-09: "Also consider losing
+      connection to the host."): the connection dropping in the middle of
+      a build and test, through sleep, a network change or the host
+      rebooting. To settle: whether the remote build keeps running on its
+      own (in a session that outlives the connection, its output kept in a
+      file there), so that stacked reconnects and goes on reading it, or is
+      lost; how long stacked retries and how the stream and the status line
+      say so meanwhile; how the ask lands when the host never comes back
+      (failed, its partial output kept, as a stopped ask lands); that Stop
+      still stops the remote build once the host is back; and that a
+      restart of stacked finds a remote build still going, as it finds a
+      local one by its pid today.
 
 ## Parked
 
