@@ -170,6 +170,23 @@ is built leaves this file in the commit that builds it.
      (as other items, no), and whether `stacked review --accept-all` takes
      the bug (it opens no form on the command line today).
 
+10. **Remove egui; File moves into the `< stacked >` menu** (2026-11-09:
+    "Remove egui. Move "File" in < stacked > where "Configure" is.").
+    - **Today:** StackED is an egui window (`src/app.rs`, `src/app/menu.rs`,
+      `src/app/windows.rs`, `src/launcher.rs`, `src/icon.rs`) with a File
+      menu of its own: New…, Open…, Open Recent ⏵, Close Window, Quit
+      StackED. The `< stacked >` button on the top bar offers Configure.
+    - **The change:** the egui app and its dependency go. The File items
+      join Configure under `< stacked >`, from the shared menu builder, in
+      the TUI and in stacked web. The docs follow
+      (`docs/ai/in-a-window-of-its-own-stacked.md`, `install.md`,
+      `layout-of-the-code.md`, `tests.md`).
+    - **To settle:** which File items still make sense without a window of
+      their own (New…, Open… and Open Recent in a terminal or a browser
+      tab; Close Window and Quit as one Quit); whether anything replaces
+      StackED's launcher and icon on macOS and Linux; and that StackED's
+      state directory is left alone, as the user's.
+
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but
