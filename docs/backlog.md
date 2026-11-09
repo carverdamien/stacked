@@ -187,6 +187,24 @@ is built leaves this file in the commit that builds it.
       StackED's launcher and icon on macOS and Linux; and that StackED's
       state directory is left alone, as the user's.
 
+11. **A referenced comment previews instead of jumping** (2026-11-09:
+    "Jumping to an attached comment breaks the workflow. Instead, show a
+    preview window like attached code.").
+    - **Today:** Enter on a reference to a comment (`r1 ↗ patch 2 · a.txt:
+      …`) leaves the comment being read or written and goes to the other
+      one, opening it if closed (`docs/ai/writing-comments.md`). Enter on
+      a reference to lines opens a preview over the screen instead
+      (`Mode::Preview`, `Preview` in `src/tui.rs`), which Esc closes,
+      leaving you where you were.
+    - **The change:** a comment's reference opens the same preview, through
+      the same builder: the comment's turns as it stands (closed, as it
+      was last), with its patch and file line at the top. Esc closes it
+      and you are back where you were, the comment being written
+      untouched. The wheel and scrollbar treat it as the lines' preview.
+    - **To settle:** whether the preview still offers a way to go to the
+      comment (an item or a key in it), and what the same reference does
+      in the agent's reply waiting for review and in a menu naming several.
+
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but
