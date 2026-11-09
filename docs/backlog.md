@@ -139,6 +139,21 @@ is built leaves this file in the commit that builds it.
      comments promoted already (`Note.was`: left where they are, or moved
      back once).
 
+8. **"File a bug" on the stack's comments** (2026-11-09: "Is it offered on
+   the stack?", then "Backlog it").
+   - **Today:** offered only on a comment on a patch: `ask::can_bug` refuses
+     a stack comment (`!n.on_stack()`, `src/ask.rs`), and the dialog for a
+     comment being written offers it only on a patch (`written_bug`,
+     `src/tui/ask_dialog.rs`). The flow ends by putting `Bug N - …` in a
+     patch's title, which a stack comment has none of.
+   - **Proposed:** offered on a stack comment when your request says the
+     word bug, as on a patch; the agent drafts a bug for the stack; closing
+     the review opens Bugzilla's form, and nothing more (no number asked, no
+     title changed), as for a patch whose title names a bug already.
+   - **To settle:** whether the draft links the stack's patches' bugs
+     (`see_also`, `blocked`), and whether the number is asked after all to
+     reply on the comment.
+
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but
