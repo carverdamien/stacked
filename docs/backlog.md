@@ -154,6 +154,22 @@ is built leaves this file in the commit that builds it.
      (`see_also`, `blocked`), and whether the number is asked after all to
      reply on the comment.
 
+9. **Accept or reject the bug to file** (2026-11-09: "When reviewing "File a
+   Bug", I should be able to accept/reject "the bug to file".").
+   - **Today:** the agent's draft lands for review as a section to read only,
+     `the bug to file, to read`, its fields in the right pane, with nothing
+     to accept or reject (`Held.bug`, `src/tui/reviewing.rs`). Closing the
+     review always opens Bugzilla's form (`src/tui/bug_dialog.rs`).
+   - **The change:** the section is an item marked accept or reject, as a
+     review's other items are. Accepted: closing opens the form, then what
+     follows today (the number asked and the title changed, or form only).
+     Rejected: no form opens and nothing follows; the review closes as
+     rejected for the bug, or sends it back with a comment, as the review
+     already lets for other items.
+   - **To settle:** whether the review can close with the bug left unmarked
+     (as other items, no), and whether `stacked review --accept-all` takes
+     the bug (it opens no form on the command line today).
+
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but
