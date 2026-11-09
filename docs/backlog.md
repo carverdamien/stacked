@@ -260,6 +260,22 @@ is built leaves this file in the commit that builds it.
       restart of stacked finds a remote build still going, as it finds a
       local one by its pid today.
 
+14. **The Phabricator line pinned at the top, as the title is**
+    (2026-11-09: "Make the Phabricator status line stick to the top like
+    the commit title.").
+    - **Today:** the Phabricator line over a patch's message (`Phabricator:
+      D12 · Needs Review · in sync · …`) "is not pinned, and scrolls away
+      with the rows, the title pinned in its place"
+      (`docs/ai/the-editor.md`, the line's rows in `src/tui/revisions.rs`,
+      `line_rows`); the title alone stays at the top of the middle as you
+      scroll.
+    - **The change:** the line stays pinned at the top with the title, as
+      the title does, in every view of the middle and in stacked web; its
+      mark and its menu (Space) work there as on the line in place.
+    - **To settle:** above or below the title; whether it stays one row,
+      cut to the pane's width, when it folds over several; and whether the
+      age line under it (`fetched N minutes ago`) is pinned too.
+
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but
