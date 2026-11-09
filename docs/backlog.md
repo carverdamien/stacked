@@ -205,6 +205,28 @@ is built leaves this file in the commit that builds it.
       comment (an item or a key in it), and what the same reference does
       in the agent's reply waiting for review and in a menu naming several.
 
+12. **Watch landing** (2026-11-09: "Offer "Watch landing". So that we can
+    monitor Accpted -> Close -> Landed.").
+    - **Today:** a patch's letter shows its revision's status as last
+      fetched, `[A]` Accepted, `[L]` Closed (landed)
+      (`docs/ai/the-editor.md`), and changes only when the stack is fetched
+      again. Nothing follows a landing once it is asked on Lando. A try push
+      is followed on Lando and Treeherder until it is done, then its
+      summary waits for review (`follow`, `docs/ai/layout-of-the-code.md`).
+    - **The change:** a "Watch landing" item, in the Phabricator submenu
+      (`phab_menus.rs`, the same for the stack and for a patch), offered
+      for Accepted revisions. It follows each revision from Accepted to
+      Closed to Landed, in the background, the way a try push is followed,
+      read-only: no write to Phabricator or Lando. The letter and the
+      Phabricator line show each step as it is seen, a notification (and
+      the bell in stacked web) says when a revision lands or the landing
+      fails, and the watch stops by itself then.
+    - **To settle:** what "Landed" is past Closed (Lando's landing job done
+      on autoland, or merged to mozilla-central), the step it shows between
+      them, and whether it needs a new letter; how often it reads, keeping
+      to the rate limit (the 406 of 2026-11-04); whether the watch outlives
+      quitting stacked; and whether a backout is watched too.
+
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but
