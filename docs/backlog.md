@@ -121,6 +121,24 @@ is built leaves this file in the commit that builds it.
    17. Box sizes and places inline.
    18. The `< X >` button frame written three times.
 
+7. **Remove promoting a comment to the stack** (2026-11-09: "Promoting a
+   comment to the stack. Remove this feature. Permission is enough. Moving is
+   disturbing, the comment disapears.").
+   - **Today:** a patch-change ask whose work would not fit its patch (the
+     patches above would not apply, per `stacked fits`, or another patch must
+     change too) changes nothing and answers `promote` with why (the prompt
+     in `src/ask.rs`, the answer schema's `promote`). Accepting the reply
+     moves the comment from the patch to the stack (`ask::promote`,
+     `held.rs`, `Reply.promote`; `Note.was` keeps where it was, and
+     `ask.rs` can move it back). The comment leaves the patch the user put
+     it on.
+   - **The change:** no promotion. The comment stays where it is; the user
+     asks again with the permission that fits (change the stack). To settle
+     when built: what the agent answers instead (a reply saying the work
+     needs the stack, with why, the comment left open), and what becomes of
+     comments promoted already (`Note.was`: left where they are, or moved
+     back once).
+
 ## Parked
 
 1. **Comments outside the patch:** on lines of a file the patch touches but
