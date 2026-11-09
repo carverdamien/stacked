@@ -436,10 +436,11 @@ naming a revision; the white space at their end aside), where their lines
 wrap too, as Phabricator's are what lands: a message wrapped again since
 it was submitted is not in sync until it is submitted again; and a submit
 would not change its parent, by the submit's own rule (Submitting a
-patch, below): the revision of the patch below, when that is open, is its
+patch, below): the revision of the patch below, when that is open or landed, is its
 parent already, or a submit sets none (for the bottom patch, on a patch
-with no revision or one naming the same revision, on a revision closed or
-that Phabricator does not have), so that once the stack is reordered, a
+with no revision or one naming the same revision, on a revision abandoned
+or that Phabricator does not have; one landed is set as the parent, so the
+line says the parent differs where Phabricator's is another), so that once the stack is reordered, a
 revision moved is not in sync until it is submitted again; else what
 differs, listed: `the diff differs`, `the title or summary differs`, `the
 parent differs`, `the diff and the title or summary differ`, `the diff and

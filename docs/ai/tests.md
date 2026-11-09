@@ -1382,9 +1382,11 @@ saying so, a submit setting it and nothing else, in one write, nothing
 read, the line saying that it was submitted since until a fetch, the
 pane's mark `↻`, the marks agreeing with the lines, then in sync, its
 parents fetched with the rest, Space naming the parent; none
-differing at the bottom of the stack, over a patch with no revision, a
-landed revision, or a patch naming the same revision, Space saying why a
-submit sets none as a submit does, no parent named; a parent that is
+differing at the bottom of the stack, over a patch with no revision, or a
+patch naming the same revision, Space saying why a submit sets none as a
+submit does, no parent named; a landed revision below set as the parent
+as an open one is, the line saying the parent differs and Space naming it,
+an abandoned one setting none (in `src/submit.rs`'s tests too); a parent that is
 none of the stack's revisions named in a search of its own, where a
 submit sets another, and as it was stored since; `…` while the revision
 below is not fetched; the parent with the code, the title or summary, or

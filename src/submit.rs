@@ -945,19 +945,18 @@ pub(crate) fn known(db: &Db, s: &Stack, at: usize, raw: &str) -> Option<Known> {
 }
 
 /// The revision of the patch below, as the parent's rule reads it
-/// (`parent_with`): not read, and why; not on Phabricator; or its PHID,
-/// whether it is open, and its status, by its name.
+/// (`parent_with`): not read, and why; not on Phabricator; or its PHID and
+/// its status.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Below {
     Unread(String),
     Missing,
-    Found { phid: String, open: bool, status: String },
+    Found { phid: String, status: crate::phab::Status },
 }
 
 impl Below {
     /// The revision at `link` as `db` holds it, as the last read of it
-    /// stored it: not on Phabricator; or its PHID, whether it is open, and
-    /// its status, by its name, as the Phabricator line names it. None
+    /// stored it: not on Phabricator; or its PHID and its status. None
     /// while nothing of it is stored. As the parent's rule reads the
     /// revision below wherever it reads what is stored: the submit, the
     /// Phabricator line, a fetch naming the parents a submit sets.
@@ -967,13 +966,13 @@ impl Below {
             return Some(Below::Missing);
         }
         let status = crate::phab::Status::from_value(&st.status);
-        Some(Below::Found { phid: st.phid.clone(), open: status.open(), status: status.name().to_string() })
+        Some(Below::Found { phid: st.phid.clone(), status })
     }
 }
 
 /// The parent the revision of the patch at `at` (from 0) of stack `s` is
 /// given, as a submit gives it: the revision of the patch below, when it
-/// is open, read with `below` by its `D123` and its link, unless the rule
+/// is open or landed, read with `below` by its `D123` and its link, unless the rule
 /// says sooner that none is set. `now`, the revision as it is, its `D123`
 /// and its parents' PHIDs, sorted; none for a new one. What `below` could
 /// not say, given back: the Phabricator line reads the revision below
@@ -997,7 +996,7 @@ pub fn parent_with<E>(db: &Db, s: &Stack, at: usize, now: Option<(&str, &[String
     Ok(match below(&d, &link)? {
         Below::Unread(e) => Parent::Nothing(format!("The revision of patch {at}, {d}, could not be read, {left}: {e}.")),
         Below::Missing => Parent::Nothing(format!("Phabricator has no {d}, the revision of patch {at}, {left}.")),
-        Below::Found { open: false, status, .. } => Parent::Nothing(format!("{d}, the revision of patch {at}, is {status}, {left}.")),
+        Below::Found { status: status @ crate::phab::Status::Abandoned, .. } => Parent::Nothing(format!("{d}, the revision of patch {at}, is {}, {left}.", status.name())),
         Below::Found { phid, .. } => match now {
             Some((_, parents)) if parents == std::slice::from_ref(&phid) => Parent::Already { id: d, below: at },
             _ => Parent::Set { id: d, phid, below: at },
@@ -1007,7 +1006,7 @@ pub fn parent_with<E>(db: &Db, s: &Stack, at: usize, now: Option<(&str, &[String
 
 /// The parent the revision of the patch at `at` of stack `s` is given: the
 /// revision of the patch below, as `db` holds it (`Below::stored`), when it
-/// is open. `now`, the revision as it is; none for a new one. What the
+/// is open or landed. `now`, the revision as it is; none for a new one. What the
 /// database lacks of the revision below is fetched first (`lacking`).
 fn parent(db: &Db, s: &Stack, at: usize, now: Option<&Remote>) -> Parent {
     let read = |_: &str, link: &str| -> Result<Below, std::convert::Infallible> { Ok(Below::stored(db, link).unwrap_or_else(|| Below::Unread("nothing of it is stored".into()))) };
@@ -3014,13 +3013,18 @@ mod tests {
         assert_eq!(ready.unwrap().parents_now, ["PHID-DREV-99"], "not found: its PHID");
         assert_eq!(fake.writes(), ["differential.revision.edit parents.set"]);
         assert_eq!(sent.unwrap(), "The edit of D12 failed, so nothing of D12 changed: differential.revision.edit: refused.");
-        // A closed revision below, once fetched: none, its parents left as
-        // they are, its status said as the Phabricator line says it.
-        fake.revisions.get_mut(&11).unwrap().status = "published".into();
+        // An abandoned revision below, once fetched: none, its parents left
+        // as they are, its status said as the Phabricator line says it.
+        fake.revisions.get_mut(&11).unwrap().status = "abandoned".into();
         fetch(&db, &mut fake);
         fake.refuse.clear();
         let (ready, _) = submit(&db, 1, &mut fake);
-        assert_eq!(ready.unwrap().said()[1], "D11, the revision of patch 1, is Landed, so the parents of D12 are left as they are.");
+        assert_eq!(ready.unwrap().said()[1], "D11, the revision of patch 1, is Abandoned, so the parents of D12 are left as they are.");
+        // A landed one: set as the parent, as an open one is.
+        fake.revisions.get_mut(&11).unwrap().status = "published".into();
+        fetch(&db, &mut fake);
+        let (ready, _) = submit(&db, 1, &mut fake);
+        assert_eq!(ready.unwrap().said()[1], "Its parent is set to D11, the revision of patch 1.");
     }
 
     #[test]
@@ -3050,15 +3054,20 @@ mod tests {
         // Read: open, the parent already, or set in place of the parents it
         // has; closed, missing or not read, none, said as a submit says it.
         let below = |b: Below| move |_: &str, _: &str| Ok::<Below, ()>(b);
-        let open = Below::Found { phid: "PHID-DREV-12".into(), open: true, status: "Needs Review".into() };
+        let open = Below::Found { phid: "PHID-DREV-12".into(), status: crate::phab::Status::NeedsReview };
         let on_d12 = ["PHID-DREV-12".to_string()];
         assert_eq!(parent_with(&d, s, 2, Some(("D13", &on_d12[..])), below(open.clone())), Ok(Parent::Already { id: "D12".into(), below: 2 }));
         let set = Parent::Set { id: "D12".into(), phid: "PHID-DREV-12".into(), below: 2 };
         for now in [Some(("D13", &on_d9[..])), Some(("D13", none)), None] {
             assert_eq!(parent_with(&d, s, 2, now, below(open.clone())), Ok(set.clone()), "{now:?}");
         }
-        let closed = Below::Found { phid: "PHID-DREV-12".into(), open: false, status: "Landed".into() };
-        assert_eq!(parent_with(&d, s, 2, Some(("D13", none)), below(closed)), Ok(Parent::Nothing("D12, the revision of patch 2, is Landed, so D13 gets no parent.".into())));
+        let abandoned = Below::Found { phid: "PHID-DREV-12".into(), status: crate::phab::Status::Abandoned };
+        assert_eq!(parent_with(&d, s, 2, Some(("D13", none)), below(abandoned)), Ok(Parent::Nothing("D12, the revision of patch 2, is Abandoned, so D13 gets no parent.".into())));
+        let landed = Below::Found { phid: "PHID-DREV-12".into(), status: crate::phab::Status::Published };
+        for now in [Some(("D13", &on_d9[..])), Some(("D13", none)), None] {
+            assert_eq!(parent_with(&d, s, 2, now, below(landed.clone())), Ok(set.clone()), "{now:?}");
+        }
+        assert_eq!(parent_with(&d, s, 2, Some(("D13", &on_d12[..])), below(landed)), Ok(Parent::Already { id: "D12".into(), below: 2 }));
         let missing = "Phabricator has no D12, the revision of patch 2, so the parents of D13 are left as they are.";
         assert_eq!(parent_with(&d, s, 2, Some(("D13", &on_d9[..])), below(Below::Missing)), Ok(Parent::Nothing(missing.into())));
         let refused = "The revision of patch 2, D12, could not be read, so the new revision gets no parent: refused.";
@@ -3075,7 +3084,7 @@ mod tests {
         })
         .unwrap();
         let d = Db::load(&db).unwrap();
-        assert_eq!((Below::stored(&d, &link(11)), Below::stored(&d, &link(12))), (Some(Below::Missing), Some(Below::Found { phid: "PHID-DREV-12".into(), open: false, status: "Landed".into() })));
+        assert_eq!((Below::stored(&d, &link(11)), Below::stored(&d, &link(12))), (Some(Below::Missing), Some(Below::Found { phid: "PHID-DREV-12".into(), status: crate::phab::Status::Published })));
     }
 
     #[test]

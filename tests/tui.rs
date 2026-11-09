@@ -25504,10 +25504,17 @@ fn the_parent_differs_only_where_a_submit_would_set_one_and_in_sync_space_says_w
         next_version(&db, 1, &format!("Bug 2 - two\n\n{LINK}{}", &d[1..]), &diffs[1]);
         fetched(app);
     };
-    // On a revision that landed: none either.
+    // On a revision that landed: a submit sets it as on an open one, D13
+    // being on D10: the parent differs, Space naming D9.
     names(&mut app, "D9");
-    assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
-    assert_eq!(space_said(&mut app, 3), format!("{} D9, the revision of patch 2, is Landed, so the parents of D13 are left as they are.", same(3, "D13")));
+    assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D13 · Changes Planned · the parent differs · no new comments"));
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    let (_, lines) = differs_seen(&mut app).expect("the view of what differs");
+    assert_eq!(
+        differs_said(&lines),
+        "Parent: D10 on Phabricator; a submit sets D9, the revision of patch 2. The title and summary of D13 are those of this version. The latest diff of D13 does what this version does."
+    );
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Left]);
     // On a patch naming the same revision: none either, there; on patch 2,
     // all differs, D13 being patch 3's.
     names(&mut app, "D13");

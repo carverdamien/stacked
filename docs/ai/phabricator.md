@@ -715,9 +715,10 @@ tree (differential.setdiffproperty, `local:commits`); then one edit
 its reviewers and its bug written as moz-phab writes them), the summary
 (the rest of the message, without the line naming the revision) and the
 bug (`Bug 123` in the title), where they differ from what is stored; the
-new diff; the parent, the revision of the patch below, when it is open
-(none for the bottom patch, or when the patch below has no revision, and
-a revision's parents are then left as they are), set where it changes,
+new diff; the parent, the revision of the patch below, when it is open or landed
+(none for the bottom patch, when the patch below has no revision, when
+Phabricator does not have its revision or when that is abandoned, and a
+revision's parents are then left as they are), set where it changes,
 added to a new revision; and Changes Planned, for a new revision or a
 draft. A revision in Changes Planned that takes a new diff is put in
 Needs Review by Phabricator, which refuses Changes Planned in that same

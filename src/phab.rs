@@ -1660,7 +1660,7 @@ fn wanted_of(db: &Db, s: &Stack, named: &[(String, String)], found: &HashMap<Str
     let none: &[String] = &[];
     let below = |link: &str| -> Result<Below, ()> {
         if let Some(b) = found.get(link) {
-            return Ok(Below::Found { phid: b.phid.clone(), open: b.status.open(), status: b.status.name().to_string() });
+            return Ok(Below::Found { phid: b.phid.clone(), status: b.status });
         }
         if named.iter().any(|(_, l)| l == link) {
             return Ok(Below::Missing);
